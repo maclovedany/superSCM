@@ -1066,3 +1066,72 @@ td,
   color: #b91c1c;
   font-weight: 700;
 }
+
+/* ── 분석 화면 탭 (4회차) ────────────────────────────────── */
+.analysis-shell {
+  min-height: 100vh;
+}
+.analysis-topbar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding: 14px 32px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.analysis-home {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.analysis-home:hover {
+  color: var(--blue);
+}
+.analysis-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.analysis-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 15px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #5b6b85;
+  text-decoration: none;
+  transition: 0.15s ease;
+}
+.analysis-tab:hover {
+  background: var(--pale-blue);
+  color: var(--ink);
+}
+.analysis-tab.active {
+  background: var(--blue);
+  color: #fff;
+}
+.analysis-tab.locked,
+.analysis-tab.locked:hover {
+  background: transparent;
+  color: #9aa8bd;
+  cursor: default;
+}
+
+/* 사이드바의 분석 화면 링크 (.nav-button 스타일을 a 태그에 재사용) */
+.nav-label-gap {
+  margin-top: 22px;
+}
+.nav-button.nav-link {
+  text-decoration: none;
+  width: 100%;
+}
+.nav-link-arrow {
+  margin-left: auto;
+  opacity: 0.55;
+}
