@@ -11,7 +11,7 @@ import { usePathname } from 'next/navigation';
 
 const tabs: { href: string; label: string; ready: boolean }[] = [
   { href: '/analysis/leadtime', label: '리드타임 격차', ready: true },
-  { href: '/analysis/stockout', label: '재고 소진 위험', ready: false },
+  { href: '/analysis/stockout', label: '재고 소진 위험', ready: true },
 ];
 
 export default function AnalysisTabs() {

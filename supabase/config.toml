@@ -2,6 +2,7 @@ project_id = "procurement-planning"
 
 [api]
 enabled = true
+schemas = ["public", "core", "analytics"]
 
 [db]
 major_version = 15

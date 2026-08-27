@@ -145,10 +145,14 @@ reason?: 'NO_USAGE' | 'NO_LEADTIME';
 
 ## 자주 나는 오류
 
-| 증상 | 원인 | 해결 |
-|---|---|---|
-| 환경변수 오류 | `.env.local` 미설정 | `.env.local.example` 복사 후 값 입력 |
-| `relation ... does not exist` | 스키마 미지정 | `.schema('analytics')` 사용 |
-| 데이터가 빈 배열 | 스키마 미노출 | Settings → API → Exposed schemas 에 `core`, `analytics` 추가 |
-| 설정을 고쳤는데 그대로 | dev 서버 캐시 | `Ctrl+C` 후 `npm run dev` |
-| 화면이 갱신 안 됨 | 페이지 캐시 | `export const dynamic = 'force-dynamic'` 추가 |
+| 증상                          | 원인                | 해결                                                         |
+| ----------------------------- | ------------------- | ------------------------------------------------------------ |
+| 환경변수 오류                 | `.env.local` 미설정 | `.env.local.example` 복사 후 값 입력                         |
+| `relation ... does not exist` | 스키마 미지정       | `.schema('analytics')` 사용                                  |
+| 데이터가 빈 배열              | 스키마 미노출       | Settings → API → Exposed schemas 에 `core`, `analytics` 추가 |
+| 설정을 고쳤는데 그대로        | dev 서버 캐시       | `Ctrl+C` 후 `npm run dev`                                    |
+| 화면이 갱신 안 됨             | 페이지 캐시         | `export const dynamic = 'force-dynamic'` 추가                |
+
+사용자가 에러가 나서 해결해달라고 요청할때에 error.md 파일을 만들어서, 매번 그 에러와 해결책을 기재하고 업데이트해줘.
+
+에러가 발생하면 먼저, error.md 을 확인해서, 동일한 에러, 유사한 에러가 있었는지 확인하고, 그 해결책을 고려해서 적용 후, 안되는 경우, 새로운 방법을 찾아줘.
