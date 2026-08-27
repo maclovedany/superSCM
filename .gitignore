@@ -27,3 +27,6 @@ next-env.d.ts
 
 # vercel
 .vercel
+
+# DB 덤프 (수업용, 저장소에 두지 않습니다)
+dump.sql
