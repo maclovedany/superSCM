@@ -16,6 +16,7 @@
 | 고쳤는데 화면이 그대로 | dev 서버 / 브라우저 캐시 | [#6](#6-db-는-고쳤는데-화면은-옛-오류-그대로) |
 | `npm run build` 실패 | 아래 참조 | [#7](#7-npm-run-build-가-실패한다) |
 | 배포 화면에서 사이드바와 본문이 기본 HTML처럼 세로로 깨짐 | `styles/shell.css`의 셸 규칙이 덮어써짐 | [#8](#8-배포-화면에서-사이드바와-본문이-기본-html처럼-깨진다) |
+| `supabase db lint --local` connection refused | 로컬 Supabase DB가 실행되지 않음 | [#9](#9-supabase-db-lint---local-connection-refused) |
 
 > **Supabase 3층 구조를 먼저 기억하면 #3·#4·#5 를 헷갈리지 않습니다.**
 >
@@ -196,6 +197,16 @@ error TS5097: An import path can only end with a '.ts' extension
 **원인** `node --test` 로 테스트를 돌리려면 `.ts` 확장자가 필요한데, 기본 tsconfig 는 이를 거부합니다.
 **해결** `tsconfig.json` 에 `"allowImportingTsExtensions": true` 추가. 테스트는 `npm test`.
 
+**증상 C**
+
+```text
+lib/supabase/server.ts: Parameter 'cookiesToSet' implicitly has an 'any' type
+```
+
+**원인** `@supabase/ssr`의 cookie adapter 객체에서 `setAll` 콜백 인자가 현재 TypeScript 설정으로 자동 추론되지 않았습니다.
+
+**해결** `SetAllCookies` 타입을 import하고 `Parameters<SetAllCookies>[0]`으로 `cookiesToSet`을 명시합니다. middleware의 cookie adapter에도 같은 타입을 적용합니다.
+
 ---
 
 ## #8 배포 화면에서 사이드바와 본문이 기본 HTML처럼 깨진다
@@ -228,3 +239,22 @@ error TS5097: An import path can only end with a '.ts' extension
 
 CSS 변경 후 `npm test`와 `npm run build`를 모두 실행하고, production 서버에서 사이드바 계산 폭이
 `250px`인지 확인합니다.
+
+---
+
+## #9 `supabase db lint --local` connection refused
+
+**증상**
+
+```text
+failed to connect to host=127.0.0.1 port=54322: connection refused
+```
+
+**원인**
+
+Supabase CLI는 설치되어 있지만 `supabase start`로 로컬 PostgreSQL이 실행되지 않은 상태입니다.
+
+**해결**
+
+Docker가 실행 중인 개발 환경에서 `supabase start` 후 `supabase db lint --local`을 다시 실행합니다.
+로컬 DB를 사용하지 않는 배포 환경에서는 연결된 프로젝트를 확인한 뒤 migration을 적용합니다.

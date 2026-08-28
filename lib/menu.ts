@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
-import { BarChart3, Boxes, Gauge, LineChart, Settings2, Workflow } from 'lucide-react';
+import { BarChart3, Boxes, Gauge, LineChart, Settings2, Users, Workflow } from 'lucide-react';
 
 export type MenuItem = { href: string; label: string; description: string; icon: LucideIcon };
 
@@ -10,8 +10,14 @@ export const USER_MENU: MenuItem[] = [
 ];
 
 export const ADMIN_MENU: MenuItem[] = [
+  { href: '/admin/users', label: '사용자 관리', description: '계정 권한과 활성 상태 관리', icon: Users },
   { href: '/admin/workflow', label: '발주계획 관리', description: '레거시 업무 플로우', icon: Workflow },
   { href: '/admin/demand', label: '수요 관리', description: '수요 데이터 관리', icon: BarChart3 },
   { href: '/admin/settings', label: '시스템 설정', description: '관리자 설정', icon: Settings2 },
 ];
 
+export type AppRole = 'ADMIN' | 'USER';
+
+export function menuForRole(role: AppRole): MenuItem[] {
+  return role === 'ADMIN' ? [...USER_MENU, ...ADMIN_MENU] : USER_MENU;
+}
