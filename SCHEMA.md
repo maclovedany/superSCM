@@ -111,7 +111,25 @@ v_usage_effective        확정값 → 없으면 정제 기준 평균
 v_item_master            품목코드 정규화 · 중복 제거
 v_stock_on_hand          창고 표기 통일 후 현재고 합산
 v_inbound_qty            진행 중 선적 = 입고예정
+v_train_demand           Forecast·Demand Profile 학습 전용 수요 기간
+v_test_actual            Backtest scoring 전용 검증 Actual 기간
 ```
+
+### STEP 3 정책·Forecast 설정
+
+| 객체 | 역할 |
+|---|---|
+| `core.policy_config` | 서비스 레벨, 검토 주기, 안전 버퍼 등 공통 운영 정책 |
+| `core.outlier_rule` | 프로젝트·반품·중복 등 학습 제외 규칙 |
+| `core.item_policy` | 품목별 MOQ, pack size, grade, 서비스 레벨 |
+| `core.forecast_setting` | 활성 학습/검증 기간과 DAY/WEEK/MONTH granularity |
+
+`core.v_train_demand`와 `core.v_test_actual`은 `core.forecast_setting`의 활성 기간만 사용한다.
+기간이 비어 있거나 train/test가 겹치면 **두 뷰 모두 0행**을 반환한다. Forecast·Demand Profile은 전자만,
+Backtest scoring은 후자만 읽는다. `raw.usage_history`를 화면이나 Forecast 코드에서 직접 읽지 않는다.
+
+`analytics.v_data_coverage`는 전체 데이터 기간, 설정 기간, train/test 행수, 각 window 유효성,
+격리 상태를 한 행으로 제공한다.
 
 ---
 
@@ -125,6 +143,9 @@ v_inbound_qty            진행 중 선적 = 입고예정
 | item_master | 23 | 품목 20개 + 표기 오염 2 + 단종 1 |
 | purchase_order | 92 | 공급업체 표기 25종 |
 | goods_receipt | 81 | |
+| business_event | STEP 3부터 | 프로젝트·반품 등 업무 이벤트 원본 |
+| sales_order | STEP 3부터 | 주문 원본 |
+| item_substitute | STEP 3부터 | 대체 품목 관계 원본 |
 | inventory | 43 | 창고 표기 흔들림 있음 |
 
 `shipment_log` 타임스탬프 순서:
@@ -135,6 +156,9 @@ order_date → supplier_ship_date → port_departure_date → port_arrival_date
 ```
 
 **리드타임의 끝점은 `qc_release_date`** 입니다. 창고에 도착해도 검수 전이면 쓸 수 없습니다.
+
+모든 raw 입력 테이블은 STEP 3부터 `batch_id`, `source_type`, `loaded_at`, `source_record_id`를 공통 적재 추적 열로 사용한다.
+기존 행은 이 열이 null일 수 있으며, 원본 데이터를 0 또는 임의값으로 바꾸지 않는다.
 
 ---
 
