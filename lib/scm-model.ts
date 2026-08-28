@@ -33,6 +33,24 @@ export type StockoutKpi = {
   averageStockoutDays: number | null;
 };
 
+export type DemandProfile = {
+  itemId: string;
+  itemName: string;
+  nPeriods: number;
+  nNonzeroPeriods: number;
+  adi: number | null;
+  cv: number | null;
+  cvSquared: number | null;
+  zeroDemandRate: number | null;
+  trend: number | null;
+  recentChangeRate: number | null;
+  peakPeriod: string | null;
+  demandType: 'SMOOTH' | 'INTERMITTENT' | 'ERRATIC' | 'LUMPY' | null;
+  seasonality: boolean | null;
+  reasonCode: string | null;
+  stability: string | null;
+};
+
 function value(row: Record<string, unknown>, keys: string[]) {
   for (const key of keys) {
     if (row[key] !== undefined && row[key] !== null && row[key] !== '') return row[key];
@@ -95,5 +113,30 @@ export function normalizeStockoutKpi(row: Record<string, unknown>): StockoutKpi 
     unknownCount: numberValue(row, ['n_unknown', 'unknown_count', '판정불가품목수']) ?? 0,
     within30DaysCount: numberValue(row, ['n_within_30d', 'within_30_days_count', '30일이내소진수']) ?? 0,
     averageStockoutDays: numberValue(row, ['avg_stockout_days', 'average_stockout_days', '평균소진예상일수']),
+  };
+}
+
+function demandTypeValue(raw: unknown): DemandProfile['demandType'] {
+  return raw === 'SMOOTH' || raw === 'INTERMITTENT' || raw === 'ERRATIC' || raw === 'LUMPY' ? raw : null;
+}
+
+export function normalizeDemandProfile(row: Record<string, unknown>): DemandProfile {
+  const seasonality = value(row, ['seasonality']);
+  return {
+    itemId: String(value(row, ['item_id', 'item_code', '품목코드']) ?? '미정'),
+    itemName: String(value(row, ['item_name', 'item_name_ko', '품목명']) ?? '미정'),
+    nPeriods: numberValue(row, ['n_periods']) ?? 0,
+    nNonzeroPeriods: numberValue(row, ['n_nonzero_periods']) ?? 0,
+    adi: numberValue(row, ['adi']),
+    cv: numberValue(row, ['cv']),
+    cvSquared: numberValue(row, ['cv_squared']),
+    zeroDemandRate: numberValue(row, ['zero_demand_rate']),
+    trend: numberValue(row, ['trend', 'trend_per_period']),
+    recentChangeRate: numberValue(row, ['recent_change_rate']),
+    peakPeriod: value(row, ['peak_period']) === null ? null : String(value(row, ['peak_period'])),
+    demandType: demandTypeValue(value(row, ['demand_type'])),
+    seasonality: seasonality === true || seasonality === false ? seasonality : null,
+    reasonCode: value(row, ['reason_code']) === null ? null : String(value(row, ['reason_code'])),
+    stability: value(row, ['stability']) === null ? null : String(value(row, ['stability'])),
   };
 }

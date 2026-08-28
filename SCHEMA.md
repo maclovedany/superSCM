@@ -131,6 +131,17 @@ Backtest scoring은 후자만 읽는다. `raw.usage_history`를 화면이나 For
 `analytics.v_data_coverage`는 전체 데이터 기간, 설정 기간, train/test 행수, 각 window 유효성,
 격리 상태를 한 행으로 제공한다.
 
+### STEP 5 수요 프로파일
+
+| 객체 | 역할 |
+|---|---|
+| `analytics.v_sku_demand_profile` | 학습 기간 월별 grid에서 SKU별 ADI, CV², Zero-demand rate, 추세, 최근 변화, Peak month, 수요 유형을 계산 |
+| `analytics.v_demand_profile_kpi` | SMOOTH / INTERMITTENT / ERRATIC / LUMPY 수와 Croston 후보 수를 요약 |
+
+수요 프로파일은 **반드시 `core.v_train_demand`만** 사용합니다. `core.v_test_actual`은 Backtest scoring 전용입니다.
+기록이 없는 월은 기간 grid의 `0`으로 표현하지만, 원본 수량이 null인 경우에는 `null`과 reason code를 유지합니다.
+계절성은 24개월 미만에서 `false`가 아니라 `null + INSUFFICIENT_PERIODS`로 표시합니다.
+
 ---
 
 ## raw — 원본 (직접 조회하지 않음)
