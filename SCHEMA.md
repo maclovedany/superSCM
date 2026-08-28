@@ -160,6 +160,13 @@ STEP 8 Croston 계열 엔진이 추가될 때 registry 설정으로 연결합니
 `analytics.v_forecast_run`의 `is_stale`은 run의 `data_snapshot_at` 이후 수요 관련 IMPORT가 완료됐거나 `stale_at`이 기록된 경우 true입니다.
 과거 Run과 결과 행은 stale이어도 삭제하거나 덮어쓰지 않습니다.
 
+### STEP 7 Backtest와 Champion
+
+`core.backtest_run`, `core.model_performance`, `core.champion_model_selection`은 Forecast 실행과 분리된 검증 이력입니다.
+Backtest는 `core.forecast_result + core.v_test_actual`만 사용합니다. Bias는 `Forecast - Actual`이며 양수는 과대예측입니다.
+WAPE 분모가 0이거나 비교 행이 없으면 null과 reason code를 저장합니다. 최신 Champion은 `analytics.v_champion_model`에서 조회하며,
+수동 변경은 append-only 이력과 `core.audit_log`를 함께 남깁니다.
+
 ---
 
 ## raw — 원본 (직접 조회하지 않음)

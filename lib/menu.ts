@@ -8,6 +8,7 @@ export const USER_MENU: MenuItem[] = [
   { href: '/analysis/leadtime', label: '리드타임 격차', description: '계획과 실제 소요일 비교', icon: LineChart },
   { href: '/analysis/stockout', label: '재고 소진 위험', description: '품목별 재고 위험 확인', icon: Boxes },
   { href: '/analysis/demand-profile', label: '수요 패턴', description: 'SKU Demand Profile', icon: BarChart3 },
+  { href: '/analysis/model-comparison', label: '모델 비교', description: '검증 성능과 Champion 비교', icon: BarChart3 },
 ];
 
 export const ADMIN_MENU: MenuItem[] = [
@@ -17,6 +18,8 @@ export const ADMIN_MENU: MenuItem[] = [
   { href: '/admin/data-management', label: '데이터 관리', description: '파일 적재와 이력 관리', icon: Database },
   { href: '/admin/forecast-models', label: 'Forecast Models', description: '예측 모델 설정 관리', icon: Bot },
   { href: '/admin/forecast-runs', label: 'Forecast Runs', description: '예측 실행 이력 관리', icon: Bot },
+  { href: '/admin/backtest-runs', label: 'Backtest Runs', description: '검증 실행 이력 관리', icon: Bot },
+  { href: '/admin/champion-models', label: 'Champion Models', description: '대표 모델 수동 선정', icon: Bot },
   { href: '/admin/settings', label: '시스템 설정', description: '관리자 설정', icon: Settings2 },
 ];
 

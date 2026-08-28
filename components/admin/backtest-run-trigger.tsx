@@ -1,0 +1,4 @@
+'use client';
+import {useActionState} from 'react';import Button from '@/components/ui/button';import {runBacktestAction,type BacktestState} from '@/app/(admin)/admin/backtest-runs/actions';
+const initial:BacktestState={error:null,success:null};
+export default function BacktestRunTrigger({forecastRuns}:{forecastRuns:{runId:string}[]}){const[state,action,pending]=useActionState(runBacktestAction,initial);return <form action={action} className="button-row"><select className="table-select" name="forecastRunId">{forecastRuns.map(r=><option key={r.runId} value={r.runId}>{r.runId}</option>)}</select><Button variant="primary" disabled={pending}>{pending?'실행 중…':'Backtest 실행'}</Button>{state.error&&<span className="text-danger">{state.error}</span>}{state.success&&<span className="text-good">{state.success}</span>}</form>}

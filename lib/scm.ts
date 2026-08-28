@@ -32,6 +32,18 @@ export async function getForecastRuns(): Promise<{ rows: ForecastRun[]; error: s
   } catch (error) { return { rows: [], error: error instanceof Error ? error.message : 'Forecast 실행 이력을 조회하지 못했습니다.' }; }
 }
 
+export async function getModelComparison() {
+  const supabase = await createSupabaseServerClient();
+  const [detail, performance, champions, runs] = await Promise.all([
+    supabase.schema('analytics').from('v_model_comparison_detail').select('*').order('period'),
+    supabase.schema('analytics').from('v_model_performance').select('*').order('item_id'),
+    supabase.schema('analytics').from('v_champion_model').select('*'),
+    supabase.schema('analytics').from('v_backtest_run').select('*').order('started_at', { ascending: false }),
+  ]);
+  const error = detail.error ?? performance.error ?? champions.error ?? runs.error;
+  return { detail: (detail.data ?? []) as Record<string, unknown>[], performance: (performance.data ?? []) as Record<string, unknown>[], champions: (champions.data ?? []) as Record<string, unknown>[], runs: (runs.data ?? []) as Record<string, unknown>[], error: error?.message ?? null };
+}
+
 export async function getDemandProfiles(): Promise<{ rows: DemandProfile[]; error: string | null }> {
   try {
     const supabase = await createSupabaseServerClient();
