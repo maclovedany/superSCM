@@ -15,6 +15,7 @@
 | 조회는 되는데 빈 배열 `[]` | RLS 만 켜지고 정책이 없음 | [#5](#5-permission-denied-for-table-leadtime_plan--조회하면-빈-배열) |
 | 고쳤는데 화면이 그대로 | dev 서버 / 브라우저 캐시 | [#6](#6-db-는-고쳤는데-화면은-옛-오류-그대로) |
 | `npm run build` 실패 | 아래 참조 | [#7](#7-npm-run-build-가-실패한다) |
+| 배포 화면에서 사이드바와 본문이 기본 HTML처럼 세로로 깨짐 | `styles/shell.css`의 셸 규칙이 덮어써짐 | [#8](#8-배포-화면에서-사이드바와-본문이-기본-html처럼-깨진다) |
 
 > **Supabase 3층 구조를 먼저 기억하면 #3·#4·#5 를 헷갈리지 않습니다.**
 >
@@ -194,3 +195,36 @@ error TS5097: An import path can only end with a '.ts' extension
 
 **원인** `node --test` 로 테스트를 돌리려면 `.ts` 확장자가 필요한데, 기본 tsconfig 는 이를 거부합니다.
 **해결** `tsconfig.json` 에 `"allowImportingTsExtensions": true` 추가. 테스트는 `npm test`.
+
+---
+
+## #8 배포 화면에서 사이드바와 본문이 기본 HTML처럼 깨진다
+
+**증상**
+
+- 사이드바가 왼쪽 고정 열이 아니라 페이지 위쪽의 일반 텍스트처럼 표시됩니다.
+- 메뉴 링크가 한 줄로 붙고 상단바와 본문 글자 크기가 브라우저 기본값처럼 커집니다.
+- `npm run build`는 성공하지만 실제 배포 화면의 레이아웃은 깨집니다.
+
+**원인**
+
+`app/globals.css`는 정상적으로 `styles/shell.css`를 import하고 있었지만,
+`styles/shell.css` 안에는 분석 탭 규칙만 남아 있었습니다. 이전 패치가 한 줄로 압축된 파일 전체를 교체하면서
+`.app-shell`, `.sidebar`, `.topbar`, `.content`, 모바일 media query가 함께 삭제됐습니다.
+
+**해결**
+
+`styles/shell.css`에 앱 셸, 250px 사이드바, sticky 상단바, 콘텐츠 영역, 분석 탭,
+760px 모바일 전환 규칙을 디자인 토큰 기반으로 복원했습니다.
+
+**예방**
+
+`lib/design-system.test.ts`가 다음 필수 규칙을 검사합니다.
+
+```text
+.app-shell  .sidebar  .topbar  .content  .nav-button
+@media (max-width: 760px)
+```
+
+CSS 변경 후 `npm test`와 `npm run build`를 모두 실행하고, production 서버에서 사이드바 계산 폭이
+`250px`인지 확인합니다.
