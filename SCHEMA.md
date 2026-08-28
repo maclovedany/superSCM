@@ -142,6 +142,24 @@ Backtest scoring은 후자만 읽는다. `raw.usage_history`를 화면이나 For
 기록이 없는 월은 기간 grid의 `0`으로 표현하지만, 원본 수량이 null인 경우에는 `null`과 reason code를 유지합니다.
 계절성은 24개월 미만에서 `false`가 아니라 `null + INSUFFICIENT_PERIODS`로 표시합니다.
 
+### STEP 6 SQL Baseline Forecast
+
+| 객체 | 역할 |
+|---|---|
+| `core.model_config` | 모델 enabled 상태, 적용 수요 유형, DB 파라미터를 관리하는 registry |
+| `core.model_version` | Forecast Run마다 사용한 모델 정의와 파라미터의 불변 snapshot |
+| `core.forecast_run` | 실행 상태, 학습 기간, data snapshot, 실행자, 집계값을 보관 |
+| `core.forecast_result` | Run·모델·SKU·기간별 P50/P80/P90/sigma 저장 |
+| `core.run_baseline_forecast()` | ADMIN 전용 SQL Baseline 실행 함수 |
+
+`core.run_baseline_forecast()`는 `core.v_train_demand`의 월별 grid만 읽습니다. MA_3M, MA_6M,
+WMA_3M(최근순 3:2:1), PY_SAME_MONTH, SEASONAL_NAIVE 결과는 실행 시 저장되며 화면 조회마다 다시 계산하지 않습니다.
+기본 SQL Baseline 모델의 적용 수요 유형은 `SMOOTH`, `ERRATIC`으로 registry에 저장됩니다. INTERMITTENT/LUMPY는
+STEP 8 Croston 계열 엔진이 추가될 때 registry 설정으로 연결합니다.
+
+`analytics.v_forecast_run`의 `is_stale`은 run의 `data_snapshot_at` 이후 수요 관련 IMPORT가 완료됐거나 `stale_at`이 기록된 경우 true입니다.
+과거 Run과 결과 행은 stale이어도 삭제하거나 덮어쓰지 않습니다.
+
 ---
 
 ## raw — 원본 (직접 조회하지 않음)

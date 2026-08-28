@@ -17,6 +17,7 @@
 | `npm run build` 실패 | 아래 참조 | [#7](#7-npm-run-build-가-실패한다) |
 | 배포 화면에서 사이드바와 본문이 기본 HTML처럼 세로로 깨짐 | `styles/shell.css`의 셸 규칙이 덮어써짐 | [#8](#8-배포-화면에서-사이드바와-본문이-기본-html처럼-깨진다) |
 | `supabase db lint --local` connection refused | 로컬 Supabase DB가 실행되지 않음 | [#9](#9-supabase-db-lint---local-connection-refused) |
+| `ERROR: 42P01: relation "core.policy_config" does not exist` | STEP 5를 STEP 3보다 먼저 또는 단독 실행 | [#10](#10-error-42p01-relation-corepolicy_config-does-not-exist) |
 
 > **Supabase 3층 구조를 먼저 기억하면 #3·#4·#5 를 헷갈리지 않습니다.**
 >
@@ -258,3 +259,37 @@ Supabase CLI는 설치되어 있지만 `supabase start`로 로컬 PostgreSQL이 
 
 Docker가 실행 중인 개발 환경에서 `supabase start` 후 `supabase db lint --local`을 다시 실행합니다.
 로컬 DB를 사용하지 않는 배포 환경에서는 연결된 프로젝트를 확인한 뒤 migration을 적용합니다.
+
+---
+
+## #10 `ERROR: 42P01: relation "core.policy_config" does not exist`
+
+**증상**
+
+```text
+Failed to run sql query: ERROR: 42P01: relation "core.policy_config" does not exist
+LINE 3: insert into core.policy_config (policy_key, policy_value, description)
+```
+
+**원인**
+
+STEP 5 SQL의 첫 번째 `insert`가 참조하는 `core.policy_config` 테이블은 STEP 5에서 생성하지 않습니다. 이 테이블은 `supabase/migrations/20260828000200_step3_data_isolation.sql`에서 생성됩니다. STEP 5 내용만 복사해 SQL Editor에서 단독 실행하면 테이블이 없어 42P01이 발생합니다.
+
+**해결**
+
+SQL Editor에서 아래 순서로 전체 파일을 실행합니다.
+
+```text
+STEP 2  20260828000100_step2_auth_rbac.sql
+STEP 3  20260828000200_step3_data_isolation.sql
+STEP 4  20260828000300_step4_import_pipeline.sql
+STEP 5  20260828000400_step5_sku_demand_profile.sql
+```
+
+이미 STEP 2~4를 실행했다면 STEP 5만 다시 실행하면 됩니다. STEP 3 실행 여부는 다음 쿼리로 확인할 수 있습니다.
+
+```sql
+select to_regclass('core.policy_config');
+```
+
+결과가 `core.policy_config`로 나오면 STEP 5를 실행합니다. `null`이면 STEP 3을 먼저 실행합니다. 각 단계는 `if not exists`와 `on conflict do nothing`을 사용하므로 이미 적용된 단계도 재실행할 수 있습니다.

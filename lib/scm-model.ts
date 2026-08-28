@@ -51,6 +51,38 @@ export type DemandProfile = {
   stability: string | null;
 };
 
+export type ForecastModelConfig = {
+  modelId: string;
+  modelName: string;
+  family: string;
+  engine: string;
+  version: string;
+  enabled: boolean;
+  isDefault: boolean;
+  applicableDemandType: string[];
+  parameters: Record<string, unknown>;
+  description: string | null;
+};
+
+export type ForecastRun = {
+  runId: string;
+  status: 'RUNNING' | 'SUCCESS' | 'FAILED';
+  granularity: string | null;
+  trainStart: string | null;
+  trainEnd: string | null;
+  horizon: number | null;
+  dataSnapshotAt: string | null;
+  nModels: number;
+  nItems: number;
+  nRows: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  triggeredEmail: string | null;
+  message: string | null;
+  isStale: boolean;
+};
+
 function value(row: Record<string, unknown>, keys: string[]) {
   for (const key of keys) {
     if (row[key] !== undefined && row[key] !== null && row[key] !== '') return row[key];
@@ -138,5 +170,34 @@ export function normalizeDemandProfile(row: Record<string, unknown>): DemandProf
     seasonality: seasonality === true || seasonality === false ? seasonality : null,
     reasonCode: value(row, ['reason_code']) === null ? null : String(value(row, ['reason_code'])),
     stability: value(row, ['stability']) === null ? null : String(value(row, ['stability'])),
+  };
+}
+
+export function normalizeForecastModelConfig(row: Record<string, unknown>): ForecastModelConfig {
+  const demandTypes = value(row, ['applicable_demand_type']);
+  return {
+    modelId: String(value(row, ['model_id']) ?? ''), modelName: String(value(row, ['model_name']) ?? ''),
+    family: String(value(row, ['family']) ?? ''), engine: String(value(row, ['engine']) ?? ''),
+    version: String(value(row, ['version']) ?? ''), enabled: value(row, ['enabled']) === true,
+    isDefault: value(row, ['is_default']) === true,
+    applicableDemandType: Array.isArray(demandTypes) ? demandTypes.map(String) : [],
+    parameters: typeof value(row, ['parameters']) === 'object' && value(row, ['parameters']) !== null ? value(row, ['parameters']) as Record<string, unknown> : {},
+    description: value(row, ['description']) === null ? null : String(value(row, ['description'])),
+  };
+}
+
+export function normalizeForecastRun(row: Record<string, unknown>): ForecastRun {
+  const status = value(row, ['status']);
+  return {
+    runId: String(value(row, ['run_id']) ?? ''), status: status === 'RUNNING' || status === 'SUCCESS' || status === 'FAILED' ? status : 'FAILED',
+    granularity: value(row, ['granularity']) === null ? null : String(value(row, ['granularity'])),
+    trainStart: value(row, ['train_start']) === null ? null : String(value(row, ['train_start'])),
+    trainEnd: value(row, ['train_end']) === null ? null : String(value(row, ['train_end'])),
+    horizon: numberValue(row, ['horizon']), dataSnapshotAt: value(row, ['data_snapshot_at']) === null ? null : String(value(row, ['data_snapshot_at'])),
+    nModels: numberValue(row, ['n_models']) ?? 0, nItems: numberValue(row, ['n_items']) ?? 0, nRows: numberValue(row, ['n_rows']) ?? 0,
+    startedAt: value(row, ['started_at']) === null ? null : String(value(row, ['started_at'])),
+    finishedAt: value(row, ['finished_at']) === null ? null : String(value(row, ['finished_at'])),
+    durationMs: numberValue(row, ['duration_ms']), triggeredEmail: value(row, ['triggered_email']) === null ? null : String(value(row, ['triggered_email'])),
+    message: value(row, ['message']) === null ? null : String(value(row, ['message'])), isStale: value(row, ['is_stale']) === true,
   };
 }

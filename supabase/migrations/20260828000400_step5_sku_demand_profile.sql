@@ -1,5 +1,7 @@
 -- STEP 5: SKU 수요 프로파일은 오직 core.v_train_demand를 입력으로 사용합니다.
 -- 검증 Actual과 원본 사용 이력은 이 뷰에서 직접 참조하지 않습니다.
+-- 실행 전제: STEP 2 → STEP 3 → STEP 4를 먼저 실행해야 합니다.
+-- core.policy_config, core.forecast_setting, core.v_train_demand는 STEP 3에서 생성됩니다.
 insert into core.policy_config (policy_key, policy_value, description)
 values
   ('SEASONALITY_INDEX_CV_THRESHOLD', '{"value": 0.20}'::jsonb, '계절성 월별 지수 변동계수 임계값'),

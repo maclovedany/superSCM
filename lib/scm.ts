@@ -8,7 +8,29 @@ import {
   type StockoutRisk,
   type DemandProfile,
   normalizeDemandProfile,
+  type ForecastModelConfig,
+  type ForecastRun,
+  normalizeForecastModelConfig,
+  normalizeForecastRun,
 } from './scm-model';
+
+export async function getForecastModels(): Promise<{ rows: ForecastModelConfig[]; error: string | null }> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase.schema('analytics').from('v_model_config').select('*').order('model_id');
+    if (error) return { rows: [], error: error.message };
+    return { rows: (data ?? []).map((row) => normalizeForecastModelConfig(row as Record<string, unknown>)), error: null };
+  } catch (error) { return { rows: [], error: error instanceof Error ? error.message : 'Forecast 모델을 조회하지 못했습니다.' }; }
+}
+
+export async function getForecastRuns(): Promise<{ rows: ForecastRun[]; error: string | null }> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase.schema('analytics').from('v_forecast_run').select('*').order('started_at', { ascending: false }).limit(50);
+    if (error) return { rows: [], error: error.message };
+    return { rows: (data ?? []).map((row) => normalizeForecastRun(row as Record<string, unknown>)), error: null };
+  } catch (error) { return { rows: [], error: error instanceof Error ? error.message : 'Forecast 실행 이력을 조회하지 못했습니다.' }; }
+}
 
 export async function getDemandProfiles(): Promise<{ rows: DemandProfile[]; error: string | null }> {
   try {
