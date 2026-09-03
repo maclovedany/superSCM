@@ -15,7 +15,7 @@ Supabase → SQL Editor 에 **파일 하나를 통째로** 붙여넣고 실행�
 | 6 | `08-import.sql` | 적재 파이프라인 — 업로드 배치 · 스테이징 · 검증 |
 | 7 | `09-import-commit.sql` | 적재 확정을 SQL 함수로 (`core.import_commit` · `core.rollback_batch`) |
 | 8 | `10-demand-profile.sql` | 수요 패턴 분석 (SKU Demand Profile) |
-| 9 | `11-forecast-engine.sql` | Forecast Engine — SQL Baseline 모델 |
+| 9 | `11-forecast-engine.sql` | Forecast Engine — SQL Baseline 모델. `analytics.v_forecast_run` 을 **drop 후 create** 하므로 다시 실행하면 뒤 파일을 전부 이어서 실행해야 합니다 |
 | 10 | `12-forecast-summary.sql` | 예측 결과 조회 뷰 |
 | 11 | `13-backtest.sql` | Backtest Engine + Champion Model |
 | 12 | `25-python-models.sql` | ★ Python 예측 서비스 등록 + `core.is_admin()` 확장 — **번호보다 여기서 실행하세요** |
@@ -65,7 +65,7 @@ Supabase → SQL Editor 에 **파일 하나를 통째로** 붙여넣고 실행�
 
 ## 2. 다시 실행할 때 (★ 가장 중요)
 
-`15` · `16` · `17` · `18` · `19` · `20` · `21` 의 `drop view` 는 전부 **cascade** 입니다.
+`11` · `15` · `16` · `17` · `18` · `19` · `20` · `21` 의 `drop view` 는 전부 **cascade** 입니다.
 cascade 가 없으면 뒤 번호 파일이 그 뷰 위에 뷰를 만든 순간부터
 `cannot drop … because other objects depend on it` 으로 **재실행 자체가 막힙니다.**
 

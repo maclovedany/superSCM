@@ -431,7 +431,26 @@ select m.model_id, m.model_name, m.family, m.engine, m.version, m.enabled, m.is_
        (select count(*) from core.model_version v where v.model_id = m.model_id) as version_count
   from core.model_config m;
 
-create or replace view analytics.v_forecast_run as
+-- ★ `create or replace view` 가 아니라 drop 후 create 입니다.
+--
+--   이 뷰는 `select r.*` 로 만들고, `*` 는 **뷰를 만드는 시점에** 컬럼 목록으로
+--   펼쳐져 고정됩니다. 그래서 위에서 `core.forecast_run` 에 `mode` 를 add column
+--   해도, 이미 존재하는 뷰에 `create or replace` 를 걸면 새 컬럼이 `result_rows`
+--   **앞**에 끼어들려 하고 PostgreSQL 이 거부합니다:
+--     오류: 뷰에서 "result_rows" 칼럼 이름을 "mode"(으)로 바꿀 수 없음
+--   (create or replace view 는 맨 뒤에 덧붙이는 것만 허용합니다.)
+--
+--   그 상태로 넘어가면 뷰에 `mode` 가 없는 채로 남고, sql/21 이 `fr.mode` 를 읽을 때
+--   PostgreSQL 이 이를 컬럼이 아니라 **함수 호출 `mode(fr)`** 로 해석해
+--   "WITHIN GROUP is required for ordered-set aggregate mode" 로 실패합니다.
+--   컬럼이 없다는 말 대신 엉뚱한 오류가 나와 원인이 가려집니다 (error.md #27).
+--
+--   cascade 가 뒤 파일(12 · 16 · 19 · 21 · 26 · 27)의 뷰를 함께 지웁니다.
+--   sql/README.md 의 규칙 그대로 — **이 파일을 다시 실행했으면 뒤 파일을 순서대로
+--   다시 실행하세요.**
+drop view if exists analytics.v_forecast_run cascade;
+
+create view analytics.v_forecast_run as
 select r.*,
        (select count(*) from core.forecast_result f where f.run_id = r.run_id) as result_rows,
        -- 실행 이후 데이터가 바뀌었으면 이 예측은 stale 합니다 (renew.prd 8.6)

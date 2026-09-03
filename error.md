@@ -34,7 +34,7 @@
 | `kpi-filter` 예외를 적었는데 `npm test` 가 계속 실패 | JSX 주석 `{/* */}` 은 검사 정규식(`//`)에 안 걸림 | [#24](#24-kpi-filter-없음-예외-주석은--여야-한다-jsx-주석은-안-걸린다) |
 | `structure of query does not match function result type` | `information_schema` 컬럼은 `text` 가 아니라 `sql_identifier` | [#25](#25-structure-of-query-does-not-match-function-result-type--information_schema-컬럼은-text-가-아니다) |
 | `permission denied for schema analytics` — secret 키인데도 | `service_role` 의 RLS 우회는 GRANT 를 면제하지 않음 | [#26](#26-service_role-은-rls-만-우회한다--grant-는-우회하지-않는다) |
-| `WITHIN GROUP is required for ordered-set aggregate mode` | 정렬식의 컬럼 이름이 `mode` | [#27](#27-within-group-is-required-for-ordered-set-aggregate-mode--컬럼-이름이-mode-일-때) |
+| `WITHIN GROUP is required for ordered-set aggregate mode` | 실은 그 컬럼이 뷰에 없음 (`X.Y` → `Y(X)` 로 해석됨) | [#27](#27-within-group-is-required-for-ordered-set-aggregate-mode--실은-컬럼이-없다-는-뜻) |
 
 > **Supabase 3층 구조를 먼저 기억하면 #3·#4·#5 를 헷갈리지 않습니다.**
 >
@@ -652,29 +652,42 @@ grant select on analytics.v_stockout_risk to service_role;   -- 필요한 것만
 
 ---
 
-## #27 `WITHIN GROUP is required for ordered-set aggregate mode` — 컬럼 이름이 `mode` 일 때
+## #27 `WITHIN GROUP is required for ordered-set aggregate mode` — 실은 "컬럼이 없다" 는 뜻
 
 ```
 ERROR:  42809: WITHIN GROUP is required for ordered-set aggregate mode
-LINE 140:    order by (fr.mode = 'PRODUCTION') desc, fr.started_at desc
-                       ^
+LINE 146:    order by case when fr.mode = 'PRODUCTION' then 0 else 1 end,
+                                  ^
 ```
 
-**증상** `sql/21-dashboard.sql` · `sql/27-admin-ops.sql` 을 Supabase SQL Editor 에 붙여넣으면 이 오류로 거부됩니다. 로컬 PostgreSQL 17.10 에서 같은 스키마·뷰·CTE 구조로 재현을 시도했으나 **재현되지 않았습니다** — 순수 문법으로는 `fr.mode = 'PRODUCTION'` 은 평범한 컬럼 비교이지 `mode()` 집계 호출이 아닙니다. 원인을 확정하지 못했습니다(운영 DB 의 특정 확장·버전·SQL Editor 전처리 중 하나로 추정).
+**증상** `sql/21-dashboard.sql` 을 SQL Editor 에 붙여넣으면 이 오류로 거부됩니다. 정렬식을 `case` 로 바꿔도 그대로 납니다.
 
-**증상이 나는 자리** `order by (컬럼 = '값') desc` 형태에서 그 컬럼 이름이 하필 `mode` 일 때. `mode` 는 PostgreSQL 의 순서 집계 함수(`mode() within group (order by …)`) 와 이름이 같습니다.
+**원인 ★ 오류 메시지가 원인을 가립니다.** 진짜 원인은 **`analytics.v_forecast_run` 에 `mode` 컬럼이 없는 것**입니다.
 
-**해결** 원인을 몰라도 형태 자체를 없애면 안전합니다. 괄호 있는 불린 정렬식을 `case` 식으로 바꿉니다.
+PostgreSQL 은 `fr.mode` 를 컬럼으로 찾지 못하면 이를 **함수 호출 `mode(fr)`** 로 해석합니다(테이블.함수 표기법). 그런데 `mode()` 가 하필 순서 집계 함수라 "WITHIN GROUP 이 필요하다" 고 말합니다. `column "fr.mode" does not exist` 가 아니라 엉뚱한 메시지가 나오는 이유입니다.
+
+**왜 컬럼이 없어졌나** `analytics.v_forecast_run` 은 `select r.*` 로 만듭니다. `*` 는 **뷰를 만드는 시점에** 컬럼 목록으로 펼쳐져 고정됩니다. `core.forecast_run` 에 `mode` 를 나중에 add column 해도, 이미 있는 뷰에 `create or replace view` 를 걸면 새 컬럼이 `result_rows` **앞**에 끼어들려 하고 PostgreSQL 이 거부합니다.
+
+```
+오류: 뷰에서 "result_rows" 칼럼 이름을 "mode"(으)로 바꿀 수 없음
+```
+
+`create or replace view` 는 **맨 뒤에 덧붙이는 것만** 허용합니다. 그 오류를 지나치면 뷰는 옛 모양(= `mode` 없음)으로 남습니다.
+
+**해결** `sql/11-forecast-engine.sql` 이 이 뷰를 `create or replace` 가 아니라 **drop 후 create** 합니다.
 
 ```sql
--- ✕ 특정 환경에서 거부됨
-order by (fr.mode = 'PRODUCTION') desc, fr.started_at desc
-
--- ○
-order by case when fr.mode = 'PRODUCTION' then 0 else 1 end,
-         fr.started_at desc
+drop view if exists analytics.v_forecast_run cascade;
+create view analytics.v_forecast_run as select r.*, ... from core.forecast_run r;
 ```
 
-두 식은 결과가 같습니다 — `PRODUCTION` 이 먼저, 그 안에서 `started_at` 내림차순.
+cascade 가 뒤 파일의 뷰를 함께 지우므로, `sql/README.md` 의 규칙대로 **11 을 다시 실행했으면 뒤 파일을 순서대로 다시 실행**합니다.
 
-**예방** 정렬 기준으로 쓰는 컬럼 이름이 `mode` · `rank` · `percentile_cont` · `percentile_disc` · `cume_dist` · `dense_rank` 등 PostgreSQL 내장 함수·집계 이름과 겹치면, 괄호로 감싼 불린 식보다 `case` 식을 기본으로 씁니다. (STEP 20 산출물을 실제 Supabase 에 적용하며 발견 · 로컬 하네스로 수정 후 26/26 재확인)
+**왜 로컬 하네스가 못 잡았나** 하네스가 쓰는 덤프에는 `analytics.v_forecast_run` 이 **없습니다**. 항상 새로 만들어지니 `create or replace` 가 늘 성공했습니다. **재실행 오류는 "이미 있는 상태" 를 만들어야만 드러납니다.**
+
+**예방** 뷰를 `select r.*` 로 만들고 그 뒤에 계산 컬럼을 붙이는 형태라면, 원본 테이블에 컬럼이 늘 수 있는 한 `create or replace` 가 아니라 drop 후 create 로 둡니다. 그리고 `X.Y` 가 "컬럼 없음" 이 아니라 이상한 함수 오류로 나오면, **Y 라는 컬럼이 정말 있는지부터** 보세요.
+
+```sql
+select column_name from information_schema.columns
+ where table_schema='analytics' and table_name='v_forecast_run';
+```
