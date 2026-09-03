@@ -1,0 +1,4 @@
+# 선택 설치. Prophet 은 빌드가 무겁고 환경을 많이 탑니다.
+#   .venv/bin/pip install -r requirements-optional.txt
+# 설치하지 않으면 registry 가 PROPHET 을 등록하지 않고 조용히 건너뜁니다.
+prophet>=1.1,<2.0

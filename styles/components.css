@@ -1,0 +1,1334 @@
+/* ──────────────────────────────────────────────────────────────
+   컴포넌트 — 카드 · 배지 · 버튼 · 표 · 알림 · 배너 · 폼
+   design.md §6 · §8
+   ────────────────────────────────────────────────────────────── */
+
+/* ── 패널 카드 ── design.md §6.5
+   테두리로 감싸지 않습니다. 그림자가 층을 만듭니다. */
+
+.panel {
+  background: var(--surface-2);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+/* 표가 모서리를 넘지 않게 합니다 */
+.panel > .panel-body.flush {
+  overflow: hidden;
+  border-radius: 0 0 var(--r-lg) var(--r-lg);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-5) var(--s-6);
+}
+
+.panel-head-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.panel-body {
+  padding: 0 var(--s-6) var(--s-6);
+}
+
+/* 표처럼 자체 여백이 있는 내용 */
+.panel-body.flush {
+  padding: 0;
+}
+
+.panel-body.flush::before {
+  content: "";
+  display: block;
+  height: 1px;
+  background: var(--border);
+}
+
+/* 헤더가 없는 패널은 위 여백을 되살립니다 */
+.panel > .panel-body:first-child {
+  padding-top: var(--s-6);
+}
+
+/* ── KPI 카드 ── design.md §6.4 ────────────────────────────── */
+
+/* 요약 카드만 큰 라운드 + 옅은 파랑 그라디언트입니다.
+   패널·레일 같은 다른 면은 흰색 그대로 둡니다 (design.md §6.4). */
+.kpi {
+  background: var(--kpi-bg);
+  border-radius: var(--kpi-radius);
+  /* 앞에 적은 그림자가 위에 그려집니다.
+     빛(rim) 이 윤곽선(edge) 을 덮어야 왼쪽 위가 밝아 보입니다. */
+  box-shadow: var(--kpi-rim), var(--kpi-edge), var(--kpi-shadow);
+  padding: var(--s-6) var(--s-6) var(--s-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  min-width: 0;
+}
+
+.kpi-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.kpi-head-icon {
+  margin-left: auto;
+  flex: none;
+  color: var(--text-3);
+}
+
+.kpi-value {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* 굵기 500 입니다. 700 으로 만들지 마세요 (design.md §14-9) */
+.kpi-number {
+  font-size: 48px;
+  line-height: 52px;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+}
+
+.kpi-unit {
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.kpi-delta {
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi-delta.up { color: var(--safe-fg); }
+.kpi-delta.down { color: var(--crit-fg); }
+.kpi-delta.flat { color: var(--text-3); }
+
+.kpi-foot {
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+/* ── 누를 수 있는 카드 ── design.md §6.4 ★
+   목록으로 좁힐 수 있는 카드만 이 모양을 갖습니다. */
+
+.kpi.clickable {
+  cursor: pointer;
+  position: relative;
+  transform-origin: center;
+  transition:
+    transform var(--t-lift) var(--ease-lift),
+    box-shadow var(--t-lift) var(--ease-lift);
+  will-change: transform;
+}
+
+/* hover — 확실히 들어올리고 네온 시안 테두리를 두릅니다.
+   테두리를 inset 그림자로 그리는 이유: border 를 쓰면 레이아웃이 1.5px 밀립니다. */
+.kpi.clickable:hover,
+.kpi.clickable:focus-visible {
+  z-index: 2;
+  transform: translateY(-5px) scale(1.02);
+  /* 더 높이 떠오르면서 네온 테두리를 두릅니다.
+     부드러운 두 광원은 그대로 두고 네온만 얹습니다. */
+  box-shadow:
+    inset 0 0 0 1.5px var(--neon-strong),
+    0 0 0 4px var(--neon-glow),
+    0 0 22px var(--neon-glow-wide),
+    var(--kpi-shadow-hover);
+}
+
+/* 키보드 사용자도 같은 신호를 받습니다. 기본 파란 외곽선은 겹치지 않게 뺍니다 */
+.kpi.clickable:focus-visible {
+  outline: none;
+}
+
+/* 누르는 순간에는 살짝 눌립니다 */
+.kpi.clickable:active {
+  transform: translateY(-1px) scale(1.004);
+  transition-duration: 90ms;
+}
+
+/* 지금 걸려 있는 필터. 색이 아니라 명도로 표시해 상태색과 겹치지 않게 합니다 */
+/* 필터가 걸린 카드는 눌려 들어갑니다.
+   뉴모피즘에서 inset 은 "눌린 상태" 를 뜻하므로, 의미와 형태가 맞아떨어집니다.
+   그라디언트 방향도 뒤집습니다. 눌리면 위쪽이 그늘집니다. */
+.kpi.selected,
+.kpi.selected.crit,
+.kpi.selected.warn {
+  background: var(--kpi-bg-pressed);
+  box-shadow: var(--kpi-edge), var(--shadow-inset);
+  transform: none;
+}
+
+/* hover 는 상태·선택 변형보다 우선합니다. 지금 가리키는 곳이 가장 분명해야 합니다 */
+.kpi.clickable.crit:hover,
+.kpi.clickable.warn:hover,
+.kpi.clickable.crit:focus-visible,
+.kpi.clickable.warn:focus-visible {
+  box-shadow:
+    inset 0 0 0 1.5px var(--neon-strong),
+    0 0 0 4px var(--neon-glow),
+    0 0 22px var(--neon-glow-wide),
+    var(--kpi-shadow-hover);
+}
+
+/* 선택된 카드는 눌린 채로 네온만 두릅니다. 다시 떠오르면 "풀렸나?" 로 읽힙니다 */
+.kpi.clickable.selected:hover,
+.kpi.clickable.selected:focus-visible {
+  transform: none;
+  box-shadow:
+    inset 0 0 0 1.5px var(--neon-strong),
+    var(--shadow-inset),
+    0 0 18px var(--neon-glow-wide);
+}
+
+/* 값이 없는 카드도 윤곽은 같습니다 */
+.kpi:not(.clickable) {
+  box-shadow: var(--kpi-rim), var(--kpi-edge), var(--kpi-shadow);
+}
+
+/* 그라디언트가 모서리를 넘지 않게 합니다 */
+.kpi {
+  background-origin: border-box;
+}
+
+/* 누를 수 있다는 신호. hover 때만 드러냅니다 */
+.kpi.clickable::after {
+  content: "목록 보기";
+  position: absolute;
+  right: var(--s-6);
+  bottom: var(--s-5);
+  font-size: 11.5px;
+  color: var(--neon-strong);
+  font-weight: 500;
+  opacity: 0;
+  transform: translateY(3px);
+  transition:
+    opacity var(--t-base) var(--ease-lift),
+    transform var(--t-base) var(--ease-lift);
+}
+
+.kpi.clickable:hover::after,
+.kpi.clickable:focus-visible::after {
+  opacity: 1;
+  transform: none;
+}
+
+.kpi.selected::after {
+  content: "필터 적용됨";
+  opacity: 1;
+  transform: none;
+  color: var(--text-2);
+}
+
+.kpi.selected:hover::after {
+  color: var(--neon-strong);
+}
+
+/* 움직임을 끈 사용자에게는 크기 변화 없이 테두리로만 알립니다 */
+@media (prefers-reduced-motion: reduce) {
+  .kpi.clickable:hover,
+  .kpi.clickable:focus-visible {
+    transform: none;
+  }
+}
+
+/* ── 필터 알림 줄 ── */
+
+.filter-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-pill);
+  font-size: 13.5px;
+  color: var(--text-2);
+}
+
+.filter-notice b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.filter-notice .btn {
+  margin-left: auto;
+}
+
+/* 상태 변형 — 배경으로 알립니다. 그림자는 뺍니다 */
+.kpi.crit {
+  background: var(--kpi-bg-crit);
+  box-shadow: var(--kpi-rim), var(--kpi-edge-crit), var(--kpi-shadow);
+}
+.kpi.crit .kpi-number { color: var(--crit-fg); }
+.kpi.crit .kpi-head,
+.kpi.crit .kpi-head-icon,
+.kpi.crit .kpi-foot { color: var(--crit-fg); opacity: 0.8; }
+
+.kpi.warn {
+  background: var(--kpi-bg-warn);
+  box-shadow: var(--kpi-rim), var(--kpi-edge-warn), var(--kpi-shadow);
+}
+.kpi.warn .kpi-number { color: var(--warn-fg); }
+.kpi.warn .kpi-head,
+.kpi.warn .kpi-head-icon,
+.kpi.warn .kpi-foot { color: var(--warn-fg); opacity: 0.8; }
+
+/* ── 배지 ── design.md §6.6
+   옅은 배경 + 진한 글자. 테두리도 대문자도 쓰지 않습니다. */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 500;
+  padding: 5px 10px;
+  border-radius: var(--r-pill);
+  white-space: nowrap;
+}
+
+.badge.safe { color: var(--safe-fg); background: var(--safe-bg); }
+.badge.warn { color: var(--warn-fg); background: var(--warn-bg); }
+.badge.crit { color: var(--crit-fg); background: var(--crit-bg); }
+.badge.unknown { color: var(--unknown-fg); background: var(--unknown-bg); }
+.badge.info { color: var(--info-fg); background: var(--info-bg); }
+.badge.plain { color: var(--text-2); background: var(--surface-3); }
+
+/* ── 버튼 ── design.md §6.7 ────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  height: 36px;
+  padding: 0 var(--s-4);
+  border-radius: var(--r-md);
+  border: 1px solid transparent;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn.lg {
+  height: 42px;
+  padding: 0 var(--s-5);
+  font-size: 14px;
+}
+
+.btn.block {
+  width: 100%;
+}
+
+.btn.primary {
+  background: var(--primary);
+  color: var(--text-on-accent);
+  box-shadow: -2px -2px 6px var(--nm-light), 3px 3px 8px rgba(37, 99, 235, 0.35);
+}
+.btn.primary:hover:not(:disabled) {
+  background: var(--primary-hover);
+  box-shadow: -2px -2px 6px var(--nm-light), 4px 4px 12px rgba(37, 99, 235, 0.45);
+}
+.btn.primary:active:not(:disabled) {
+  box-shadow: inset 2px 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+.btn.secondary {
+  background: var(--surface-1);
+  color: var(--text-1);
+  box-shadow: var(--shadow-pill);
+}
+.btn.secondary:hover:not(:disabled) {
+  box-shadow: -3px -3px 7px var(--nm-light), 3px 3px 7px var(--nm-dark);
+}
+/* 누르면 들어갑니다 */
+.btn.secondary:active:not(:disabled) {
+  box-shadow: var(--shadow-inset-sm);
+}
+
+.btn.outlined {
+  background: transparent;
+  color: var(--text-2);
+  border-color: var(--border-strong);
+}
+.btn.outlined:active:not(:disabled) {
+  box-shadow: var(--shadow-inset-sm);
+}
+.btn.outlined:hover:not(:disabled) {
+  color: var(--text-1);
+}
+
+.btn.ghost {
+  background: transparent;
+  color: var(--text-2);
+}
+.btn.ghost:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text-1);
+}
+
+.btn.danger {
+  background: var(--danger);
+  color: var(--text-on-accent);
+}
+.btn.danger:hover:not(:disabled) {
+  background: var(--danger-hover);
+}
+
+/* 아이콘 버튼은 원형입니다 */
+.btn.icon {
+  width: 36px;
+  padding: 0;
+  border-radius: var(--r-pill);
+}
+
+/* ── 데이터 테이블 ── design.md §6.8
+   헤더를 대문자·고정폭으로 만들지 않습니다. */
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.table {
+  min-width: 100%;
+  font-size: 13.5px;
+}
+
+.table caption {
+  text-align: left;
+  padding: 0 var(--s-6) var(--s-3);
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-2);
+  /* 스크롤될 때 헤더가 행 위로 자연스럽게 겹칩니다 */
+  box-shadow: 0 1px 0 var(--border);
+  text-align: left;
+  padding: var(--s-3) var(--s-5);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: var(--s-3) var(--s-5);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  height: 52px;
+  vertical-align: middle;
+}
+
+.table tbody tr {
+  transition: background var(--t-fast) var(--ease);
+}
+
+.table tbody tr:hover {
+  background: var(--surface-3);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.table tbody tr.selected {
+  background: var(--primary-soft);
+}
+
+.table .cell-strong {
+  color: var(--text-1);
+  font-weight: 500;
+}
+
+/* 식별자만 고정폭입니다 */
+.table .cell-code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-1);
+}
+
+.table .cell-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+}
+
+/* ── 알림 행 ── design.md §6.9 ─────────────────────────────── */
+
+.alert-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  padding: var(--s-4) var(--s-5);
+  border-left: 3px solid var(--border-strong);
+}
+
+.alert-row.safe { border-left-color: var(--safe); }
+.alert-row.warn { border-left-color: var(--warn); }
+.alert-row.crit { border-left-color: var(--crit); }
+.alert-row.info { border-left-color: var(--info); }
+
+.alert-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+.alert-row-type {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.alert-row.safe .alert-row-type { color: var(--safe-fg); }
+.alert-row.warn .alert-row-type { color: var(--warn-fg); }
+.alert-row.crit .alert-row-type { color: var(--crit-fg); }
+.alert-row.info .alert-row-type { color: var(--info-fg); }
+
+.alert-row-time {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.alert-row-body {
+  font-size: 13.5px;
+  line-height: 21px;
+  color: var(--text-2);
+}
+
+.alert-list > * + * {
+  border-top: 1px solid var(--border);
+}
+
+/* ── 인사이트 배너 (AI) ── design.md §6.10
+   그라디언트를 쓰는 유일한 곳입니다. */
+
+.insight {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-5) var(--s-6);
+  border-radius: var(--r-lg);
+  background: linear-gradient(105deg, #eef2ff 0%, #f5f3ff 45%, #fdf4ff 100%);
+}
+
+.insight-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--info-fg);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.insight-body {
+  font-size: 14px;
+  line-height: 23px;
+  color: var(--text-2);
+}
+
+.insight-body b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.insight-body .hl-warn { color: var(--warn-fg); font-weight: 600; }
+.insight-body .hl-crit { color: var(--crit-fg); font-weight: 600; }
+.insight-body .hl-safe { color: var(--safe-fg); font-weight: 600; }
+
+.insight-actions {
+  display: flex;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+/* 데이터 신선도 경고 — design.md §8.4 */
+.stale-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-4) var(--s-5);
+  border-left: 3px solid var(--tertiary);
+  border-radius: 0 var(--r-md) var(--r-md) 0;
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  font-size: 13.5px;
+}
+
+.stale-banner .btn {
+  margin-left: auto;
+}
+
+/* ── AI 우측 레일 ── design.md §6.11 ───────────────────────── */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  background: var(--surface-1);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-sm);
+  padding: var(--s-6);
+}
+
+.rail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--text-1);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.rail-note {
+  padding: var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--surface-3);
+  box-shadow: var(--shadow-inset-sm);
+  font-size: 13.5px;
+  line-height: 21px;
+  color: var(--text-2);
+}
+
+.rail-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-2);
+}
+
+.rail-tile {
+  padding: var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-pill);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  min-width: 0;
+}
+
+.rail-tile.wide {
+  grid-column: 1 / -1;
+}
+
+.rail-tile-label {
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.rail-tile-value {
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+}
+
+/* ── 계산 불가 표기 ── design.md §8.2 ★ ────────────────────── */
+
+.empty-value {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  align-items: flex-start;
+}
+
+.empty-value.right {
+  align-items: flex-end;
+}
+
+.empty-value-dash {
+  color: var(--text-3);
+}
+
+.empty-value-reason {
+  font-size: 11.5px;
+  color: var(--unknown-fg);
+  white-space: nowrap;
+}
+
+/* ── 상태 메시지 ── AGENTS.md 규칙 3 ───────────────────────── */
+
+.state {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  align-items: center;
+  text-align: center;
+  padding: var(--s-10) var(--s-6);
+}
+
+.state-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.state-desc {
+  font-size: 13.5px;
+  color: var(--text-2);
+  max-width: 54ch;
+}
+
+.state.error .state-title {
+  color: var(--crit-fg);
+}
+
+.state-detail {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  padding: var(--s-2) var(--s-3);
+  background: var(--surface-3);
+  box-shadow: var(--shadow-inset-sm);
+  border-radius: var(--r-sm);
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* ── 메타 칩 ── design.md §6.3 ─────────────────────────────── */
+
+.meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  background: var(--surface-1);
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow-pill);
+  padding: 4px 10px;
+}
+
+.divider {
+  height: 1px;
+  background: var(--border);
+  border: none;
+  margin: 0;
+}
+
+/* ── 로그인 ── design.md §12 ───────────────────────────────── */
+
+.login-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: var(--s-6);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 400px;
+  box-shadow: var(--shadow-md);
+}
+
+.login-card .panel-body {
+  border-radius: var(--r-lg);
+}
+
+.login-body {
+  display: grid;
+  gap: var(--s-6);
+  padding: var(--s-8);
+}
+
+.login-brand {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.login-form {
+  display: grid;
+  gap: var(--s-4);
+}
+
+.field {
+  display: grid;
+  gap: var(--s-2);
+}
+
+.field input {
+  padding: 0 var(--s-4);
+  background: var(--surface-3);
+  border: none;
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-inset-sm);
+  color: var(--text-1);
+  font-size: 14px;
+}
+
+.field input::placeholder {
+  color: var(--text-3);
+}
+
+.field input:focus {
+  outline: none;
+  box-shadow: var(--shadow-inset-sm), 0 0 0 2px var(--primary);
+}
+
+.login-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--crit-bg);
+  color: var(--crit-fg);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+/* ── 403 ── */
+
+.forbidden {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-3);
+  text-align: center;
+  padding: var(--s-10) var(--s-6);
+}
+
+.forbidden-code {
+  font-size: 52px;
+  line-height: 1;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  color: var(--crit-fg);
+}
+
+/* ── 사용자 표시 (탑바) ── */
+
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  height: 32px;
+  padding: 0 var(--s-3) 0 var(--s-1);
+  border-radius: var(--r-pill);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-pill);
+}
+
+.user-chip-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-1);
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-chip-role {
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+/* ── 셀렉트 ── */
+
+.select {
+  height: 32px;
+  padding: 0 var(--s-3);
+  background: var(--surface-3);
+  border: none;
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-inset-sm);
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.select:focus {
+  outline: none;
+  box-shadow: var(--shadow-inset-sm), 0 0 0 2px var(--primary);
+}
+
+/* ── 업로드 ── design.md §6.12 ─────────────────────────────── */
+
+/* 폼 컨트롤은 모두 같은 높이입니다. 한 줄에 나란히 서기 때문입니다. */
+.field input,
+.field input[type='date'],
+.field .select,
+.dropzone {
+  height: 42px;
+}
+
+.dropzone {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 0 var(--s-4);
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-3);
+  box-shadow: var(--shadow-inset-sm);
+  color: var(--text-2);
+  font-size: 13.5px;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+
+/* 파일명이 길어도 박스를 밀지 않습니다 */
+.dropzone span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dropzone svg {
+  flex: none;
+  color: var(--text-3);
+}
+
+.dropzone:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+/* 컬럼 매핑 미리보기 */
+.mapping-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.mapping-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 5px 12px;
+  border-radius: var(--r-pill);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-pill);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.mapping-item b {
+  color: var(--text-1);
+  font-weight: 500;
+}
+
+.field input[type='date'] {
+  padding: 0 var(--s-4);
+  background: var(--surface-3);
+  border: none;
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-inset-sm);
+  color: var(--text-1);
+  font-size: 14px;
+}
+
+/* ── 표 안 상태 강조 ── design.md §8.1 ──────────────────────────
+   .hl-warn / .hl-crit 는 지금까지 인사이트 배너 안에서만 색이 붙었습니다.
+   기말 재고가 음수인 칸과 필요량은 표 안에서도 같은 뜻이라 같은 색을 씁니다.
+   배지가 함께 있으므로 색만으로 상태를 표현하지는 않습니다 (AGENTS.md 규칙 10). */
+.table .hl-warn { color: var(--warn-fg); font-weight: 600; }
+.table .hl-crit { color: var(--crit-fg); font-weight: 600; }
+
+/* ── 표 안 행 편집 폼 ── design.md §6.7 ─────────────────────────
+   표 셀 안에서 입력 두 칸과 아이콘 버튼 두 개가 한 줄에 섭니다.
+   폭을 화면 파일에 px 로 적지 않도록 여기 한 곳에 모읍니다 (design.md §14-1·2). */
+.row-form {
+  display: grid;
+  gap: var(--s-2);
+  min-width: 20rem;
+}
+
+.row-form-line {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.row-form .select.qty { width: 5.5rem; }
+.row-form .select.reason { width: 10rem; }
+
+/* ── 행 편집 폼의 사유 코드 select ── design.md §6.7 ────────────
+   Override 입력 폼(app/(user)/purchase-recommendation/[itemId]/override-row-form.tsx)의
+   사유 8종이 잘리지 않는 최소 폭입니다. 폭을 화면 파일에 px 로 적지 않습니다 (design.md §14-1·2). */
+.row-form .select.code { width: 9rem; }
+
+/* ── 알림 행의 컨트롤 줄 ── design.md §6.9 ─────────────────────
+   알림 하나에 [확인] 폼과 [상세] 링크가 함께 섭니다. 본문 아래 한 줄로 붙여
+   좌측 상태 막대의 세로선을 끊지 않습니다. 폭·간격을 화면 파일에 px 로 적지
+   않도록 여기 한 곳에 모읍니다 (design.md §14-1·2). */
+.alert-row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  margin-top: var(--s-2);
+}
+
+.alert-row-actions form {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+/* 알림 본문 안의 보조 문단 — 영향 · 권고 행동 */
+.alert-row-body .alert-row-note {
+  margin-top: var(--s-1);
+  color: var(--text-3);
+}
+
+/* ── AI Agent 대화 ── design.md §6.10 · §6.11 ──────────────────
+   renew.prd 26장의 질의 화면입니다. 답변은 옅은 파랑–보라 배너(.insight)가 아니라
+   흰 면 위에 놓입니다 — 배너는 화면에 하나만 서야 눈에 띕니다(design.md §6.10).
+   여기서는 근거 타일에 기존 .rail-tile 을 그대로 씁니다. */
+
+.agent-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-4);
+  border: none;
+  border-radius: var(--r-pill);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-pill);
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.agent-chip:hover:not(:disabled) {
+  color: var(--text-1);
+}
+
+.agent-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 질문 입력. .field input 은 높이가 42px 로 고정되어 있어 여러 줄을 받지 못합니다. */
+.field textarea {
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface-3);
+  border: none;
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-inset-sm);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  resize: vertical;
+}
+
+.field textarea::placeholder {
+  color: var(--text-3);
+}
+
+.field textarea:focus {
+  outline: none;
+  box-shadow: var(--shadow-inset-sm), 0 0 0 2px var(--primary);
+}
+
+.agent-thread {
+  display: grid;
+  gap: var(--s-6);
+}
+
+.agent-turn {
+  display: grid;
+  gap: var(--s-3);
+}
+
+/* 사람이 물은 문장 — 눌린 면에 둡니다 */
+.agent-question {
+  padding: var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--surface-3);
+  box-shadow: var(--shadow-inset-sm);
+  color: var(--text-1);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.agent-answer {
+  display: grid;
+  gap: var(--s-3);
+  color: var(--text-1);
+  font-size: 14px;
+  line-height: 23px;
+}
+
+/* 산출 불가 답변 — 회색 전용 (design.md §8.2) */
+.agent-answer.unknown {
+  padding: var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--unknown-bg);
+  color: var(--unknown-fg);
+}
+
+.agent-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+/* 접힌 툴 호출 목록 */
+.agent-tools > summary {
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.agent-tools > ul {
+  list-style: none;
+  margin: var(--s-2) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--s-1);
+}
+
+.agent-tool-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+/* 최근 대화 목록 (우측 패널) */
+.agent-convo-list {
+  display: grid;
+  gap: var(--s-2);
+}
+
+.agent-convo-link {
+  display: grid;
+  gap: 2px;
+  padding: var(--s-3);
+  border-radius: var(--r-md);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-pill);
+  color: var(--text-1);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.agent-convo-link.active {
+  box-shadow: var(--shadow-inset-sm);
+  background: var(--surface-3);
+}
+
+/* ── KPI 카드 링크 ── design.md §6.4 ────────────────────────────
+   filter 는 같은 화면의 목록을 좁히고, href 는 다른 화면을 엽니다.
+   hover 신호(네온 테두리)는 같아야 하지만 안내 문구는 달라야 합니다 —
+   대시보드 카드를 눌러도 그 자리에서 목록이 좁혀지지는 않습니다. */
+
+.kpi.clickable.linked::after {
+  content: "화면 열기";
+}
+
+/* ── 스파크라인 ── design.md §7 ─────────────────────────────────
+   표 한 칸에 들어가는 소형 선입니다. recharts 의 ResponsiveContainer 는
+   부모의 높이를 재므로 여기서 상자 크기를 정해 줍니다. */
+
+.sparkline {
+  width: 100%;
+  min-width: 84px;
+  max-width: 132px;
+  height: 36px;
+}
+
+/* ── 품목 칩 목록 ── design.md §6 ───────────────────────────────
+   품목 코드 + 상태 배지를 알약으로 늘어놓고, 누르면 그 품목 화면으로 갑니다.
+   차트 범례(.chart-legend-item)와 생김새가 비슷하지만 역할이 다릅니다 —
+   범례는 시리즈를 켜고 끄는 토글이고 이것은 링크입니다. 눌린 상태가 없습니다. */
+
+.chip-list {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 5px 12px;
+  border-radius: var(--r-pill);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-pill);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  text-decoration: none;
+  transition: box-shadow var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+
+.chip:hover {
+  color: var(--text-1);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ── 정확도 랭킹 막대 ── design.md §7.4 ─────────────────────────
+   차트가 아니라 CSS 폭 막대입니다. 값 하나를 비교하는 데 축과 범례를 세우지 않습니다.
+   폭(%)은 analytics.v_dashboard_accuracy_ranking.bar_pct 가 이미 계산해 둔 값입니다. */
+
+.rank-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.rank-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--s-1) var(--s-3);
+  align-items: center;
+}
+
+.rank-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+.rank-row-value {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
+
+.rank-bar {
+  grid-column: 1 / -1;
+  height: 6px;
+  border-radius: var(--r-sm);
+  background: var(--surface-3);
+  box-shadow: var(--shadow-inset-sm);
+  overflow: hidden;
+}
+
+.rank-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-sm);
+  background: var(--safe);
+}
+
+.rank-bar-fill.crit {
+  background: var(--crit);
+}
+
+/* ── code-block ── design.md §6.12 (mono 코드 블록 · --surface-3) */
+/* curl 예시와 API 키 원문처럼 "그대로 복사해야 하는 문자열" 을 담습니다. */
+.code-block {
+  display: block;
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--surface-3);
+  box-shadow: var(--shadow-inset-sm);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-1);
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.code-block + .code-block {
+  margin-top: var(--s-3);
+}
+
+/* ── api-secret ── design.md §6.12 · renew.prd 9.3 */
+/* 발급 직후 원문을 한 번만 보여주는 자리입니다. 다시 볼 수 없다는 것을 색과 글자로 함께 말합니다. */
+.api-secret {
+  display: grid;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--warn-bg);
+  box-shadow: var(--shadow-inset-sm);
+}
+
+.api-secret-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--warn-fg);
+}
+
+.api-secret-note {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.api-secret .code-block {
+  background: var(--surface-2);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── scope-picker ── design.md §6.12 */
+/* scope 6종을 체크박스로 고르는 자리입니다. 한 줄에 여러 개가 흐르도록 둡니다. */
+.scope-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-4);
+}
+
+.scope-option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.scope-option code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-1);
+}

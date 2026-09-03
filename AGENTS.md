@@ -1,24 +1,37 @@
 # 4회차 프로젝트 작업 규칙
 
-> Codex 에게 기능을 시킬 때 이 파일과 `SCHEMA.md` 를 먼저 읽으라고 하세요.
+> 기능을 시킬 때 이 파일과 `SCHEMA.md` · `design.md` 를 먼저 읽으라고 하세요.
 > 그래야 12명이 각자 만들어도 같은 모양이 나옵니다.
 >
 > ```
-> AGENTS.md 와 SCHEMA.md 를 먼저 읽어줘.
-> 그다음 app/analysis/leadtime/page.tsx 를 참고해서 (요구사항)을 만들어줘.
+> AGENTS.md · SCHEMA.md · design.md 를 먼저 읽어줘.
+> 그다음 (요구사항)을 만들어줘.
 > ```
+>
+> | 문서 | 담당 |
+> |---|---|
+> | `AGENTS.md` | 작업 규칙 (이 파일) |
+> | `SCHEMA.md` | 데이터 구조 |
+> | `design.md` | **화면 디자인 — 색·글꼴·컴포넌트** |
+> | `step.md` | 구현 순서 |
+> | `renew.prd` | 제품 요구사항 |
 
 ## 이 프로젝트가 무엇인가
 
-한국후지필름BI 의 월간 발주계획 시스템 프로토타입입니다.
-해외 생산법인 12곳에서 부품을 조달하며, 매달 발주량을 계산합니다.
+한국후지필름BI 의 **AI 기반 SCM 의사결정 플랫폼** 입니다. 서비스명은 **SuperSCM** 입니다.
+해외 생산법인 12곳에서 부품을 조달하며, 수요를 예측하고 · 예측을 검증하고 · 발주 시점과 수량을 추천합니다.
+
+전체 요구사항은 `renew.prd`, 구현 순서는 `step.md` 에 있습니다.
 
 ## 기술 스택
 
 - Next.js 15 (App Router) · React 19 · TypeScript
-- 스타일: **순수 CSS** (`app/globals.css`). Tailwind 를 쓰지 않습니다.
+- 스타일: **순수 CSS + 토큰**. 기준은 `design.md` 입니다. Tailwind 를 쓰지 않습니다
+- 테마: **다크 전용**. 라이트 테마를 만들지 않습니다
+- 글꼴: Pretendard(한글) · Inter(영문·숫자) · JetBrains Mono(코드·수치)
+- 차트: **`recharts@3.10.1`**. `components/chart/` 안에서만 import 합니다
 - DB: Supabase (PostgreSQL)
-- 차트 라이브러리 없음
+- 인증: Supabase Auth + RLS
 
 ---
 
@@ -43,16 +56,27 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY  publishable 키 (sb_publishable_…)
 
 ## 코드 구조
 
-새 분석 화면을 만들 때 이 순서를 따릅니다.
+새 화면을 만들 때 이 순서를 따릅니다.
 
 ```
-1  lib/scm-model.ts   타입과 정규화 함수를 먼저 추가
-2  lib/scm.ts         조회 함수를 추가
-3  app/analysis/<이름>/page.tsx   화면을 만든다
-4  components/analysis/*          껍데기와 표는 재사용
+1  SQL 뷰             analytics 에 계산 결과를 만든다
+2  lib/scm-model.ts   타입과 정규화 함수를 추가
+3  lib/scm.ts         조회 함수를 추가
+4  app/(user|admin)/<이름>/page.tsx   서버 컴포넌트로 조회
+5  components/*                       design.md 의 컴포넌트를 조립
 ```
 
-`app/analysis/leadtime/page.tsx` 가 본보기입니다. 같은 구조로 만듭니다.
+**계산은 1번에서 끝냅니다.** 4·5번에서 평균을 내거나 분위수를 구하지 않습니다.
+
+### 서버 · 클라이언트 경계
+
+```
+서버 컴포넌트      lib/scm.ts 로 조회 · 권한 검증
+      ↓ props
+클라이언트 컴포넌트  차트 · 토글 · 폼만 'use client'
+```
+
+차트 컴포넌트 안에서 계산하지 않습니다. 이미 계산된 값을 받아 그리기만 합니다.
 
 ### 정규화 함수를 두는 이유
 
@@ -68,22 +92,31 @@ supplier: value(row, ['supplier_name', '법인', '공급업체명']) ?? '미정'
 
 ## 반드시 지킬 것
 
-### 1. 새 CSS 프레임워크를 추가하지 않는다
+### 1. `design.md` 의 토큰만 쓴다
 
-Tailwind, styled-components, CSS Modules 등을 새로 넣지 마세요.
-`app/globals.css` 에 이미 있는 클래스를 씁니다. 부족하면 그 파일 끝에 추가합니다.
+색·간격·글꼴을 화면 파일에 직접 쓰지 않습니다. **CSS 변수만 씁니다.**
 
-**쓸 수 있는 클래스**
+```css
+/* ✕ 반려 */
+color: #10B981;  padding: 15px;  font-size: 13.5px;
+
+/* ○ */
+color: var(--secondary);  padding: var(--s-4);  font: var(--label);
+```
+
+스타일 파일은 네 개뿐입니다. 화면별 CSS 파일을 만들지 마세요.
 
 ```
-레이아웃   app-shell  sidebar  main  topbar  content  section
-분석 화면  analysis-page  analysis-heading  analysis-table-wrap  analysis-table
-카드       card  card-title  metric  metric-label  metric-value  metric-foot
-그리드     grid  grid-2  grid-3  grid-4
-배지       tag  tag green  tag amber  tag gray  local-badge
-버튼       button  button primary  button-row
-텍스트     eyebrow  muted  positive  text-good  text-danger
+app/globals.css        토큰 · 리셋 · 폰트
+styles/shell.css       사이드바 · 탑바 · 페이지 골격
+styles/components.css  카드 · 배지 · 버튼 · 표 · 알림
+styles/chart.css       차트 껍데기
 ```
+
+새 컴포넌트가 필요하면 `design.md` §6 에 스펙을 먼저 추가하고 만듭니다.
+Tailwind · styled-components · CSS Modules 를 새로 넣지 않습니다 (`design.md` §13.1).
+
+**기존 클래스(`card` · `metric` · `tag` · `analysis-*`)는 전부 폐기되었습니다.** 이름을 재사용하지 마세요.
 
 ### 2. 숫자 계산은 SQL 이 한다
 
@@ -100,12 +133,20 @@ if (rows.length === 0) return <p>표시할 데이터가 없습니다.</p>;
 빈 배열이 왔을 때 "데이터가 없다" 로만 표시하면,
 Exposed schemas 설정 누락 같은 문제를 놓칩니다.
 
-### 4. 기존 파일을 함부로 고치지 않는다
+### 4. 새 기능은 새 파일로 만든다
 
-새 기능은 **새 파일**로 만듭니다.
-`components/workflow/` 아래 6개 스텝 파일은 되도록 건드리지 마세요.
+`components/workflow/` 아래 6개 스텝 파일은 **하드코딩 데모이며 폐기 예정**입니다.
+고치지 말고, `renew.prd` 의 화면으로 새로 만듭니다 (`step.md` STEP 1).
 
-새 분석 화면 위치: `app/analysis/<기능이름>/page.tsx`
+**화면 위치**
+
+```
+app/(auth)/…      로그인
+app/(user)/…      Dashboard · Forecast · Model Comparison · Inventory · Recommendation
+app/(admin)/…     Users · Models · Policies · Data · API
+```
+
+메뉴 정의는 `lib/menu.ts` 한 곳에만 둡니다.
 
 ### 5. 계산 불가를 숫자로 채우지 않는다
 
@@ -113,10 +154,13 @@ Exposed schemas 설정 누락 같은 문제를 놓칩니다.
 
 ```ts
 stockoutDays: number | null;
-reason?: 'NO_USAGE' | 'NO_LEADTIME';
+reason?: 'NO_USAGE_HISTORY' | 'NO_LEADTIME' | 'NO_INVENTORY_DATA' | 'INSUFFICIENT_SAMPLE';
 ```
 
-`999` 같은 값을 넣으면 6회차에 GPT 가 "999일 뒤에 소진됩니다" 라고 설명하게 됩니다.
+`999` 같은 값을 넣으면 AI Agent 가 "999일 뒤에 소진됩니다" 라고 설명하게 됩니다.
+
+**화면에서도 숫자로 채우지 않습니다.** `—`(em dash) 와 사유 코드를 함께 표시하고,
+정렬에서는 맨 뒤로 보냅니다. 표기 방법은 `design.md` §8.2 에 있습니다.
 
 ### 6. 한 번에 하나씩 만든다
 
@@ -125,8 +169,59 @@ reason?: 'NO_USAGE' | 'NO_LEADTIME';
 ### 7. 한국어로 쓴다
 
 화면 문구, 주석, 커밋 메시지 모두 한국어입니다. 컬럼명·변수명은 영어를 씁니다.
+버튼 문구와 오류 메시지 작성 규칙은 `design.md` §12 에 있습니다.
 
-### 8. 변경 후 `npm run build` 를 실행한다
+### 8. 권한은 서버에서 검증한다
+
+모든 서버 컴포넌트와 Server Action 의 **첫 줄**에서 부릅니다.
+
+```ts
+const user = await requireUser();          // 화면
+const actor = await requireAdminOrThrow(); // 관리자 액션
+```
+
+메뉴를 숨기는 것만으로는 부족합니다. 액션은 URL 만 알면 호출할 수 있습니다.
+DB 의 RLS 가 마지막으로 막지만, 거기까지 가기 전에 서버가 먼저 막습니다.
+
+### 9. KPI 카드는 눌러서 목록을 좁힌다
+
+숫자를 보여줬으면 그 내역도 바로 보여줍니다.
+"위험 3건" 을 보고 그 3건을 찾으러 표를 다시 뒤지게 만들지 마세요.
+
+```tsx
+const FILTERS: FilterSpec<StockoutRisk>[] = [
+  { key: 'all',      label: '대상 품목', match: null },
+  { key: 'critical', label: '위험',     match: (r) => r.riskStatus === 'CRITICAL' },
+];
+
+<KpiCard label="위험" value={n} filter={{ key: 'critical', active: f === 'critical' }} />
+```
+
+- 필터 상태는 **URL 쿼리**에 둡니다. 화면은 서버 컴포넌트로 남습니다
+- 카드와 목록은 `FILTERS` 배열 **한 곳**을 함께 봅니다
+- 필터가 걸리면 목록 위에 `FilterNotice` 를 띄웁니다
+- **목록으로 좁혀지지 않는 카드에는 `filter` 를 주지 않습니다.** 눌러도 아무 일이 없으면 더 나쁩니다
+
+자세한 규칙은 `design.md` §6.4.
+
+### 10. 상태색을 장식으로 쓰지 않는다
+
+초록·노랑·빨강은 `SAFE` · `WARNING` · `CRITICAL` 을 뜻합니다. 예뻐 보이라고 쓰지 않습니다.
+회색은 **산출 불가** 전용입니다.
+
+색만으로 상태를 표현하지 않습니다. 배지에는 반드시 글자가 들어갑니다.
+
+### 11. 차트는 `components/chart/` 를 거친다
+
+화면에서 `recharts` 를 직접 import 하지 마세요. 축 포맷과 색이 화면마다 달라집니다.
+
+```
+components/chart/forecast-overlay-chart.tsx
+components/chart/projection-chart.tsx
+lib/chart-colors.ts        모델별 색 고정 매핑
+```
+
+### 12. 변경 후 `npm run build` 를 실행한다
 
 ---
 

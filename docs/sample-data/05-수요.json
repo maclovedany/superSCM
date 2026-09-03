@@ -1,0 +1,17 @@
+{
+  "mode": "append",
+  "data": [
+    {
+      "item_id": "ITEM014",
+      "use_date": "2026-08-29",
+      "qty": 88,
+      "note": "json 업로드"
+    },
+    {
+      "item_id": "ITEM015",
+      "use_date": "2026-08-29",
+      "qty": 47,
+      "note": "json 업로드"
+    }
+  ]
+}

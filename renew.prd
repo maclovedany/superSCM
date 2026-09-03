@@ -1,0 +1,1159 @@
+1. 제품 정의
+
+과거 SCM 데이터로 품목별 미래 수요를 예측하고, 실제 실적으로 예측모델을 지속 검증하며, SKU별 최적 모델을 선택하고, 수요·현재고·입고예정·리드타임·안전재고·MOQ를 통합 계산해 최적 발주 시점과 수량을 추천하는 AI 기반 SCM 의사결정 플랫폼.
+
+현업 담당자의 Forecast 보정과 승인 이력을 축적하고, LLM Agent가 시스템 Tool을 호출해 추천 근거를 자연어로 설명한다. 영업팀이 고객 주문의 공급 가능 여부를 자연어로 질의하면 ATP 관점에서 답한다. 관리자는 모델·정책·사용자·API·데이터 적재를 중앙 관리한다.
+
+Data → Forecast → Backtest → Champion → Consensus
+    → Inventory Projection → Risk → Recommendation
+    → Human Decision → AI Explanation
+    
+2. 성공 기준
+
+"AI 기능이 있는가"가 아니라 다음을 수행할 수 있는가로 판단한다.
+
+ 1  2023~2024 만으로 2025 수요를 예측한다
+ 2  실제 2025 와 비교해 성능을 정량 검증한다
+ 3  여러 모델을 동일 조건에서 비교한다
+ 4  SKU별 Champion Model 을 선택한다
+ 5  Forecast + 현재고 + Open PO + 리드타임으로 미래 재고를 계산한다
+ 6  결품 예상일을 계산한다
+ 7  예측 오차와 리드타임 변동으로 안전재고를 계산한다
+ 8  MOQ · Pack Size 를 반영한 발주량과 시점을 추천한다
+ 9  담당자가 보정하고 승인한다
+10  모든 수정·승인에 근거와 이력이 남는다
+11  AI Agent 가 실제 데이터를 조회해 근거를 설명한다
+12  영업팀이 자연어로 공급 가능 여부를 묻고 답을 받는다
+13  관리자와 일반사용자의 권한·화면이 구분된다
+14  CSV · Excel · JSON · API 로 데이터를 추가한다
+15  외부 시스템이 결과를 API 로 조회한다
+16  추천대로 발주했을 때의 가상 운영 결과를 제시한다   ★
+
+16번이 도입 판단의 근거가 된다. 오차율만으로는 "그래서 도입하면 뭐가 나아지나"에 답할 수 없다.
+
+3. 업무 배경
+
+해외 후지필름BI 생산법인 12곳에서 자재를 조달한다.
+
+일본 · 대만 · 상하이 · 쑤저우 · 선전 · 말레이시아
+태국 · 베트남 · 필리핀 · 인도네시아 · 인도 · 네덜란드
+
+법인별 리드타임은 13~53일이며, 12개 법인 전부에서 실적이 마스터 등록값보다 길다 (격차 +8 ~ +23일).
+
+현재 담당자가 월 단위로 수량을 정하며, 세 가지가 없다.
+
+계절성·추세를 반영한 수요 전망
+발주 판단의 근거 기록
+판단 품질에 대한 사후 평가
+4. 사용자 및 권한
+4.1 Role
+
+초기 두 가지. 향후 SCM·영업·구매·경영진으로 확장 가능한 RBAC 구조로 설계한다.
+
+Role	대상
+ADMIN	시스템 관리자
+USER	일반 사용자 (SCM · 영업)
+4.2 ADMIN 권한
+모든 USER 기능
+사용자 관리
+Forecast Model 관리 · 활성화 · 버전
+Champion 선정 기준
+Forecast 기본 설정
+SCM 정책 (Lead Time · Safety Stock · Service Level · Outlier Rule)
+데이터 업로드 · Import History · Validation Error
+API Key 관리
+Forecast Run 관리
+Approval Log · System Log 조회
+4.3 USER 권한
+Dashboard · Demand Forecast · Model Comparison · Backtest
+Inventory Projection · Stockout Risk · Supply Risk
+Purchase Recommendation · Forecast Override · Approval
+Alert Center · What-If · AI Agent · 영업 SCM 질의
+4.4 인증
+
+이메일 + 패스워드. Supabase Auth.
+
+user_id · email · password_hash · name · department
+role · active · created_at · updated_at · last_login_at
+
+Role은 화면 표시만 제어하지 않는다. Backend API와 Database(RLS) 양쪽에 적용한다. 일반사용자가 관리자 URL을 직접 입력해도 접근할 수 없어야 한다.
+
+4.5 정보 접근 범위
+항목	영업	SCM
+납기 가능 여부 · ATP	○	○
+예상 입고일 · 대체품	○	○
+현재고 상세 (창고별)	총량만	○
+조달 단가 · 발주 금액	✕	○
+공급처 상세 · 리드타임 통계	✕	○
+발주 추천 · 승인	✕	○
+예측 정확도 지표	✕	○
+
+5. 시스템 구조
+Authentication → Role / Permission → Application
+        ↓
+Data Input   CSV · Excel · JSON · API · (Future ERP)
+        ↓
+RAW → Validation / Cleaning → CORE → ANALYTICS
+        ↓
+Forecast Engine → Backtest Engine → Champion Model
+        ↓
+Future Forecast → Human Override → Consensus Forecast
+        ↓
+Inventory Projection → Lead Time / Safety Stock → Stockout Risk
+        ↓
+Purchase Recommendation → Human Approval
+        ↓
+AI Agent → Dashboard / External API
+6. 데이터 아키텍처
+6.1 RAW
+
+원본을 그대로 보관한다.
+
+원본을 수정하지 않는다
+source · 적재시각 · 원본 record identifier 를 기록한다
+오류가 있어도 원본은 보존한다
+batch_id 로 업로드 단위를 추적한다
+6.2 CORE
+
+표준 데이터와 정책값.
+
+SKU 표준화 · 공급사 표준화 · 정제 규칙 · Outlier Rule
+Lead Time Policy · Safety Stock Policy · Service Level
+Forecast Override · Model Configuration · MOQ · Pack Size
+6.3 ANALYTICS
+
+화면과 AI가 바로 쓰는 계산 결과.
+
+SKU Demand Profile · Forecast Results · Model Performance
+Inventory Projection · Stockout Risk · Purchase Recommendation
+Alert · KPI View
+
+화면에서 RAW에 직접 접근하지 않는다.
+
+7. 필요 데이터
+7.1 Demand / Usage History (2023~2025)
+item_id · date · quantity · warehouse
+customer 또는 channel · transaction_type · note
+7.2 Inventory
+item_id · warehouse · snapshot_date
+on_hand_qty · available_qty · reserved_qty
+7.3 Purchase Order
+po_no · item_id · supplier_id · order_date · due_date
+qty · unit_price · status
+7.4 Receipt / Shipment
+po_no · supplier_ship_date · departure_date · arrival_date
+customs_date · warehouse_receipt_date · qc_release_date
+quantity · transport_mode
+7.5 Item Master
+item_id · item_name · category · supplier_id
+MOQ · pack_size · unit_price · item_grade · active_status
+7.6 Supplier Master
+supplier_id · supplier_name · country · standard_lead_time
+7.7 Business Event
+
+프로모션·계약·신제품 등을 데이터로 관리한다.
+
+event_id · item_id · period · event_type · expected_impact · note
+7.8 시스템 테이블
+users · api_keys · upload_batch · column_mapping
+model_config · model_version · policy_config · audit_log
+sales_inquiry · soft_allocation · item_substitute
+7.9 2025년 격리
+
+2025 실적은 별도 영역에 격리한다. 예측 모듈이 학습 시점에 참조할 수 없어야 한다. Data Leakage 방지가 필수다.
+
+8. 데이터 입력
+8.1 File Import
+파일 선택 → 데이터 종류 선택 → Parse → Preview
+→ Column Mapping → Validation → 사용자 확인 → Import → RAW 저장
+
+지원 형식 — CSV (UTF-8 · BOM · EUC-KR) · Excel (.xlsx · .xls) · JSON
+
+지원 데이터 — Demand · Inventory · Purchase Order · Receipt · Item Master · Supplier Master · Event · Sales Order
+
+8.2 Column Mapping
+
+자동 매핑을 제공하고 사용자가 수정할 수 있다.
+
+SKU · 품번 · 제품코드     → item_id
+판매량 · 출고수량         → quantity
+판매일 · 출고일           → transaction_date
+
+매핑 규칙을 저장해 다음 업로드에 재사용한다.
+
+8.3 Validation
+필수 컬럼 · 데이터 타입 · 날짜 형식 · 숫자 형식
+Null · Duplicate · Item 존재 여부 · Supplier 존재 여부
+음수 · 비정상 날짜 · 범위 오류 · 논리 오류(입고일 < 발주일)
+
+결과를 행 단위로 표시한다.
+
+Total    12,430
+Success  12,381
+Warning      32
+Error        17
+
+행 47   품목코드 'ITEM999' 가 마스터에 없습니다
+행 112  출고일자 '2025/13/01' 형식 오류
+
+임의 보정하지 않는다. 오류 행만 CSV로 내려받아 수정 후 재업로드할 수 있게 한다.
+
+8.4 적재 방식과 되돌리기
+방식	동작
+append	기존 유지 + 신규 추가
+replace	대상 기간 삭제 후 적재
+upsert	키 기준 있으면 수정, 없으면 추가
+
+batch_id 단위로 되돌리기(rollback)를 지원한다.
+
+8.5 Import History
+upload_id · filename · type · source · uploader · uploaded_at
+total_rows · success_rows · warning_rows · error_rows · status
+rollback_available
+
+Source Type — MANUAL_CSV · MANUAL_EXCEL · MANUAL_JSON · API · ERP · BATCH
+
+8.6 적재 후 처리
+CORE 계층 재계산
+영향받는 예측에 "데이터 변경됨 · 재실행 필요" 표시
+대량 변경 시 관리자 통지
+
+예측 결과에 기준 데이터 시점을 함께 표시한다. 데이터가 바뀌었는데 예측이 그대로면 잘못된 판단을 하게 된다.
+
+9. External API
+9.1 Inbound
+POST /api/v1/items
+POST /api/v1/suppliers
+POST /api/v1/demand-history
+POST /api/v1/inventory
+POST /api/v1/purchase-orders
+POST /api/v1/receipts
+POST /api/v1/open-po
+POST /api/v1/events
+POST /api/v1/sales-order
+
+POST /api/v1/bulk/demand-history
+POST /api/v1/bulk/inventory
+
+API 입력도 File Upload와 동일한 Validation Pipeline을 통과한다.
+
+요청:
+
+json
+{
+  "mode": "upsert",
+  "strict": false,
+  "data": [
+    { "item_id": "ITEM012", "date": "2025-03-14", "quantity": 62, "warehouse": "WH01" }
+  ]
+}
+
+응답:
+
+json
+{
+  "batch_id": "b_20250314_001",
+  "received": 2, "accepted": 1, "rejected": 1,
+  "errors": [
+    { "index": 1, "field": "item_id", "message": "존재하지 않는 품목코드입니다" }
+  ]
+}
+
+부분 성공을 허용한다. strict: true면 전부 거부한다.
+
+멱등성 — 같은 요청을 반복해도 키 기준으로 중복 적재되지 않는다.
+
+9.2 Outbound
+GET /api/v1/forecast/{itemId}
+GET /api/v1/inventory-projection/{itemId}
+GET /api/v1/stockout-risk/{itemId}
+GET /api/v1/order-recommendation/{itemId}
+GET /api/v1/leadtime/{supplierId}
+GET /api/v1/atp?item_id=&qty=&date=
+GET /api/v1/alerts
+
+OpenAPI / Swagger 문서를 제공한다. 페이징(limit·offset), Rate limit을 적용한다.
+
+9.3 API Key
+key_id · integration_name · key_hash · scope
+active · created_at · expires_at · last_used_at
+
+원문은 생성 시 한 번만 노출한다. 이후 해시만 보관한다.
+
+Scope
+
+demand:write · inventory:write · purchase_order:write
+forecast:read · recommendation:read · alert:read
+10. 수요 패턴 분석
+
+SKU별로 계산하여 SKU Demand Profile에 저장한다.
+
+Trend · Seasonality · Variability (CV)
+Zero-demand Rate · 판매 빈도
+Intermittent Demand 여부
+최근 증감률 · Peak Month
+
+이 분류가 모델 선택과 안전재고 정책의 입력이 된다. 특히 간헐수요 품목은 Croston 계열이 아니면 예측이 무의미하다.
+
+11. Forecast Model 관리
+11.1 모델 후보
+계열	모델	실행
+Baseline	Previous Year Same Month	SQL
+	Moving Average 3M · 6M	SQL
+	Weighted Moving Average	SQL
+	Seasonal Naive	SQL
+시계열	Exponential Smoothing	Python
+	Holt · Holt-Winters	Python
+	SARIMA	Python
+	Prophet	Python
+간헐수요	Croston · SBA · TSB	Python
+ML	XGBoost · LightGBM	Python
+
+모델을 미리 배제하지 않는다. 데이터 길이 때문에 트리 계열이 과적합할 수 있으나 이는 백테스트가 판정할 문제다. 후보에 넣고 성능이 낮으면 Champion에 선정되지 않을 뿐이다. 복수 모델 경쟁 구조를 만드는 이유가 이것이다.
+
+간헐수요 모델은 반드시 포함한다. 자재는 몇 달에 한 번 나가는 품목이 많고, 일반 시계열 모델은 이런 패턴에서 무너진다.
+
+11.2 모델 등록 구조 — Plug-in Architecture
+python
+def forecast(train_df: DataFrame, horizon: int, params: dict) -> DataFrame:
+    # 입력  item_id · period · quantity
+    # 출력  item_id · period · predicted_qty · p50 · p80 · p90 · explanation
+
+새 모델을 함수 하나로 추가하면 백테스트와 Champion 선택에 자동 편입된다. 파이프라인 코드를 수정하지 않는다.
+
+11.3 모델 메타데이터
+model_id · model_name · type · description · version
+enabled · is_default · applicable_demand_type
+parameters · created_at · updated_at
+
+applicable_demand_type으로 간헐수요 전용 모델을 자동 필터링한다.
+
+11.4 관리자 설정
+Enabled Models
+  [x] Seasonal Naive      [x] Holt-Winters
+  [x] Croston             [x] LightGBM
+  [ ] Prophet             [x] SARIMA
+
+Champion Metric      WAPE
+Forecast Horizon     12 months
+Granularity          Monthly
+Prediction Interval  P50 / P80 / P90
+Training Period      2023-01 ~ 2024-12
+
+파라미터도 조정 가능하게 한다.
+
+Moving Average   기간 (3 · 6 · 12)
+Holt-Winters     계절 주기 · 감쇠 여부
+SARIMA           차수 — 자동 추정 옵션 포함
+LightGBM         학습 기간 · 시차 feature 범위
+Croston          평활 상수
+
+설정 변경은 코드 수정 없이 반영되며 변경 이력을 남긴다.
+
+12. Forecast Engine
+12.1 Train / Test
+TRAIN   2023.01 ~ 2024.12
+TEST    2025.01 ~ 2025.12
+
+2025년은 Training에 사용하지 않는다.
+
+12.2 실행 결과 저장
+run_id · item_id · forecast_period · predicted_qty
+p50 · p80 · p90
+model_id · model_version
+train_start · train_end · forecast_horizon
+data_snapshot_at · created_at
+
+run_id와 model_version으로 재현성을 확보한다. 같은 스냅샷과 같은 버전으로 재실행하면 동일한 결과가 나와야 한다.
+
+12.3 이상치 처리
+
+프로젝트성 대량 출고, 반품(음수), 중복 입력을 학습에서 제외할 수 있어야 한다. 제외 규칙은 CORE 테이블로 관리하며 코드에 하드코딩하지 않는다.
+
+13. Backtest Engine
+13.1 평가 지표
+WAPE · MAPE · Bias · RMSE · MAE · Baseline Improvement
+
+WAPE와 Bias를 핵심 KPI로 사용한다. MAPE 단독 사용은 지양한다. 수요가 0에 가까운 달에서 MAPE가 발산하기 때문이다.
+
+Bias는 과소예측인지 과대예측인지 부호로 구분한다.
+
+13.2 가상 운영 결과 ★
+
+오차율만으로는 도입 판단이 어렵다. 2025년 1월 시점에서 시스템이 추천했을 발주량을 계산하고, 그대로 발주했을 경우의 재고 추이를 시뮬레이션한다.
+
+실제 발주 실적과 비교한다.
+
+결품 발생 횟수      실제 vs 시뮬레이션
+평균 재고 수준
+과잉 발주 건수
+재고 회전율
+
+산출 문장:
+
+AI 추천대로 발주했다면 2025년 실제 발생한 결품 4회 중 3회를 막을 수 있었고, 평균 재고는 15% 낮게 유지됐을 것이다.
+
+13.3 실행 이력
+
+모델·파라미터 변경 시 재실행하여 개선 여부를 확인한다. 실행 이력을 보관한다.
+
+backtest_run_id · 실행 시각 · 실행자 · 조건 · 소요 시간 · 결과 요약
+14. Champion Model
+14.1 자동 선택
+
+SKU별로 성능이 가장 좋은 모델을 선정한다.
+
+X700    Champion = LightGBM      WAPE 12.8%
+X500    Champion = Holt-Winters  WAPE 15.1%
+Y120    Champion = Croston       WAPE 21.3%   (간헐수요)
+14.2 저장 항목
+item_id · champion_model_id · model_version
+성능지표 전체 · 선정 근거 · 선정 방식(자동/수동) · 선정 시각
+후보 전체 성능
+
+후보 전체 성능을 함께 저장해야 "왜 이 모델이 뽑혔는지"를 화면에서 보여줄 수 있다.
+
+14.3 수동 지정
+
+관리자가 직접 지정할 수 있다. 성능이 조금 낮아도 설명 가능성 때문에 단순 모델을 택할 수 있으며, 사유를 필수로 남긴다.
+
+Champion 선정 기준(Metric)은 관리자 설정으로 변경 가능하다.
+
+15. Forecast Explanation
+
+예측 결과와 함께 설명용 Feature를 저장한다.
+
+최근 3개월 Trend · 전년동월 증감 · Seasonality
+Event · Forecast Error · Champion Model · Model Accuracy
+Feature Importance (ML 모델)
+
+예:
+
+최근 3개월 평균 사용량이 전년 대비 24% 증가했고, 2025 Backtest에서 LightGBM이 WAPE 12.8%로 가장 좋은 결과를 보여 해당 모델이 선택되었습니다.
+
+16. Model Comparison 화면
+16.1 조건 설정
+SKU              단일 또는 다중
+Training Period  시작 ~ 종료
+Validation Period
+Forecast Horizon
+Granularity
+비교할 모델       체크박스 다중 선택
+16.2 차트
+
+하나의 시계열 차트에 Overlay한다.
+
+☑ Actual            굵은 실선
+☑ Seasonal Naive
+☑ Holt-Winters
+☑ Croston
+☑ LightGBM
+
+검증 구간 음영 처리
+Prediction Interval (P50·P80·P90) 밴드 표시 옵션
+
+모델을 체크·해제하면 재실행 없이 차트가 즉시 갱신된다.
+
+16.3 성능 비교표
+모델	WAPE	MAPE	Bias	RMSE	Baseline 대비	Rank
+Previous Year	24.1%	26.3%	+3.2%	142	–	5
+Moving Avg 3M	21.8%	23.0%	−1.1%	128	+9.5%	4
+Holt-Winters	15.2%	16.4%	+0.8%	94	+36.9%	2
+SARIMA	16.7%	17.9%	−2.3%	101	+30.7%	3
+LightGBM	13.4%	14.1%	+0.4%	87	+44.4%	1
+
+Champion을 명확히 표시한다. 정렬 가능, CSV·Excel 내보내기 지원.
+
+16.4 월별 상세
+연월	Actual	Model A	Model B	…	Error	Error Rate
+2025-01	412	380	408		−32	−7.8%
+16.5 성능 데이터 사전 저장 ★
+
+조건 조합마다 모델을 재실행하지 않는다.
+
+model_forecast_result
+  run_id · model_id · item_id · period · predicted_qty · p50 · p80 · p90
+
+model_performance
+  run_id · model_id · item_id · WAPE · MAPE · Bias · RMSE · rank
+
+학습·검증 기간 변경은 재실행이 필요하지만, 모델을 켜고 끄는 것은 조회만으로 처리한다. 사용자가 가장 자주 하는 조작이 후자다.
+
+17. Forecast Override
+17.1 구조
+
+AI Forecast를 수정하지 않고 별도 Override를 입력한다.
+
+AI Forecast             800
+Human Override         +300
+Consensus Forecast    1,100
+17.2 저장 항목
+ai_forecast · override_qty · consensus_forecast
+reason_code · reason_text · user · timestamp
+
+reason_code를 코드 체계로 관리한다. 자유 텍스트만으로는 집계·분석이 불가능하다.
+
+NEW_CONTRACT      신규 계약
+PROMOTION         프로모션
+NEW_PRODUCT       신제품 출시
+DISCONTINUED      단종
+PROJECT           프로젝트성 수요
+MARKET_CHANGE     시장 변화
+DATA_ERROR        데이터 오류 보정
+OTHER             기타 (텍스트 필수)
+
+AI Forecast 원본은 수정 불가로 보존한다.
+
+17.3 Forecast Value Add
+
+Actual 확정 후 비교한다.
+
+AI Forecast Accuracy
+Consensus Forecast Accuracy
+
+Human Override가 실제로 예측을 개선했는지 평가한다. 특정 품목에서 보정이 반복되면 모델 개선 신호로 활용한다.
+
+reason_code별 집계로 "어떤 유형의 보정이 효과적이었나"를 분석할 수 있다.
+
+18. Lead Time
+18.1 구간 분해
+발주 → 현지 출고        공급사 준비 구간
+현지 출고 → QC Release  운송 · 통관 · 검수 구간
+전체                    발주 → QC Release
+
+End Point는 창고 입고가 아니라 QC Release다. 입고되어도 검수 전이면 사용할 수 없다.
+
+구간을 나누는 이유는 개선 방향 판단이다. 전체 37.6일 중 공급사 준비 8.8일, 운송 28.9일이면 공급사 압박은 효과가 제한적이다.
+
+18.2 산출값
+Mean · Median · P50 · P80 · P90
+Standard Deviation · Sample Count · Confidence
+
+표본 30건 미만은 Confidence = LOW로 표시한다.
+
+18.3 계획 리드타임
+
+core.leadtime_plan으로 별도 관리한다.
+
+확정값이 있으면    그 값 사용
+없으면            실적 P80 으로 대체
+
+이 값을 변경하면 코드 수정 없이 모든 판정이 즉시 반영되어야 한다.
+
+19. Inventory Projection
+19.1 계산
+Projected Inventory
+  = Current Available Inventory
+  + Expected Receipt
+  − Soft Allocation
+  − Committed Sales Order
+  − Forecast Demand
+19.2 산출값
+Projected Inventory (기간별)
+Stockout Date
+Days of Supply
+Months of Supply
+
+예:
+
+현재고 1,500 · 10월 입고 300
+9월 수요 500 · 10월 620 · 11월 710
+
+→ 9월말 1,000 · 10월말 680 · 11월말 −30
+→ 11월 중 결품 발생 가능
+19.3 누적 수요 기준
+
+계획 리드타임이 42일이면 42일 이후까지 커버해야 하는 누적 수요를 기준으로 필요량을 계산한다.
+
+20. Stockout Risk
+20.1 상태
+SAFE                       충분한 여유
+WARNING                    Lead Time 이내 결품 예상 · 발주 가능
+CRITICAL                   지금 발주해도 결품 후 도착
+CALCULATION_UNAVAILABLE    계산 불가
+20.2 계산 불가 처리
+
+숫자로 대체하지 않는다. null과 사유 코드를 반환한다.
+
+NO_USAGE_HISTORY     사용 이력 없음
+NO_LEADTIME          리드타임 미확정
+NO_INVENTORY_DATA    재고 데이터 없음
+INSUFFICIENT_SAMPLE  표본 부족
+
+999 같은 값을 넣으면 정렬·평균·AI 설명이 모두 오염된다.
+
+21. Safety Stock
+21.1 계산
+
+수요 변동과 리드타임 변동을 함께 반영한다.
+
+σ_DLT = √( L × σ_d²  +  d² × σ_L² )
+Safety Stock = Z × σ_DLT
+
+  L    계획 리드타임
+  σ_d  수요 예측 오차의 표준편차   ← Backtest 결과에서 산출
+  d    일평균 수요
+  σ_L  리드타임 표준편차
+  Z    Service Level 계수 (정책값)
+
+예측 정확도가 안전재고 두께를 결정한다. 예측이 잘 맞는 품목은 버퍼를 얇게, 자주 빗나가는 품목은 두껍게 가져간다. Backtest와 발주 모듈이 이 지점에서 연결된다.
+
+21.2 Service Level
+
+SKU 또는 Grade별로 관리한다.
+
+item_grade · service_level · z_value · 적용 시작일
+22. Purchase Recommendation
+22.1 계산
+Recommended Qty
+  = Demand during (Lead Time + Review Period)
+  + Safety Stock
+  − Available Inventory
+  − Confirmed Incoming Qty
+
+확정 수주가 있으면 예측보다 우선한다.
+
+필요량 = max(Forecast, Committed Order) + Safety Stock − Available − Incoming
+
+MOQ와 Pack Size를 반영해 보정한다.
+
+필요 220개 · Pack Size 100  →  최종 300개
+22.2 발주 시점
+Required Order Date = Stockout Date − Lead Time − Safety Buffer Days
+22.3 출력
+item_id · item_name · supplier_id
+current_inventory · incoming_qty
+forecast · consensus_forecast
+lead_time · safety_stock
+stockout_date · required_order_date
+raw_recommended_qty · final_recommended_qty
+MOQ · pack_size
+risk · reason_code · explanation
+23. Approval Workflow
+추천 확인 → 필요시 수정 → 수정 사유 입력 → 승인
+23.1 저장
+recommendation_id · recommended_qty · approved_qty · adjustment
+reason_code · reason_text · approved_by · approved_at
+23.2 근거 Snapshot
+
+승인 시점의 계산 근거를 함께 저장한다.
+
+Forecast · Inventory · Open PO · Lead Time · Safety Stock
+model_version · run_id · data_snapshot_at
+
+이후 데이터가 바뀌어도 당시 무엇을 보고 결정했는지 재현할 수 있어야 한다.
+
+24. Alert Center
+24.1 탐지 항목
+유형	조건
+Stockout Risk	결품 예상일이 리드타임 이내
+Order Too Late	지금 발주해도 결품 후 도착
+Excess Inventory	예상 소진 기간이 기준 초과
+Demand Spike	실적이 예측 구간을 벗어남
+Forecast Outlier	예측값 자체가 이상
+Open PO Delay	진행 중 발주가 예정일 경과
+Lead Time Deterioration	최근 리드타임이 계획값 대비 악화
+Forecast Accuracy Drop	품목 오차율이 임계 초과
+Excessive Override	특정 품목 보정이 반복 — 모델 개선 신호
+납기 약속 위험	확정 수주 납기 전 재고 확보 불가
+가예약 만료 임박	영업 확인 필요
+문의 급증	특정 품목 문의가 평소 대비 증가
+24.2 Alert 구조
+severity · item_id · type · reason · impact
+recommended_action · detected_at · acknowledged_by
+24.3 우선순위
+
+단가, 결품 영향도, 남은 시간을 반영해 정렬한다.
+
+24.4 백그라운드 스캔
+
+스케줄러가 주기적으로 전체 SKU를 스캔한다.
+
+25. What-If Simulation
+25.1 시나리오
+Demand +20% / −20%
+Lead Time 변경 (42일 → 60일)
+Open PO Delay (20일 지연)
+Service Level 변경 (90% → 95%)
+Supplier 변경 · 사용 불가
+대형 계약 추가 (500개)
+Promotion 추가
+25.2 출력
+
+Base Scenario와 나란히 비교한다.
+
+Inventory Projection · Stockout Date
+Safety Stock · Order Qty · Risk
+
+실제 데이터를 변경하지 않는다. 시뮬레이션 컨텍스트에서만 계산한다.
+
+자연어 요청도 지원한다. "A공급처 리드타임이 두 배가 되면?" 같은 질의를 파라미터로 변환해 실행한다.
+
+26. AI Agent
+26.1 구조
+
+LLM은 숫자를 직접 계산하지 않는다.
+
+User → LLM Intent → Tool Calling → Backend Function
+     → Structured Result → LLM Explanation
+26.2 Tool 목록
+
+SCM 담당자용
+
+getDemandForecast(itemId, period)
+getForecastAccuracy(itemId)
+getInventoryProjection(itemId)
+getStockoutRisk(itemId)
+getLeadtimeStats(supplierId)
+getSafetyStock(itemId)
+calcOrderQuantity(itemId)
+getOpenPO(itemId)
+getAlerts(filter)
+simulateScenario(params)
+
+영업 담당자용
+
+checkOrderFeasibility(itemId, qty, targetDate)
+getATP(itemId, targetDate)
+getEarliestDelivery(itemId, qty)
+getAlternativeItems(itemId)
+createSoftAllocation(itemId, qty, validDays)
+getSupplyStatus(itemId)
+
+Role에 따라 호출 가능한 Tool 집합이 달라진다.
+
+26.3 Guardrail
+Structured Outputs 로 응답 스키마 강제
+Tool 반환값에 없는 수치는 응답에 포함 금지
+후처리 검증으로 수치 일치 확인
+계산 불가는 "산출할 수 없음" + 사유 명시
+26.4 답변 기준
+
+가능하면 다음을 포함한다.
+
+판단 결과 · 근거 · 데이터 기준시각 · Risk · Recommended Action
+
+데이터가 부족하면 추측하지 않는다.
+
+현재 Open PO 예상 입고일 정보가 없어 10월 15일 500대 공급 가능 여부를 확정할 수 없습니다.
+
+26.5 SCM 질의 예시
+"X700 왜 700대 발주해야 해?"
+"향후 60일 결품 위험 품목 보여줘."
+"Forecast Error 가 큰 SKU 알려줘."
+"이번 달 총 발주 추천금액 알려줘."
+"인도 공급사 품목 중 위험한 것만 알려줘."
+"재고가 너무 많이 쌓인 품목 알려줘."
+
+응답 예:
+
+MDL-X700은 향후 공급 리드타임 42일 동안 약 1,620대의 수요가 예상됩니다. 현재 가용재고는 1,250대이고 300대가 입고 예정이며 목표 안전재고는 400대입니다. 따라서 추가 확보가 필요한 수량은 약 470대이며, MOQ와 발주단위를 적용하여 최종 700대 발주를 권고합니다.
+
+27. 영업팀 SCM 질의 Agent
+27.1 필요성
+
+현재 영업팀은 납기 관련 질문을 SCM팀에 문의하고, SCM팀이 확인해 회신한다. 응답이 지연되고 답변 기준이 사람마다 다르다.
+
+27.2 질의 예시
+"X700 지금 500대 추가 주문 받을 수 있어?"
+"10월 15일까지 700대 납품 가능해?"
+"현재 바로 출고 가능한 수량은?"
+"다음 달까지 추가 확보 가능한 수량은?"
+"현재 주문을 수락하면 이후 결품이 생겨?"
+"프로모션으로 수요가 20% 늘면 괜찮아?"
+"이 모델 단종 예정인가? 대체품 있어?"
+27.3 ATP 계산
+Available to Promise
+  = Current Available Inventory
+  + Confirmed Incoming before Target Date
+  − Committed Demand
+  − Soft Allocation
+  − Protected Safety Stock
+
+Soft Allocation 차감이 핵심이다. 재고 500개가 있어도 300개가 이미 약속되어 있으면 실제로 팔 수 있는 건 200개다.
+
+기간별로 산출한다.
+
+즉시 가능        현재 ATP
+2주 내 가능      + 2주 내 입고예정
+1개월 내 가능    + 1개월 내 입고예정
+그 이후          신규 발주 시 리드타임 반영
+27.4 응답 상태
+AVAILABLE                  요청 수량·납기 충족 가능
+CONDITIONALLY_AVAILABLE    조건부 가능 (일부 수량 · 납기 조정 필요)
+UNAVAILABLE                불가
+UNKNOWN                    판단에 필요한 데이터 부족
+27.5 checkOrderFeasibility
+checkOrderFeasibility(itemId, qty, targetDate)
+
+반환:
+
+json
+{
+  "status": "CONDITIONALLY_AVAILABLE",
+  "feasible": true,
+  "available_qty": 620,
+  "requested_qty": 500,
+  "projected_inventory_after_order": 240,
+  "safety_stock": 180,
+  "risk": "WARNING",
+  "earliest_safe_date": "2026-10-10",
+  "lead_time_used": 44,
+  "lead_time_confidence": "HIGH",
+  "data_snapshot_at": "2026-10-01T09:00:00Z"
+}
+
+LLM은 이를 자연어로 설명한다.
+
+X700 300대 문의 건입니다.
+
+현재 즉시 출하 가능 수량은 180대입니다. 나머지 120대는 3월 12일 입고 예정 물량으로 충당 가능하며, 검수 완료 기준 3월 15일 이후 출하 가능합니다.
+
+300대 전량을 3월 15일까지 납품하는 것은 가능합니다. 다만 이 물량은 인도 법인에서 조달되며 계획 리드타임 44일 기준입니다. 과거 실적상 다섯 번 중 한 번은 지연되었으므로 고객에게는 3월 20일로 안내하는 것을 권장합니다.
+
+신뢰도 표현이 중요하다. P80을 쓰면 20%는 지연된다는 뜻이므로 여유를 두도록 안내한다. 여유일은 정책값으로 관리한다.
+
+27.6 Soft Allocation
+가예약    영업 문의 단계 · 유효기간 (기본 7일)
+확정      수주 확정 시 전환
+해제      유효기간 경과 또는 취소
+
+가예약 수량은 ATP에서 차감되어 이중 약속을 방지한다. 유효기간 경과 시 자동 해제한다.
+
+27.7 문의 이력 활용
+질의 일시 · 질의자 · 품목 · 요청 수량 · 요청 납기
+시스템 답변 · 응답 상태 · 가예약 여부 · 최종 수주 여부
+자주 문의되는 품목은 수요 증가 신호다
+UNAVAILABLE 답변이 많으면 기회 손실이 발생하고 있다
+문의 대비 수주 전환율로 예측 반영 비중을 판단한다
+28. Dashboard
+28.1 상단 KPI
+Forecast Accuracy · Forecast Bias
+위험 SKU · 30일 결품 위험 · 60일 결품 위험
+Excess Inventory · Delayed Open PO
+Purchase Recommendation Count · Urgent Order Count
+Total Recommended Qty · Total Recommended Amount
+Pending Approval
+28.2 하단
+Purchase Priority · Stockout Risk
+Forecast Accuracy Ranking · Open PO Risk
+Alerts · Recent Approvals · AI Agent
+28.3 영업용 화면
+내 문의 이력 · 가예약 현황 · 만료 임박
+품목별 수급 상태 (안전 · 주의 · 불가)
+납기 위험 수주 건
+29. SKU Detail
+
+전체 시스템의 핵심 업무 화면. 다음 28개 항목을 하나의 흐름으로 표시한다.
+
+ 1 SKU                     15 Human Override
+ 2 Item Name               16 Consensus Forecast
+ 3 Supplier                17 Current Inventory
+ 4 Historical Actual       18 Open PO
+ 5 Backtest Forecast       19 Projected Inventory
+ 6 Actual vs Forecast      20 Stockout Date
+ 7 Champion Model          21 Lead Time
+ 8 Model Accuracy          22 Safety Stock
+ 9 Bias                    23 Recommended Order Date
+10 Future Forecast         24 Recommended Qty
+11 P50                     25 Risk
+12 P80                     26 Explanation
+13 P90                     27 Approval
+14 AI Forecast             28 Decision History
+30. 메뉴 구조
+30.1 ADMIN
+Admin
+├─ Users
+├─ Forecast Models
+├─ Forecast Settings
+├─ SCM Policies
+│   ├─ Lead Time
+│   ├─ Service Level
+│   ├─ Safety Stock
+│   └─ Outlier Rules
+├─ Data Management
+│   ├─ File Upload
+│   ├─ Import History
+│   ├─ Validation Errors
+│   └─ Data Sources
+├─ API Management
+│   ├─ API Keys
+│   ├─ Integrations
+│   ├─ API Logs
+│   └─ API Documentation
+├─ Forecast Runs
+├─ Model Versions
+└─ System Logs
+30.2 USER
+Dashboard
+Demand Forecast
+Model Comparison
+Model Evaluation
+Inventory Projection
+Supply Risk
+Purchase Recommendation
+Alert Center
+What-If
+AI Agent
+Decision History
+31. 비기능 요구사항
+31.1 보안
+Password 평문 저장 금지
+RBAC 적용 — Frontend · Backend · Database 3중
+API Key Hash 저장 · 원문 1회 노출
+민감정보 접근 제한 (단가 · 공급처 상세)
+Audit Log
+31.2 추적성
+
+모든 Forecast·Recommendation·Override·Approval은 run_id 또는 version 기준으로 추적 가능해야 한다.
+
+31.3 재현성
+
+같은 Snapshot과 같은 Model Version으로 동일 계산을 재실행하면 같은 결과가 나와야 한다.
+
+31.4 안정성 ★
+
+LLM 실패가 SCM 계산 자체를 중단시키면 안 된다.
+
+AI Agent가 응답하지 못해도 Dashboard, Forecast, Recommendation은 정상 동작해야 한다. LLM은 부가 계층이며 핵심 경로가 아니다.
+
+Python 예측 서버가 중단되어도 이미 저장된 예측 결과는 계속 조회된다.
+
+31.5 데이터 품질
+Calculation Unavailable 를 임의 숫자로 대체하지 않는다
+조회 실패와 빈 결과를 구분해 표시한다
+데이터 갱신 후 예측이 stale 함을 화면에 표시한다
+32. 설계 원칙
+
+계산과 언어 분리 — ML·SQL·Rule Engine이 숫자를 계산한다. LLM은 이해·질의·설명을 담당한다.
+
+Forecast와 Decision 분리 — AI Forecast가 곧 발주수량은 아니다.
+
+Forecast와 Consensus 분리 — AI 원본 예측을 보존한다.
+
+Policy와 Code 분리 — Lead Time, Service Level 등 정책값을 코드에 하드코딩하지 않는다.
+
+추천과 승인 분리 — AI가 추천하고 사람이 최종 승인한다.
+
+Actual을 이용한 검증 — 모델은 반드시 실제 결과와 비교한다.
+
+모든 추천에 근거 저장 — Recommendation Snapshot을 보존한다.
+
+계산 로직을 화면에 두지 않는다 — 화면과 AI Agent가 동일한 함수를 호출한다. 두 경로에서 다른 숫자가 나오면 시스템 신뢰가 무너진다.
+
+권한은 서버에서 검증한다 — 화면 숨김만으로는 부족하다.
+
+33. 기술 스택
+Frontend       Next.js 15 (App Router) · React 19 · TypeScript
+Database       Supabase PostgreSQL
+Authentication Supabase Auth + RLS
+Forecast       Python Service (Railway · FastAPI) / Batch
+AI             OpenAI API · Tool Calling · Structured Outputs
+Scheduler      Cron / Batch Scheduler
+파일 파싱       Papa Parse (CSV) · SheetJS (Excel)
+API 문서        OpenAPI / Swagger
+Deploy         Vercel · Railway
+Styling        순수 CSS
+33.1 예측 서비스
+
+Forecast Model을 Frontend에서 직접 실행하지 않는다. 별도 Forecast Service 또는 Batch Pipeline으로 분리한다.
+
+pandas · numpy          데이터 처리
+statsmodels             SARIMA · Holt-Winters
+prophet                 계절성 · 이벤트
+scikit-learn · lightgbm ML 계열
+scipy                   분포 적합 · Z값
+(Croston 계열)          직접 구현 또는 라이브러리
+
+엔드포인트
+
+POST /forecast/run
+POST /backtest/run
+GET  /models
+GET  /health
+
+실행 방식 — 배치
+
+Cron 또는 수동 트리거
+    ↓
+Forecast Service 가 DB 에서 학습 데이터 조회
+    ↓
+모델별 학습 · 예측 · 백테스트
+    ↓
+결과를 DB 에 write (run_id · model_version 포함)
+    ↓
+화면 · Agent 는 저장된 결과만 read
+33.2 대용량 처리
+
+수만 행 파일은 브라우저에서 파싱하지 않고 서버로 업로드 후 처리한다.
+
+34. 구현 우선순위
+Phase 1 — 기반과 예측
+로그인 · Role · 화면 접근 제어
+데이터 적재 (File Upload · Validation · Import History)
+RAW / CORE / ANALYTICS 계층
+Baseline 모델 · Forecast Engine
+Backtest · Model Comparison · Champion
+Phase 2 — 재고와 발주
+Lead Time (구간 분해 · 분위수 · Policy)
+Inventory Projection
+Stockout Risk
+Safety Stock
+Purchase Recommendation
+가상 운영 결과
+Phase 3 — 사람의 개입
+Forecast Override · Consensus Forecast
+Approval Workflow · 근거 Snapshot
+Alert Center
+Forecast Value Add
+Phase 4 — AI 계층
+AI Agent · Tool Calling · Guardrail
+영업 SCM Agent · ATP · Soft Allocation
+What-If Simulation
+Phase 5 — 확장
+External API (Inbound · Outbound) · API Key
+Admin 강화 (Model Version · Forecast Run · System Log)
+운영 모니터링
+판단 근거
+
+Phase 1의 로그인을 먼저 한다. 나중에 붙이면 모든 화면과 API를 다시 손봐야 한다.
+
+File Upload를 Phase 1에 넣는다. 데이터를 넣는 수단이 없으면 이후 단계를 실데이터로 검증할 수 없다.
+
+Baseline을 SQL로 먼저 완성한다. 백테스트 파이프라인이 돌아가는 상태를 만들어두면 Python 서비스 구축이 지연되어도 Phase 2가 막히지 않는다.
+
+Phase 2가 시스템의 핵심 가치를 결정한다. 백테스트 없이 예측만 제공하면 신뢰 근거가 없고, Safety Stock도 예측 오차를 입력으로 받는다.
+
+External API는 마지막이다. 내부 기능이 안정된 뒤 외부에 연다.
+
+35. Acceptance Criteria
+인증 · 권한
+☐ 이메일/패스워드 로그인이 동작한다
+☐ ADMIN 과 USER 권한이 분리된다
+☐ Role 별 메뉴가 다르다
+☐ USER 가 관리자 URL 을 직접 입력해도 접근할 수 없다
+☐ ADMIN 만 Model 설정을 변경할 수 있다
+☐ Audit Log 가 기록된다
+예측 · 검증
+☐ 여러 Forecast Model 을 동시에 활성화할 수 있다
+☐ 간헐수요 모델(Croston 계열)이 포함된다
+☐ 2023~2024 로 2025 Forecast 를 생성한다
+☐ 2025 데이터가 학습 경로로 유입되지 않는다
+☐ 실제 2025 와 Forecast 를 비교한다
+☐ WAPE · MAPE · Bias · RMSE 가 계산된다
+☐ SKU별 Champion Model 이 선택된다
+☐ Champion 선정 근거와 후보 전체 성능이 저장된다
+☐ 여러 모델 결과가 한 Chart 에서 비교된다
+☐ 모델 토글 시 재실행 없이 차트가 갱신된다
+☐ 가상 운영 결과(결품 횟수 · 평균 재고)가 제시된다
+☐ 같은 Snapshot · Version 으로 재실행하면 같은 결과가 나온다
+재고 · 발주
+☐ Current Inventory + Open PO + Forecast 로 Projected Inventory 가 계산된다
+☐ Stockout Date 가 계산된다
+☐ Lead Time 을 구간별로 산출하고 Policy 를 적용할 수 있다
+☐ Safety Stock 이 예측 오차를 반영해 계산된다
+☐ MOQ / Pack Size 를 반영한 Recommended Qty 가 계산된다
+☐ Recommended Order Date 가 계산된다
+☐ 계산 불가 항목이 숫자로 대체되지 않는다
+사람의 개입
+☐ Forecast Override 가 가능하고 원본이 보존된다
+☐ reason_code 가 코드 체계로 저장된다
+☐ Consensus Forecast 가 저장된다
+☐ Purchase Recommendation 을 수정하고 승인할 수 있다
+☐ 승인 근거 Snapshot 이 저장된다
+☐ Alert 가 위험도별로 생성된다
+AI
+☐ AI Agent 가 Tool Calling 으로 답한다
+☐ AI 응답의 모든 수치가 DB 값과 일치한다
+☐ Tool 반환값 외 수치가 응답에 포함되지 않는다
+☐ 동일 질의를 반복해도 같은 수치가 반환된다
+☐ Role 에 따라 호출 가능한 Tool 이 제한된다
+☐ 영업팀 질문에 ATP 기반 답변이 가능하다
+☐ ATP 응답에 상태(AVAILABLE 등)가 포함된다
+☐ 가예약 후 다른 문의에서 해당 수량이 제외된다
+☐ LLM 실패 시에도 SCM 계산과 화면이 정상 동작한다
+☐ What-If Simulation 이 실제 데이터를 변경하지 않는다
+데이터
+☐ CSV · Excel · JSON Upload 가 가능하다
+☐ Upload Preview 와 Validation 이 가능하다
+☐ Column Mapping 이 저장되고 재사용된다
+☐ 검증 오류가 행 번호와 함께 표시된다
+☐ 오류 행만 내려받을 수 있다
+☐ batch 단위 되돌리기가 동작한다
+☐ Import History 에 Source Type 이 기록된다
+☐ External API 로 데이터를 입력할 수 있다
+☐ API 입력이 File Upload 와 동일한 Validation 을 통과한다
+☐ 동일 요청 반복 시 중복 적재되지 않는다
+☐ 부분 성공이 처리되고 strict 옵션이 동작한다
+☐ 외부 시스템이 Forecast · Recommendation 을 조회할 수 있다
+☐ API Key 를 관리할 수 있고 원문은 1회만 노출된다
+☐ 데이터 갱신 후 예측이 stale 함이 화면에 표시된다
+36. 협의 필요 사항
+데이터
+2025 실적 격리 방식과 접근 통제
+Forecast Granularity (월 · 주)          ← 모델 선택에 직결
+품목 수 및 등급 체계
+간헐수요 품목 비중
+MOQ · Pack Size 데이터 확보 여부
+대체품 마스터 확보 여부
+확정 수주 데이터 연동 방식 (ERP · 수기)
+Business Event 입력 주체
+
+Granularity가 모델 선택을 좌우한다. 월이면 품목당 24개, 주면 104개다. 데이터가 길수록 ML 계열의 승산이 커진다.
+
+운영
+Forecast 갱신 주기 (월 1회 · 주 1회 · 수동)
+Champion Metric 기본값 (WAPE 권장)
+등급별 Service Level
+가예약 유효기간 정책
+납기 안내 여유일 정책
+Cron 실행 환경 및 주기
+조직 · 권한
+초기 계정 발급 방식 (관리자 생성 · 초대)
+영업이 볼 수 있는 정보 범위
+일반 사용자의 데이터 업로드 허용 여부
+Role 세분화 시점
+연동 · 인프라
+ERP 연동 범위 (조회 전용 · 발주 생성 포함)
+API 사용 외부 시스템 목록 · 호출 주기 · 예상 데이터량
+메신저 연동 여부 (Slack · Teams)
+Forecast Service 호스팅 (Railway 등) 및 비용 부담 주체
+Excel 업로드 최대 파일 크기
+업로드 되돌리기 보관 기간
+부록 A. 용어
+용어	뜻
+ATP	Available to Promise. 고객에게 약속 가능한 수량
+Backtest	과거 데이터로 학습해 과거를 예측하고 실적과 대조하는 검증
+Bias	예측이 실적 대비 체계적으로 높거나 낮은 정도
+Champion Model	품목별로 성능이 가장 좋아 선정된 예측 모델
+Consensus Forecast	AI 예측에 현업 보정을 반영한 최종 확정 예측
+Croston / SBA / TSB	간헐수요 전용 예측 기법
+Intermittent Demand	수요가 드문드문 발생하는 패턴
+MAPE	Mean Absolute Percentage Error
+MOQ	Minimum Order Quantity. 최소 주문 수량
+Open PO	발주는 되었으나 아직 입고되지 않은 건
+P80	100건 중 80건이 이 값 이내에 들어오는 지점
+QC Release	검수 완료. 사용 가능 재고로 전환되는 시점
+Soft Allocation	가예약. 확정 전 임시로 잡아두는 수량
+WAPE	Weighted Absolute Percentage Error
+부록 B. 계산식
+리드타임
+  전체 = QC Release − 발주일
+  계획 = 확정값 또는 실적 P80
+
+재고 흐름
+  가용재고 = 현재고 + 입고예정 − 가예약 − 확정수주
+  예상재고(t) = 가용재고 − Σ Forecast(t)
+  Stockout Date = 예상재고가 0 이하가 되는 시점
+
+안전재고
+  σ_DLT = √( L × σ_d² + d² × σ_L² )
+  Safety Stock = Z × σ_DLT
+
+발주
+  Recommended Qty = Demand(L + Review) + Safety Stock − Available − Incoming
+  Final Qty = MOQ · Pack Size 반영 올림
+  Required Order Date = Stockout Date − Lead Time − Buffer
+
+ATP
+  ATP = 가용재고 + 확정 입고예정 − 약속수량 − 가예약 − 안전재고

@@ -1,0 +1,65 @@
+/* ──────────────────────────────────────────────────────────────
+   차트 껍데기 — design.md §7
+   차트 자체는 components/chart/ 에서 recharts 로 그립니다.
+   ────────────────────────────────────────────────────────────── */
+
+:root {
+  --chart-grid: #e4e4e7;   /* 가로선만. 세로선은 긋지 않습니다 */
+  --chart-axis: #a1a1aa;
+  --chart-actual: #18181b; /* 실적 = 잉크 블랙 */
+}
+
+.chart-wrap {
+  width: 100%;
+  min-height: 260px;
+}
+
+/* 범례는 차트 위 알약 칩으로 두고 클릭으로 토글합니다 (design.md §7.3) */
+.chart-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+.chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 5px 12px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+
+.chart-legend-item:hover {
+  color: var(--text-1);
+  border-color: var(--border-strong);
+}
+
+.chart-legend-item[aria-pressed="false"] {
+  color: var(--text-3);
+  opacity: 0.5;
+}
+
+.chart-legend-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: none;
+}
+
+/* 주석 · 툴팁 — 흰 알약에 옅은 그림자 */
+.chart-annotation {
+  background: var(--surface-1);
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow-md);
+  padding: var(--s-2) var(--s-4);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+}

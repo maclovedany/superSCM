@@ -1,0 +1,398 @@
+/* ──────────────────────────────────────────────────────────────
+   셸 — 사이드바 · 탑바 · 페이지 골격
+   design.md §5 · §6.1 · §6.2 · §6.3
+   ────────────────────────────────────────────────────────────── */
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+/* ── 사이드바 ── design.md §6.1 ────────────────────────────── */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-6) var(--s-4);
+  background: var(--surface-0);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+/* 로고 마크를 쓰지 않습니다. 워드마크만 둡니다 (design.md §14-11) */
+.brand {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 var(--s-2) var(--s-5);
+}
+
+.brand-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.brand-name {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text-1);
+  white-space: nowrap;
+}
+
+.brand-role {
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.nav-section + .nav-section {
+  margin-top: var(--s-5);
+}
+
+.nav-heading {
+  padding: 0 var(--s-3) var(--s-2);
+}
+
+.nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  height: 36px;
+  padding: 0 var(--s-3);
+  border-radius: var(--r-pill);
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+
+/* hover 는 옅은 노란 배경으로 알립니다.
+   그림자로 띄우면 활성 알약(잉크)과 층이 겹쳐 읽기 어려웠습니다. */
+.nav-item:hover {
+  background: var(--nav-hover-bg);
+  color: var(--nav-hover-fg);
+}
+
+/* 시그니처 — 잉크 알약 (design.md §9 ①)
+   색이 아니라 명도로 표시하므로 상태색과 헷갈리지 않습니다. */
+.nav-item.active {
+  background: var(--ink);
+  color: #fff;
+  box-shadow: -2px -2px 6px var(--nm-light), 4px 4px 10px rgba(26, 29, 36, 0.32);
+}
+
+.nav-item.active:hover {
+  background: var(--ink-hover);
+  color: #fff;
+}
+
+.nav-item-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+}
+
+.nav-item-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 아직 만들지 않은 화면임을 숨기지 않고 표시합니다 */
+.nav-item-soon {
+  margin-left: auto;
+  flex: none;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-3);
+  background: var(--surface-3);
+  border-radius: var(--r-pill);
+  padding: 2px 6px;
+  transition: background var(--t-fast) var(--ease);
+}
+
+.nav-item:hover .nav-item-soon {
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--nav-hover-fg);
+}
+
+.nav-item.active .nav-item-soon {
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  padding-top: var(--s-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+.sidebar-foot-link {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  height: 32px;
+  padding: 0 var(--s-3);
+  border-radius: var(--r-pill);
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.sidebar-foot-link:hover {
+  background: var(--nav-hover-bg);
+  color: var(--nav-hover-fg);
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--secondary);
+  flex: none;
+}
+
+/* ── 탑바 ── design.md §6.2 ────────────────────────────────── */
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: var(--topbar-h);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 0 var(--s-8);
+  background: var(--surface-0);
+}
+
+.search {
+  position: relative;
+  flex: 1 1 380px;
+  max-width: 380px;
+}
+
+.search-icon {
+  position: absolute;
+  left: var(--s-4);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+.search input {
+  width: 100%;
+  height: 36px;
+  padding: 0 var(--s-4) 0 var(--s-10);
+  background: var(--surface-3);
+  border: none;
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow-inset-sm);
+  color: var(--text-1);
+  font-size: 13.5px;
+}
+
+.search input::placeholder {
+  color: var(--text-3);
+}
+
+.search input:focus {
+  outline: none;
+  box-shadow: var(--shadow-inset-sm), 0 0 0 2px var(--primary);
+}
+
+.topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.topbar-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  height: 32px;
+  padding: 0 var(--s-4);
+  border-radius: var(--r-pill);
+  border: none;
+  background: var(--surface-1);
+  box-shadow: var(--shadow-pill);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+
+.topbar-chip:hover {
+  color: var(--text-1);
+  box-shadow: -3px -3px 7px var(--nm-light), 3px 3px 7px var(--nm-dark);
+}
+
+.topbar-chip.alert {
+  color: var(--crit-fg);
+  background: var(--crit-bg);
+  border-color: transparent;
+}
+
+.avatar {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ink);
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+/* ── 페이지 ── design.md §6.3 ──────────────────────────────── */
+
+.page {
+  flex: 1;
+  padding: var(--s-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--s-1);
+}
+
+.page-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+.page-subtitle {
+  margin-top: var(--s-2);
+  color: var(--text-2);
+  max-width: 78ch;
+}
+
+.page-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.page-foot {
+  margin-top: auto;
+  padding-top: var(--s-6);
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 7px;
+  border-radius: var(--r-sm);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-pill);
+  color: var(--text-2);
+}
+
+/* ── 그리드 ── design.md §5.1 ──────────────────────────────── */
+
+.grid {
+  display: grid;
+  gap: var(--s-4);
+}
+
+.grid-kpi {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.grid-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.grid-rail {
+  grid-template-columns: minmax(0, 1fr) var(--rail-w);
+  align-items: start;
+}
+
+/* ── 반응형 ── design.md §5.2 ──────────────────────────────── */
+
+@media (max-width: 1439px) {
+  :root {
+    --rail-w: 280px;
+  }
+}
+
+@media (max-width: 1159px) {
+  .grid-kpi {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .grid-rail,
+  .grid-3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 899px) {
+  :root {
+    --sidebar-w: 68px;
+  }
+  .brand-copy,
+  .nav-item-label,
+  .nav-item-soon,
+  .nav-heading,
+  .sidebar-foot-link span {
+    display: none;
+  }
+  .brand {
+    padding-bottom: var(--s-4);
+  }
+  .nav-item,
+  .sidebar-foot-link {
+    justify-content: center;
+  }
+  .grid-kpi,
+  .grid-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .page {
+    padding: var(--s-5);
+  }
+  .topbar {
+    padding: 0 var(--s-5);
+  }
+}

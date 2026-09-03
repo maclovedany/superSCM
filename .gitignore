@@ -1,5 +1,8 @@
 # dependencies
 node_modules/
+forecast-service/.venv/
+forecast-service/__pycache__/
+forecast-service/.pytest_cache/
 
 # next.js build output
 .next/
@@ -30,3 +33,6 @@ next-env.d.ts
 
 # DB 덤프 (수업용, 저장소에 두지 않습니다)
 dump.sql
+
+# SQL 검증 하네스 실행 로그 (재생성됩니다)
+scripts/sql-verify/logs/
