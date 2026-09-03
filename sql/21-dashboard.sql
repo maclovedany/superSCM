@@ -130,14 +130,21 @@ lr as (
   --
   -- ★ STEP 20 수정 라운드 1 — 예전에는 started_at 만 봤습니다. 운영 실행 뒤에
   --   검증 실행을 한 번 돌리면 헤더는 검증 실행을, 숫자는 운영 실행을 가리켰습니다.
-  --   boolean 은 false < true 라 desc 가 PRODUCTION 을 앞으로 보냅니다.
   --   mode 컬럼은 sql/11-forecast-engine.sql 이 만듭니다 (이 파일보다 먼저 실행됩니다).
+  --
+  --   ★ (fr.mode = 'PRODUCTION') desc 형태의 괄호 있는 불린 정렬식을, 컬럼 이름이
+  --   하필 `mode` 인 것과 엮여 "WITHIN GROUP is required for ordered-set aggregate
+  --   mode" (42809) 로 거부하는 환경이 있었습니다. 순수 PostgreSQL 17.10 로는
+  --   재현되지 않아 원인을 확정하지 못했지만(문법상 정당한 불린 비교이지 mode()
+  --   집계 호출이 아닙니다), case 식으로 바꾸면 이 형태 자체가 없어져 안전합니다.
+  --   (error.md #27)
   select fr.run_id,
          coalesce(fr.finished_at, fr.started_at) as run_at,
          fr.is_stale
     from analytics.v_forecast_run fr
    where fr.status = 'SUCCESS'
-   order by (fr.mode = 'PRODUCTION') desc, fr.started_at desc
+   order by case when fr.mode = 'PRODUCTION' then 0 else 1 end,
+            fr.started_at desc
    limit 1
 ),
 dc as (

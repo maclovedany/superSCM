@@ -560,11 +560,15 @@ comment on function core.run_baseline_forecast(text, text) is
 
 create or replace view core.v_ai_forecast as
 with lr as (
-  -- 운영 실행 우선. boolean 은 false < true 라 desc 가 PRODUCTION 을 앞으로 보냅니다.
+  -- 운영 실행 우선. case 식이 PRODUCTION 을 0, 그 밖을 1 로 두어 앞으로 보냅니다.
+  -- ★ (r.mode = 'PRODUCTION') desc 형태의 괄호 있는 불린 정렬식은 컬럼 이름이
+  --   `mode` 인 것과 엮여 "WITHIN GROUP is required for ordered-set aggregate mode"
+  --   (42809) 로 거부되는 환경이 있었습니다 (error.md #27). case 식으로 피합니다.
   select r.run_id, r.data_snapshot_at
     from core.forecast_run r
    where r.status = 'SUCCESS'
-   order by (r.mode = 'PRODUCTION') desc, r.started_at desc
+   order by case when r.mode = 'PRODUCTION' then 0 else 1 end,
+            r.started_at desc
    limit 1
 ),
 dm as (
@@ -1722,10 +1726,12 @@ with loaded as (
 ),
 picked as (
   -- core.v_ai_forecast 와 같은 규칙으로 고릅니다. 두 곳이 다르면 배너와 숫자가 어긋납니다.
+  -- case 식으로 정렬하는 이유는 error.md #27 (위 core.v_ai_forecast 의 lr 참조).
   select r.run_id, r.mode, r.status, r.data_snapshot_at, r.started_at, r.train_end
     from core.forecast_run r
    where r.status = 'SUCCESS'
-   order by (r.mode = 'PRODUCTION') desc, r.started_at desc
+   order by case when r.mode = 'PRODUCTION' then 0 else 1 end,
+            r.started_at desc
    limit 1
 ),
 last_batch as (

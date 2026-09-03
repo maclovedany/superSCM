@@ -1,202 +1,388 @@
 # SuperSCM 아키텍처
 
-> 기준 시점: 2026-08-27 · STEP 1(디자인 시스템 · 라우팅) 완료, STEP 2(인증 · 권한) 코드 완료 · DB 적용 대기
-> 함께 읽을 문서 — `renew.prd`(요구사항) · `step.md`(구현 순서) · `design.md`(디자인) · `AGENTS.md`(작업 규칙) · `SCHEMA.md`(데이터)
+> 기준 시점: 2026-09-03 · **STEP 1~20 의 코드는 전부 작성되었습니다. 남은 것은 DB 적용과 배포 설정입니다.**
+> 그 전까지 화면은 조회 실패나 빈 상태로 보입니다. 적용 절차는 `sql/README.md`, 남은 작업은 `step.md` §0 에 있습니다.
+> 함께 읽을 문서 — `renew.prd`(요구사항) · `step.md`(구현 순서와 미결) · `design.md`(디자인) · `AGENTS.md`(작업 규칙) · `SCHEMA.md`(데이터) · `sql/README.md`(적용 순서) · `error.md`(오류 기록)
 
-## 1. 문서 개요
+## 1. 이 문서에 대하여
 
-이 문서는 한국후지필름BI의 SCM 의사결정 플랫폼 **SuperSCM**의 **현재 저장소 구조**를 설명한다. 앞으로의 계획이 아니라 지금 코드에 있는 것을 기술한다. 계획은 `step.md`에 있다.
+이 문서는 한국후지필름BI의 SCM 의사결정 플랫폼 **SuperSCM** 의 **현재 코드 구조**를 설명합니다. 앞으로의 계획이 아니라 지금 저장소에 있는 것을 기술합니다. 계획은 `step.md` 에 있습니다.
 
-현재 저장소에는 세 가지 성격의 코드가 함께 있다.
+문서의 목적은 파일 목록을 만드는 것이 아닙니다. **코드만 읽어서는 알 수 없는 판단의 근거**를 남기는 것입니다. 왜 계산이 SQL 에 있는지, 왜 AI 가 화면과 같은 함수를 부르는지, 왜 권한을 세 층에서 막는지, 왜 `incoming_qty` 와 창 안 입고량이 다른 숫자인지, 왜 검증 예측으로는 발주를 못 하는지 — 이런 것들입니다. 파일이 무슨 일을 하는지는 파일을 열면 나오지만, 왜 그렇게 되어 있는지는 여기 아니면 어디에도 없습니다.
 
-- **디자인 시스템과 셸**: `design.md`를 코드로 옮긴 토큰·컴포넌트·레이아웃. 앞으로 만들 모든 화면의 기반이다.
-- **실데이터 분석 화면 2개**: `analytics` 뷰를 서버에서 읽는 리드타임 격차와 재고 소진 위험 화면이다.
-- **미구현 화면 24개**: `renew.prd` 30장의 메뉴를 라우트로 먼저 만들어 둔 자리다. 빈 페이지가 아니라 어느 단계에서 무엇이 들어오는지 밝힌다.
+## 2. 시스템이 하는 일
 
-여기에 폐기 예정인 **레거시 데모**(`/workflow`)가 격리되어 남아 있다.
+원시 데이터에서 발주 결정까지 한 줄로 흐릅니다.
 
-## 2. 전체 구조 요약
+```text
+적재            파일 업로드 · 외부 API  →  검증  →  raw
+                                              ↓
+수요 파악       수요 패턴 분류 (ADI · CV²)  →  학습/검증 구간 격리
+                                              ↓
+예측            SQL Baseline 5종 + Python 8종  →  백테스트  →  품목별 Champion
+                                              ↓
+사람의 보정     Forecast Override  →  Consensus (AI 예측 + 증감)
+                                              ↓
+전개            기간별 재고 전개  →  결품 예상일  →  4상태 판정
+                                              ↓
+발주            안전재고 (Z · σ_DLT)  →  발주 추천 수량 · 발주 권고일
+                                              ↓
+결정            승인 워크플로  →  근거 Snapshot 저장  →  결정 이력
+```
 
-| 경로 | 기능 요약 | 주요 파일 |
+옆으로 세 갈래가 붙습니다. **알림 센터**가 12+1종 룰로 이 흐름의 이상을 6시간마다 훑고, **AI Agent** 가 같은 값을 자연어로 답하고, **영업 수급 조회(ATP)** 가 "지금 몇 대 약속해도 되는가" 를 같은 재고 전개 위에서 계산합니다.
+
+## 3. 계층 규칙 — raw / core / analytics
+
+이 프로젝트의 가장 중요한 구조적 결정입니다.
+
+| 스키마 | 담는 것 | 앱이 읽는가 |
 |---|---|---|
-| `middleware.ts` | 세션 갱신과 미로그인 리다이렉트 | 저장소 루트 |
-| `app/` | App Router 라우트 그룹, 루트 레이아웃, 토큰 CSS, API 라우트 | `layout.tsx`, `(user)/`, `(admin)/`, `(auth)/`, `(legacy)/`, `globals.css` |
-| `components/shell/` | 사이드바·탑바·페이지 헤더 등 앱 껍데기 | `app-shell.tsx`, `sidebar.tsx`, `topbar.tsx`, `page-header.tsx` |
-| `components/ui/` | 디자인 시스템 컴포넌트 | `kpi-card.tsx`, `panel.tsx`, `badge.tsx`, `data-table.tsx`, `empty-value.tsx` 등 |
-| `components/chart/` | 차트 래퍼. `recharts`를 import하는 **유일한 위치** | (STEP 7에서 생성) |
-| `components/workflow/` | **레거시 데모**. 폐기 예정이며 수정하지 않는다 | `procurement-app.tsx` 및 6개 스텝 |
-| `lib/` | 인증·권한, 도메인 모델, 상태 코드, 메뉴, Supabase 조회 | `auth.ts`, `audit.ts`, `auth-actions.ts`, `scm.ts`, `status.ts`, `menu.ts` |
-| `styles/` | 셸·컴포넌트·차트·레거시 CSS | `shell.css`, `components.css`, `chart.css`, `legacy.css` |
-| `sql/` | 권한, 인증 스키마, RLS | `01-grants.sql`, `03-auth.sql`, `04-rls.sql`, `05-first-admin.sql` |
-| `supabase/` | 로컬 설정과 마이그레이션 | `config.toml`, `migrations/` |
-| `docs/`, `outputs/` | 실습 안내, 초기 PRD, 생성 산출물 | 런타임 코드가 아니다 |
+| `raw` | CSV·API 원본 그대로. 컬럼명이 한글인 테이블이 여럿 | **아니오.** REST 에 노출하지 않습니다 |
+| `core` | 회사 기준·정제 규칙·정책값·확정값 테이블·계산 함수 | 원칙적으로 아니오 (예외는 아래) |
+| `analytics` | 화면과 AI 가 읽는 결과 뷰 | **예. 화면은 여기만 읽습니다** |
 
-## 3. 런타임 구조와 데이터 흐름
+### 3.1 왜 계산이 SQL 에 있는가
+
+`AGENTS.md` 규칙 2 — 화면 코드에서 평균이나 분위수를 구하지 않습니다. 이유는 셋입니다.
+
+**같은 숫자를 두 번 계산하지 않기 위해서입니다.** 발주 추천 화면의 "긴급 12건" 카드와 그 아래 목록은 같은 판정을 써야 합니다. 실제로 STEP 10 에서 화면이 `required_order_date <= 오늘` 을 다시 판정하다가, 앱 서버(Node)와 DB 의 시간대가 달라 카드 숫자와 목록 건수가 하루만큼 어긋난 적이 있습니다. 지금은 뷰가 `is_urgent` 를 내려주고 카드와 목록이 그 값을 함께 씁니다. 같은 이유로 입고 예정 창의 끝 날짜(`incoming_window_end`)도 화면이 오늘 날짜로 다시 계산하지 않고 뷰가 내려줍니다.
+
+**AI 와 화면이 같은 값을 말해야 하기 때문입니다.** `renew.prd` 32 — 계산이 화면 코드에 있으면 AI Agent 는 그 계산을 다시 구현해야 하고, 두 구현은 반드시 갈라집니다. 계산이 뷰에 있으면 둘 다 그 뷰를 읽습니다.
+
+**수만 행을 왕복시키지 않기 위해서입니다.** 예측 실행은 `core.run_baseline_forecast()` 한 번의 호출이고 앱은 방아쇠일 뿐입니다. 5모델 × 19품목 = 1,102행이 DB 안에서 만들어지고 앱은 결과만 봅니다.
+
+따라서 새 화면을 만드는 순서가 고정되어 있습니다.
 
 ```text
-브라우저
-  ├─ /                      → app/page.tsx → redirect('/dashboard')
-  │
-  ├─ /dashboard 외 22개      → app/(user)|(admin)/**/page.tsx
-  │                            → components/ui/planned.tsx
-  │                            → 미구현 안내 (DB 미접속)
-  │
-  ├─ /analysis/leadtime      → app/(user)/analysis/leadtime/page.tsx
-  │  /analysis/stockout        → lib/scm.ts
-  │                            → lib/supabase/server.ts
-  │                            → Supabase analytics.v_*
-  │                            → lib/scm-model.ts 정규화
-  │                            → components/ui/* 렌더링
-  │
-  ├─ /login                  → app/(auth)/login/page.tsx (껍데기)
-  ├─ /workflow               → app/(legacy)/ (샘플값, 폐기 예정)
-  └─ /api/health/supabase    → app/api/health/supabase/route.ts
-
-Supabase PostgreSQL
-  raw 원본 → core 정제·기준 → analytics 화면·AI용 뷰
+1  SQL 뷰                        analytics 에 계산 결과를 만든다
+2  lib/<도메인>-model.ts          타입과 정규화 함수 (순수 함수)
+3  lib/<도메인>.ts                조회 함수  → { rows, error }
+4  app/(user|admin)/**/page.tsx   서버 컴포넌트로 조회 · 권한 검증
+5  components/ui|chart/*          design.md 의 컴포넌트를 조립
+6  lib/menu.ts                    메뉴에 등록
 ```
 
-핵심 원칙은 세 가지다. `raw`를 화면에서 직접 읽지 않는다. 조회 함수는 `lib/scm.ts`에 모은다. 숫자 계산은 SQL이 끝내고 화면은 그리기만 한다.
+계산은 1번에서 끝납니다. 4·5번에서 평균을 내거나 분위수를 구하면 그것은 결함입니다.
 
-## 4. 폴더별 상세 구조
+### 3.2 왜 `raw` 를 열지 않는가
 
-### 4.1 `app/` — 라우팅
+`raw` 를 Supabase 의 Exposed schemas 에 넣으면 적재는 편해지지만, **로그인한 사용자가 정제되지 않은 원본을 직접 읽는 길이 함께 열립니다.** 그러면 계층을 나눈 의미가 사라집니다.
 
-라우트 그룹으로 권한 경계를 나눈다. 그룹 이름은 URL에 나타나지 않는다.
+그래서 `raw` 는 REST 에 노출하지 않고, 쓰기는 `core` 의 **security definer 함수**만 할 수 있습니다 (`core.import_commit()`). 앱은 그 함수를 부를 뿐입니다. 덤으로 적재가 한 트랜잭션에 묶여 부분 적재가 사라집니다.
 
-| 그룹 | URL | 레이아웃 | 역할 |
+이것이 이 시스템 전체에 반복되는 패턴입니다 — **뷰는 닫고 함수만 연다.** 승인(`core.approve_recommendation`), 리드타임 확정(`core.set_leadtime_plan`), 예측 보정(`core.set_forecast_override`), 가예약(`core.create_soft_allocation`) 이 전부 같은 모양입니다. 해당 테이블에는 앱이 직접 insert 할 수 있는 정책 자체를 만들지 않았습니다. 예를 들어 `core.approval` 은 insert 정책이 없고 `revoke insert` 가 걸려 있어서, **근거 Snapshot 없는 승인 행이 생길 수 없습니다.**
+
+### 3.3 계산 불가를 숫자로 채우지 않는다
+
+`AGENTS.md` 규칙 5. 값을 낼 수 없으면 `null` 과 사유 코드를 내고, 화면은 `—` 와 사유를 그리며, 정렬에서 맨 뒤로 보냅니다.
+
+이유가 구체적입니다. **`0` 으로 채우면 가장 급한 품목처럼 보이고, `999` 로 채우면 AI 가 "999일 뒤에 소진됩니다" 라고 설명합니다.** 산출 불가에 색을 주지 않는 것(초록·노랑·빨강이 아닌 회색)도 같은 이유입니다. 셋 중 하나로 보이는 순간 판단이 오염됩니다.
+
+이 규칙은 여러 곳에서 `coalesce(..., 0)` 를 조직적으로 제거하는 방향으로 나타났습니다.
+
+- `v_stockout_risk.current_stock` 은 재고 행이 없으면 `0` 이 아니라 `null` 입니다. "재고가 0" 과 "재고를 모른다" 는 다릅니다. 다만 `inbound_qty` 는 0 을 유지합니다 — 진행 중인 선적이 없는 것은 진짜 0 입니다.
+- `is_urgent` 는 발주 권고일이 없으면 `false` 가 아니라 `null` 입니다. "긴급이 아니다" 와 "모른다" 는 다릅니다.
+- `hasActiveApproval` 은 3상태입니다. `null` 은 "승인 컬럼 자체를 읽지 못했다" 를 뜻합니다. 승인은 거버넌스 기록이라, 없다고 잘못 말하는 것이 모른다고 말하는 것보다 나쁩니다.
+- σ 를 구할 수 없으면 `p80` · `p90` 을 비웁니다. 임의의 값을 넣지 않습니다.
+
+규칙과 부딪히는 자리는 숨기지 않고 셉니다. 가상 운영에서 기초 재고 역산이 음수가 되면 0 에서 시작하되 그 품목 수를 `kpis.opening_clamped_items` 로 남깁니다.
+
+### 3.4 정책값을 뷰에 적지 않는다
+
+임계값과 정책값은 `core.policy_config` · `core.service_level` · `core.z_table` · `core.item_policy` 에서 읽습니다. 뷰에 숫자 리터럴을 적지 않습니다. `core.leadtime_plan` 을 바꾸면 화면 코드를 고치지 않아도 판정이 즉시 달라집니다. **정책과 코드를 분리하는 지점입니다.**
+
+대가가 있습니다. 정책 행이 지워지면 판정 대역이 통째로 사라집니다. `REVIEW_PERIOD_DAYS` 와 `SAFETY_BUFFER_DAYS` 가 없으면 `WARNING` 구간이 없어집니다. 그래서 그 자리를 `coalesce(..., 0)` 로 조용히 때우지 않고 `null` 을 전파시키고, 서버 액션이 빈 값 저장을 거부하며, 뷰에 "이 두 행을 지우지 마세요" 주석을 붙였습니다.
+
+## 4. 화면
+
+메뉴 정의는 `lib/menu.ts` 한 파일에만 있습니다. 현재 **32개 항목 전부 `ready: true`** 이며, 라우트는 38개입니다(동적 상세 화면과 로그인·레거시 포함).
+
+### 4.1 일반 사용자 (16)
+
+| 화면 | 하는 일 |
+|---|---|
+| `/dashboard` | KPI 12종 + 위젯 7종. 새 계산식이 없고 앞 단계 뷰를 모으기만 합니다 |
+| `/analysis/demand-profile` | 품목별 수요 패턴 분류 (SMOOTH · INTERMITTENT · ERRATIC · LUMPY) |
+| `/forecast` | 품목별 예측값과 예측 구간 |
+| `/model-comparison` | 모델별 예측을 실적 위에 겹쳐 봅니다 |
+| `/model-evaluation` | 백테스트 성능(WAPE · MAPE · Bias · RMSE)과 Champion 선정 근거 |
+| `/forecast-override` | 사람이 AI 예측에 증감을 얹고, 그 보정의 성적(Forecast Value Add)을 봅니다 |
+| `/virtual-operation` | "AI 추천대로 발주했다면" 을 실제 이력과 나란히 |
+| `/inventory-projection` | 기간별 예상 재고 전개와 결품 예상일 |
+| `/analysis/stockout` | 품목별 재고 소진 위험 4상태 |
+| `/analysis/leadtime` | 공급처별 마스터 리드타임과 실적의 격차 |
+| `/purchase-recommendation` | 발주 추천 목록과 품목 상세(SKU Detail) |
+| `/decision-history` | 승인·반려 이력과 그때의 근거 Snapshot |
+| `/alerts` | 알림 센터 |
+| `/what-if` | 가정을 바꿔 Base 와 나란히 비교 |
+| `/sales` | 영업 수급 조회 — ATP 와 가예약 |
+| `/agent` | AI Agent 대화 |
+
+### 4.2 관리자 (16)
+
+관리자는 `renew.prd` 4.2 에 따라 사용자 화면을 전부 포함하고 아래가 더해집니다.
+
+| 묶음 | 화면 |
+|---|---|
+| 사용자 | `/admin/users` — 역할 변경과 활성 상태. 자기 계정은 스스로 바꿀 수 없습니다 |
+| 예측 설정 | `/admin/models`(모델 on/off) · `/admin/forecast-settings` · `/admin/forecast-runs`(+ 실행 상세) · `/admin/model-versions` |
+| SCM 정책 | `/admin/policies/leadtime` · `/service-level` · `/safety-stock` · `/outlier` |
+| 데이터 | `/admin/data/upload` · `/history` · `/errors` |
+| API · 로그 | `/admin/api/keys` · `/logs` · `/docs` · `/admin/logs`(시스템 로그) |
+
+### 4.3 화면이 지키는 두 규약
+
+**KPI 카드를 누르면 목록이 좁혀집니다.** 필터 상태는 URL 쿼리에 두어 화면이 서버 컴포넌트로 남고, 카드와 목록이 `FILTERS` 배열 한 곳을 공유합니다. **카드 숫자와 목록 건수가 정확히 맞지 않는 카드에는 필터를 주지 않습니다** — 눌러도 아무 일이 없거나, 더 나쁘게는 좁혀진 줄 알고 전체를 보게 됩니다. 예외는 `// kpi-filter: 없음` 주석으로만 인정되고 `lib/kpi-filter.test.ts` 가 이를 강제합니다.
+
+**조회 오류와 빈 결과를 다르게 다룹니다.** 오류는 `ErrorState` 로 원인까지 보여주고, 오류 없이 행이 없으면 `EmptyState` 를 씁니다. 빈 배열을 "데이터 없음" 으로만 표시하면 Exposed schemas 누락 같은 설정 문제를 영영 못 찾습니다.
+
+## 5. 권한 — 세 층이 각각 막는다
+
+`renew.prd` 4.4 · 32. 한 층만으로는 반드시 부족합니다.
+
+| 층 | 위치 | 막는 것 | 이 층만으로 부족한 이유 |
 |---|---|---|---|
-| `(auth)` | `/login` | 없음 | 로그인. STEP 2에서 Supabase Auth를 붙인다 |
-| `(user)` | `/dashboard`, `/forecast`, `/analysis/*` 등 | `AppShell role="USER"` | 일반 사용자 화면 11개 + 분석 2개 |
-| `(admin)` | `/admin/**` | `AppShell role="ADMIN"` | 관리자 화면 14개 |
-| `(legacy)` | `/workflow` | `styles/legacy.css` | 레거시 데모. 신규 화면은 쓰지 않는다 |
+| 메뉴 | `lib/menu.ts` | 역할별로 보이는 메뉴 | URL 을 직접 치면 그만입니다 |
+| 서버 | `middleware.ts` · 레이아웃 · 서버 컴포넌트 · Server Action | 미로그인 리다이렉트, 관리자 화면 403, 액션 첫 줄의 `requireAdminOrThrow()` | 사용자의 토큰은 그 자체로 `authenticated` 라, 앱을 거치지 않고 PostgREST 를 직접 부르면 소용없습니다 |
+| DB | `sql/03` · `04` 의 RLS, `sql/29` 의 컬럼 가림, `sql/28` 의 anon 회수 | 앞 두 층을 우회한 직접 조회 | 매 요청마다 DB 를 왕복시킬 수는 없고, 사용자에게 이유를 설명해 주지도 못합니다 |
 
-#### 파일별 역할
+역할 검증을 `middleware.ts` 에서 하지 않는 것은 의도입니다. 매 요청에 DB 조회가 붙기 때문입니다. middleware 는 세션 갱신과 미로그인 차단만 맡고, 역할은 서버 레이아웃이 판정합니다.
 
-| 파일 | 역할 |
-|---|---|
-| `app/layout.tsx` | Root Layout. 토큰 CSS 4개를 순서대로 import하고, Pretendard·Inter·JetBrains Mono를 로드한다. Inter에는 한글 글리프가 없어 Pretendard를 함께 쓴다. |
-| `app/page.tsx` | `/`의 진입점. `/dashboard`로 redirect만 한다. |
-| `app/globals.css` | **디자인 토큰**과 리셋, 타입 스케일. 색·간격·글꼴의 단일 출처다. `design.md` §3·§4와 1:1로 대응한다. |
-| `app/(user)/layout.tsx` | `AppShell`에 `role="USER"`를 넘긴다. STEP 2에서 `requireUser()`가 들어갈 자리다. |
-| `app/(admin)/layout.tsx` | 같은 구조. STEP 2에서 `requireAdmin()`이 들어간다. |
-| `app/(legacy)/layout.tsx` | `styles/legacy.css`를 import하고 `.legacy-root`로 감싼다. 다크 테마와 충돌하지 않게 격리한다. |
-| `app/(user)/analysis/leadtime/page.tsx` | `analytics.v_leadtime_gap` 조회. 공급처별 마스터 리드타임·실적 평균·P80·격차를 표시한다. |
-| `app/(user)/analysis/stockout/page.tsx` | `analytics.v_stockout_risk`·`v_stockout_kpi` 조회. 품목별 소진 위험을 표시하고 산출 불가 품목을 `—`와 사유 코드로 구분한다. |
-| `app/api/health/supabase/route.ts` | 환경변수 설정 여부만 확인해 `{ configured }`를 반환한다. |
+middleware 는 로그인한 사용자를 `/login` 에서 되돌려보내지 **않습니다.** middleware 는 auth 세션만 알기 때문에, `core.app_user` 행이 없는 계정은 `/login` 과 `/dashboard` 를 무한히 오가게 됩니다. 이 경우 `requireUser()` 가 사유를 붙이고 로그인 화면이 원인을 설명합니다.
 
-두 분석 화면은 `dynamic = 'force-dynamic'`으로 캐시된 정적 결과를 피한다.
+Server Action 의 로그인 확인에는 `requireUser()` 대신 `getSessionUser()` 를 씁니다. `requireUser()` 는 `redirect()` 를 throw 하는데(`NEXT_REDIRECT`), 액션의 `try/catch` 가 그것을 삼켜 세션이 끊긴 사용자가 로그인 화면으로 가지 못합니다.
 
-미구현 화면 24개는 모두 `components/ui/planned.tsx` 한 컴포넌트를 쓴다. 화면이 완성되면 이 컴포넌트를 쓰지 않게 되고, `lib/menu.ts`의 `ready`를 `true`로 바꾼다.
+### 5.1 영업 제한
 
-### 4.2 `components/shell/` — 앱 껍데기
+`renew.prd` 4.5 는 영업 담당자에게 다섯 가지를 막습니다 — 조달 단가, 발주 금액, 공급처 상세, 리드타임 통계, 예측 정확도 지표. 영업 여부는 `core.app_user.department` 로 판정하고, 규칙은 `lib/agent/redact.ts` 와 `core.is_sales()` 두 곳이 같은 내용을 갖습니다. **관리자는 부서가 영업이어도 영업이 아닙니다.**
 
-| 파일 | 역할 |
-|---|---|
-| `app-shell.tsx` | 사이드바 + 탑바 + 콘텐츠 골격. 모든 화면이 이 안에 들어간다. |
-| `sidebar.tsx` | 클라이언트 컴포넌트. `usePathname`으로 활성 메뉴를 판정하고 `lib/menu.ts`의 정의를 그린다. 활성 표시는 초록(상태)이며 파랑은 행동에만 쓴다. |
-| `topbar.tsx` | 검색·AI Agent·전체 알림·아바타. 현재 전부 비활성이다. |
-| `page-header.tsx` | 제목·부제·메타 칩·액션 버튼. `MetaChip`을 함께 export한다. |
+세 층이 각각 막습니다.
 
-### 4.3 `components/ui/` — 디자인 시스템 컴포넌트
+1. 메뉴에서 화면 5개를 감춥니다.
+2. 서버 컴포넌트가 그 값을 **아예 조회하지 않습니다.** 숨기는 것이 아니라 만들지 않습니다 — 렌더하지 않은 값은 브라우저까지 가지 않습니다. 화면 전체가 예측 정확도인 `/model-evaluation` · `/model-comparison` 은 열만 빼면 껍데기가 "데이터가 없다" 로 읽히므로 403 으로 막았습니다.
+3. `sql/29-sales-column-guard.sql` 이 뷰 안에서 `case when core.is_sales() then null` 로 값을 비웁니다.
 
-| 파일 | 역할 |
-|---|---|
-| `empty-value.tsx` | **계산 불가 표기**. `—`와 사유 코드를 렌더링한다. 값이 없는 모든 자리는 이 컴포넌트만 쓴다. |
-| `kpi-card.tsx` | KPI 카드. 값이 `null`이면 숫자를 지어내지 않고 `EmptyValue`를 쓴다. `default`·`warn`·`crit` 변형이 있다. |
-| `panel.tsx` | 패널 카드. 제목·헤더 액션·본문. 표처럼 자체 여백이 있는 내용은 `flush`로 패딩을 없앤다. |
-| `badge.tsx` | 배지와 `StatusBadge`. 상태→문구·색 매핑은 `lib/status.ts`에 있다. |
-| `data-table.tsx` | 제네릭 표. 컬럼 정의(`variant`로 code·num·strong 지정)를 받아 그린다. 계산은 하지 않는다. |
-| `alert-row.tsx` | 알림 행. 좌측 3px 상태 바가 상태 스파인이다. |
-| `insight-banner.tsx` | AI 인사이트 배너. 없어도 화면이 성립해야 한다. |
-| `state.tsx` | `ErrorState`와 `EmptyState`. 조회 실패와 빈 결과를 다른 문구로 구분한다. |
-| `planned.tsx` | 미구현 화면 안내. 어느 STEP에서 무엇이 들어오는지 밝힌다. |
+DB 층까지 필요했던 이유가 실제 사고입니다. 화면은 닫았지만 영업 사용자의 토큰으로 PostgREST 를 직접 부르면 단가와 정확도가 그대로 나왔습니다. `sql/29` 는 **컬럼을 빼지 않고 값만 `null` 로** 만듭니다 — 응답 모양이 바뀌면 외부 API 와 기존 화면이 함께 깨집니다. 정의를 손으로 옮겨 적지도 않습니다. `pg_get_viewdef` 로 `<뷰>_src` 를 뜨고 그 위에 얇은 select 를 얹어, 정의가 두 벌 생기지 않게 했습니다.
 
-### 4.4 `components/workflow/` — 레거시 데모 (폐기 예정)
+여기서 배운 것이 하나 있습니다. **가릴 값과 없는 값은 다릅니다.** `v_stockout_risk.planned_lead_time` 을 가렸더니 `explanation` 이 "리드타임 —일" 이라며 권한 때문에 가린 것을 "모른다" 고 말했고, `is_urgent` 가 `null` 이 되면서 KPI 가 "긴급 발주 0건" 이라는 확신에 찬 오답을 냈습니다. 그 가림막은 제거했습니다. 화면에서 권한으로 빠진 자리는 `components/ui/restricted-notice.tsx` 가 **권한 때문이라고 적습니다** — 열이 조용히 없어지면 "데이터가 없나" 로 읽힙니다.
 
-`procurement-app.tsx`와 6개 스텝 파일은 초기 프로토타입이다. 전부 하드코딩 샘플이며 DB에 연결되지 않는다. `/workflow`에서만 살아 있고 `styles/legacy.css`로 격리되어 있다.
+**다만 DB 층은 아직 완성되지 않았습니다.** `sql/29` 는 뷰의 컬럼만 가리는데, 영업 토큰이 PostgREST 로 닿을 수 있는 객체는 뷰만이 아닙니다. 최종 검토에서 영업 계정으로 금지 5범주를 전부 읽어내는 우회로 셋이 확인되었습니다(§13.4). 세 경로 모두 `sql/29` **밖의** 파일에 있습니다 — **한 파일에 갇힌 가드는 다른 파일이 연 경로를 닫을 수 없습니다.** `renew.prd` 4.4 가 요구하는 "Database 적용" 은 아직 성립하지 않은 상태로 보아야 합니다.
 
-**수정 대상이 아니다.** `renew.prd`의 화면으로 대체되며, 폐기 시점은 `step.md` §5의 미결 항목이다.
+### 5.2 anon 잠금
 
-### 4.5 `lib/` — 도메인 모델과 데이터 접근
+`sql/01-grants.sql` 의 일괄 grant 가 `core` · `analytics` 의 모든 뷰 조회를 `anon` 에게 주고 있었습니다. publishable 키는 비밀이 아니라 **모든 방문자의 브라우저 번들 안에 있습니다.** 운영 DB 에 curl 로 확인한 결과, 로그인 없이 거래처명·리드타임 통계·품목명·현재고가 그대로 나왔습니다.
 
-| 파일 | 역할 |
-|---|---|
-| `auth.ts` | 권한 검증의 단일 출처. `getSession`이 "로그인 안 함 / 프로필 없음 / 비활성 / 오류 / 정상" 다섯 상태를 구분하고, `requireUser`·`requireAdmin`·`requireAdminOrThrow`가 이를 강제한다. Supabase의 `getUser()`로 매번 토큰을 검증한다. 쿠키를 그대로 믿는 `auth.getSession()`은 권한 판정에 쓰지 않는다. |
-| `auth-actions.ts` | 로그인·로그아웃 Server Action. Supabase 오류 원문을 화면 문구로 바꾸고, 비활성 계정은 세션을 끊고, 로그인 시 `last_login_at`을 갱신한다. |
-| `audit.ts` | 감사 로그 기록. 기록 실패가 본 작업을 막지 않되 서버 로그에는 남긴다. |
-| `users.ts` | `core.app_user` 조회. |
-| `scm-model.ts` | 화면용 타입(`LeadtimeGap`, `StockoutRisk`, `StockoutKpi`)과 정규화 함수. 뷰 컬럼명이 영문·별칭·한국어 중 무엇이든 후보 배열로 흡수하고, 숫자 파싱 실패는 `null`로 처리한다. |
-| `status.ts` | 상태와 사유 코드의 단일 출처. `RiskStatus` 4종, `ReasonCode` 4종, 한국어 라벨, `Tone` 매핑, `nullsLast` 정렬 함수를 제공한다. 현재 뷰가 돌려주는 `NO_USAGE`·`UNKNOWN`을 `renew.prd` 20.2 코드로 정규화한다. |
-| `menu.ts` | `renew.prd` 30장의 ADMIN/USER 메뉴 정의. `ready` 플래그로 미구현 화면을 표시한다. 메뉴는 이 파일 한 곳에만 있다. |
-| `chart-colors.ts` | 차트 시리즈 색 고정 매핑. 화면마다 같은 모델이 다른 색으로 보이지 않게 한다. |
-| `scm.ts` | 조회의 단일 진입점. `getLeadtimeGap`·`getStockoutRisks`·`getStockoutKpi`가 `analytics` 뷰를 읽고 화면 모델로 정규화한다. 오류는 `{ rows/data, error }`로 반환한다. |
-| `scm-model.test.ts` | 정규화 함수의 컬럼명 후보·별칭·상태 코드 변환을 검증하는 Node 테스트 7건. |
-| `supabase/env.ts` | `NEXT_PUBLIC_SUPABASE_URL`과 `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`를 읽는다. secret 키는 다루지 않는다. |
-| `supabase/server.ts` | `@supabase/ssr`의 쿠키 세션 클라이언트. 세션이 쿠키에 있어야 RLS의 `auth.uid()`가 동작한다. 쿠키 쓰기는 Server Action과 Route Handler에서만 되므로, 서버 컴포넌트에서는 조용히 무시하고 `middleware.ts`가 갱신을 맡는다. |
-| `supabase/client.ts` | 클라이언트 컴포넌트용 클라이언트. |
+`sql/28-anon-lockdown.sql` 이 이를 회수합니다. 바꾸기 전에 anon 이 실제로 필요한 경로를 전수 조사했더니, 브라우저에서 직접 조회하는 화면은 **0개**였고 세션 없이 도는 경로는 둘뿐이었습니다 — **Vercel Cron 과 외부 API 인바운드**. 그래서 anon 에게 되돌려주는 것은 security definer **함수 실행 9개뿐**이고, 전부 자기 안에서 호출자를 다시 검사합니다.
 
-`lib/status.ts`는 `lib/scm-model.ts`에서 `./status.ts`로 확장자를 붙여 import한다. `node --test`가 ESM 확장자를 요구하기 때문이다.
+세 가지가 이 파일의 성격을 정합니다.
 
-### 4.6 `styles/` — CSS
+- **`alter default privileges` 에서 anon 을 빼는 것이 핵심입니다.** 그러지 않으면 새 뷰를 만들 때마다 구멍이 조용히 다시 열립니다.
+- 함수의 PostgreSQL 기본값은 "public 에 execute" 이므로 anon 에서만 거두면 public 을 통해 열립니다. 전부 거둔 뒤 authenticated 에게만 되돌립니다.
+- **`sql/28` 은 항상 마지막에 실행합니다.** 앞 파일들을 고치는 대신 마지막 파일 하나가 최종 권한 상태를 선언하는 방식입니다. 함수를 추가하는 파일을 적용했다면 `sql/28` 을 다시 실행해야 합니다.
 
-화면별 CSS 파일을 만들지 않는다. 네 개가 전부다.
+## 6. 예측 파이프라인
 
-| 파일 | 역할 |
-|---|---|
-| `shell.css` | 사이드바·탑바·페이지 골격·그리드·반응형 |
-| `components.css` | 카드·KPI·배지·버튼·표·알림·배너·레일·계산 불가 표기·상태 메시지 |
-| `chart.css` | 차트 컨테이너·범례 칩·주석 박스와 차트 토큰 |
-| `legacy.css` | 구 라이트 테마. `.legacy-root` 아래로 스코프되어 있다. 신규 화면은 쓰지 않는다 |
+### 6.1 학습/검증 구간 격리
 
-색과 간격은 전부 `app/globals.css`의 CSS 변수를 참조한다. 하드코딩된 hex는 레거시를 제외하면 없다.
+경계를 코드에 두지 않고 `core.forecast_setting` 한 행에 둡니다. `core.v_train_demand` 는 `train_end` 이후 행을 **물리적으로 내보내지 않습니다.** 정답지는 이름을 달리해 `core.v_test_actual` 로 두었습니다 — 학습 코드가 실수로 부르면 눈에 띄게 하기 위해서입니다. 학습 경로에서 `raw.usage_history` 를 직접 조회하는 것은 리뷰에서 반려됩니다.
 
-### 4.7 `sql/` — 권한과 RLS
+같은 이유로 수요 패턴 분류도 학습 구간만 봅니다. 검증 구간의 통계를 보는 것 자체가 Data Leakage 입니다.
 
-| 파일 | 역할 |
-|---|---|
-| `01-grants.sql` | `anon`·`authenticated`에 `core`·`analytics` 읽기 권한을 부여한다. `raw`는 열지 않는다. |
-| `02-policies.sql` | **폐기됨.** `anon`에게 `for all using(true)`를 주던 수업용 정책이다. 실행하지 않는다. |
-| `03-auth.sql` | `core.app_user`, `auth.users` 트리거, `core.is_admin()`, `core.audit_log`와 각각의 RLS. `is_admin()`을 `security definer`로 두는 이유는 `app_user` 정책 안에서 다시 `app_user`를 읽을 때의 재귀를 피하기 위해서다. |
-| `04-rls.sql` | 02의 수업용 정책을 지우고 역할 기반으로 교체한다. `core.leadtime_plan`·`usage_profile`의 쓰기를 ADMIN으로 제한하고 `anon`의 쓰기 권한을 회수한다. 읽기는 남긴다. `analytics` 뷰가 `security definer`로 이 테이블을 대신 읽기 때문이다. |
-| `05-first-admin.sql` | 첫 관리자 지정 템플릿. 이후 역할 변경은 `/admin/users` 화면에서 한다. |
+### 6.2 검증 실행과 운영 실행
 
-### 4.8 `supabase/` — 설정과 마이그레이션
+**같은 예측 엔진이 두 가지 목적으로 돌고, 그 둘을 섞으면 시스템이 스스로를 속입니다.**
 
-`config.toml`은 로컬 프로젝트 설정이다. `migrations/20260813000100_create_procurement_demand_core.sql`은 초기 수요확정 구조를 `public`에 만든다(`planning_runs`, `ol_demand`, `sfdc_pipeline`, `bulk_deals`, `historical_actuals`, `demand_confirmations`). 이 구조는 화면과 연결되어 있지 않으며, `renew.prd`의 CORE 계층과 역할이 겹친다. 정리 여부는 `step.md` STEP 3에서 결정한다.
+| | 학습 종료일 | 예측하는 구간 | 쓰는 곳 |
+|---|---|---|---|
+| VALIDATION | `train_end` | 검증 구간 = **과거** | 백테스트 · 모델 평가 · 가상 운영 |
+| PRODUCTION | `production_train_end` | **오늘 이후** | 재고 전개 · 발주 추천 · 대시보드 · Consensus · 알림 |
 
-### 4.9 저장소 루트의 문서
+두 경계를 한 컬럼에 겹치면 백테스트가 자기가 맞혀야 할 답을 학습합니다. 반대로 검증 경계까지만 학습한 예측은 과거를 예측하므로, 재고 전개와 발주 추천이 "오늘 이후" 예측을 찾지 못해 전부 `NO_FORECAST` 로 떨어집니다. 그래서 컬럼을 둘로 나눴습니다.
 
-| 파일 | 역할 |
-|---|---|
-| `renew.prd` | **현재 기준 요구사항.** 36장 + 부록. 예측·백테스트·발주추천·AI까지 전체 범위를 정의한다. |
-| `step.md` | 구현 순서. STEP 1~20과 각 단계의 완료 판정. |
-| `design.md` | 디자인 시스템. 색·글꼴·컴포넌트·상태 표현·금지 사항. |
-| `AGENTS.md` | 작업 규칙 10개. 기술 스택, 데이터 규칙, 코드 구조, 검증 방법. |
-| `SCHEMA.md` | Supabase 스키마·뷰 컬럼·기대 행 수. |
-| `error.md` | 발생한 오류와 해결책 기록. 오류가 나면 먼저 확인한다. |
-| `2026-08-13-procurement-planning-mvp-prd.md`, `docs/superpowers/**` | **초기 MVP 문서.** `renew.prd`로 대체되었으며 이력 참고용이다. |
-| `outputs/`, `build_*.mjs` | 프로세스 정의서 엑셀과 생성 스크립트. 런타임 코드가 아니다. |
+`getLatestSuccessfulRun()` 도 `core.v_ai_forecast` 와 같은 규칙(운영 우선)을 씁니다. 전에는 "가장 최근 성공" 이었는데, 운영 실행 뒤 검증 실행을 한 번 더 돌리면 **화면 머리의 실행 ID 는 검증 실행을, 화면 숫자는 운영 실행을 가리키게 됩니다.** 그 어긋남은 화면에서 잡아낼 방법이 없습니다.
 
-## 5. 디자인 시스템 아키텍처
+**적용 직후 운영 실행을 한 번 돌리지 않으면 재고 전개·발주 추천·대시보드가 조용히 빈 채로 남습니다.** `step.md` §0.3 의 부트스트랩 순서가 이것 때문에 있습니다.
 
-`design.md`가 기준이고, 코드는 다음 세 층으로 그것을 구현한다.
+### 6.3 Champion 선정
+
+백테스트가 품목별로 모델을 채점하고 Champion 을 뽑습니다. 지표는 `WAPE = Σ|A−F|/ΣA` 가 핵심이고, `Bias = Σ(F−A)/ΣA` 이므로 **양수가 과대예측**입니다.
+
+이 부호는 실수하기 쉽습니다. 실제로 대시보드의 설명 문구가 프로젝트 전체와 반대로 적혀 있던 적이 있습니다. 숫자는 처음부터 맞았고 옆의 설명만 반대라서 더 위험했습니다 — **과잉 재고를 만드는 모델을 "덜 예측한다" 고 읽게 만드는, 오류로 보이지 않는 오류**였습니다. 지금은 `app` · `lib` · `sql` 전체를 훑어 반대 문구를 찾는 테스트가 있습니다.
+
+1등만 저장하지 않고 후보 전체 성능을 `champion_model.candidates` 에 jsonb 로 남깁니다. 1등만으로는 "왜 뽑혔는지" 를 설명할 수 없습니다. 수동 지정은 자동 선정이 덮어쓰지 않습니다.
+
+### 6.4 Python 예측 서비스는 선택입니다
+
+`forecast-service/` 는 FastAPI 서비스 하나입니다. `DATABASE_URL` 로 Postgres 에 직접 붙어 학습 뷰를 읽고, 모델 8종(ETS · HOLT_WINTERS · SARIMA · PROPHET · CROSTON · SBA · TSB · LIGHTGBM)을 돌립니다. Railway 배포를 전제하며, **없어도 시스템은 SQL Baseline 5종으로 동작합니다.**
+
+설계의 축은 하나입니다. **서비스는 새 실행을 만들지 않고 SQL Baseline 이 만든 같은 `run_id` 에 결과를 이어 붙입니다.** 그래야 백테스트가 SQL 모델과 Python 모델을 **같은 학습 구간·같은 검증 구간·같은 스냅샷**으로 채점합니다.
+
+파생되는 규칙들입니다.
+
+- **이어붙인 실행은 Python 이 실패해도 상태를 내리지 않습니다.** SQL 결과가 이미 유효하기 때문입니다(`renew.prd` 31.4). 사유는 실행 메시지에만 남습니다. 반대로 서비스가 새로 만든 실행은 행이 0이면 `FAILED` 입니다.
+- 실패한 (모델, 품목) 조합은 **행을 만들지 않습니다.** 한 실행 안에서 SQL 행과 Python 행의 모양을 맞추기 위해서입니다. 건너뛴 사유는 `forecast_run.models[].skipped` 에 남습니다.
+- `SERVICE_TOKEN` 이 없으면 `/health` 를 뺀 전부가 401 입니다. DB 쓰기 권한을 가진 서비스라 "토큰 미설정 = 인증 없음" 으로 열지 않았습니다.
+- **새 모델을 더하는 일은 `app/models/` 에 파일 하나와 `core.model_config` 에 한 줄입니다.** 파이프라인은 고치지 않습니다.
+
+### 6.5 staleness 사슬
+
+데이터가 새로 들어오면 저장된 예측은 낡습니다. 그 사실이 화면까지 전달되는 경로가 하나로 묶여 있습니다.
 
 ```text
-app/globals.css          토큰 — 색 · 서피스 · 텍스트 · 상태 · 간격 · 반경 · 글꼴
-        ↓ var(--*)
-styles/*.css             클래스 — .panel · .kpi · .badge · .table · .alert-row
-        ↓ className
-components/ui/*          컴포넌트 — 타입이 붙은 재사용 단위
-        ↓ props
-app/**/page.tsx          화면 — 조회 결과를 컴포넌트에 넘긴다
+적재 확정  →  core.v_data_loaded_at  →  is_stale · needs_production_run
+           →  <StaleBanner /> (화면 5곳)  →  운영 실행  →  해제
 ```
 
-화면에서 색과 간격을 직접 쓰지 않는다. 새 시각 요소가 필요하면 `design.md`에 스펙을 먼저 추가하고 `styles/components.css`에 클래스를 만든다.
+`core.v_data_loaded_at` 은 `max(usage_history.loaded_at)` 과 `core.upload_batch` 의 확정 시각 중 큰 값입니다. **적재는 전부 `upload_batch` 를 지나가므로 대상 테이블마다 시각을 확인할 필요가 없고, 대량 적재 알림도 같은 표를 보므로 두 신호가 어긋날 수 없습니다.**
 
-### 상태 표현
+판정은 화면이 하지 않습니다. SQL 이 두 개의 boolean 을 내고 `staleSentence()` 가 문장으로만 옮깁니다. 두 사유가 겹치면 운영 실행을 먼저 말하고, 조회에 실패해 읽지 못했을 때는 조용합니다 — 모르는 것을 경고로 올리지 않습니다.
 
-`renew.prd` 20장의 4상태를 `lib/status.ts`가 단일 출처로 관리한다.
+### 6.6 계산식 한눈에
+
+재고 전개와 안전재고가 이 시스템의 심장입니다.
+
+```text
+적용수요   greatest(예측, 확정수주) + 가예약(첫 기간만)
+기말재고   현재고 + Σ(입고 − 적용수요)          ← window sum. 재귀 CTE 없음
+결품시점   closing_qty < 0 인 첫 기간 안에서 선형 보간
+
+σ_DLT      sqrt( L × σ_d² + d² × σ_L² )
+안전재고    round( Z × σ_DLT )
+발주수량    greatest(0, 창수요 + 안전재고 − 현재고 − 창 안 입고예정)
+           → MOQ · pack_size 로 올림
+발주권고일  결품예상일 − 리드타임 − SAFETY_BUFFER_DAYS
+```
+
+확정 수주에 `greatest` 를 쓰고 더하지 않는 것은 이중 계산을 피하기 위해서입니다. σ_d 는 백테스트 Champion 의 RMSE 를 우선 쓰고, 없으면 모델 잔차 σ 를 쓰며, 어느 쪽인지 `sigma_source` 로 항상 드러납니다. 월 단위 σ 를 `√30.4` 로 나눠 일 단위로 바꾸는데 **이것은 일별 오차가 독립이라는 가정**이고, 실제 수요 오차에는 자기상관이 있어 안전재고가 작게 나올 수 있습니다. 이 한계는 뷰 주석과 화면 배너 양쪽에 적혀 있습니다.
+
+### 6.7 `incoming_qty` 와 창 안 입고량이 다른 이유
+
+같은 "입고 예정" 인데 숫자가 둘입니다. 헷갈리기 쉬운 자리라 따로 적습니다.
+
+`core.v_inbound_qty` 의 `incoming_qty` 는 **날짜 조건 없이 진행 중인 선적 전량의 합**입니다. 그런데 발주 필요량은 `리드타임 + 검토 주기` 창 안의 수요와 비교합니다. **수요는 창 안에서 세면서 공급은 창 밖 물량까지 세면, 식의 두 변이 서로 다른 기간을 말하게 됩니다.** 창 뒤에 도착하는 배는 그 창의 수요를 덮지 못하므로 딱 그만큼 발주가 모자라고, 나중에 결품으로 돌아옵니다.
+
+고치는 방법으로 `incoming_qty` 의 뜻을 바꾸지 **않았습니다.** SKU Detail · KPI · 외부 API · AI Agent · 승인 Snapshot · ATP 가 전부 그 이름으로 "실제로 오고 있는 물량 전부" 를 읽고 있어서, 뜻을 바꾸면 화면이 조용히 더 작은 숫자를 보여주고 ATP 와 어긋납니다. 대신 **컬럼 세 개를 더했습니다** — `incoming_window_end` · `incoming_in_window_qty` · `incoming_after_window_qty`. 발주 식은 창 안 몫만 빼고, KPI 카드는 전량을 그대로 보여주며, SKU Detail 의 근거 표는 창 안 몫을 쓰되 바로 아래 줄에 창 뒤 물량을 덧붙여 두 숫자의 차이가 같은 칸 안에서 읽히게 했습니다.
+
+남은 한계가 있습니다. **`earliest_eta` 는 기록된 도착 예정일이 아니라 `발주일 + 공급처 리드타임` 추정치입니다.** 기록된 납기와 −17 ~ +13일 어긋나므로 창 안/뒤 판정의 해상도는 약 ±2주입니다. 실제 ETA 컬럼이 생기면 교체해야 합니다.
+
+## 7. AI 계층
+
+`renew.prd` 31.4 와 `design.md` §2-⑥ 이 성격을 정합니다. **LLM 은 부가 계층입니다. 없어도 화면이 성립해야 합니다.** 환경변수가 없으면 `/agent` 만 안내를 보이고 나머지 화면은 그대로 동작합니다.
+
+### 7.1 LLM 은 숫자를 만들지 않습니다
+
+툴 10종(영업용 6종 별도)이 **전부 화면이 쓰는 것과 같은 `lib/*` 조회 함수를 부릅니다.** `lib/agent/tools.ts` 안에 Supabase 질의문이 한 줄도 없습니다. 건수도 TypeScript 에서 세지 않고 `v_stockout_kpi` · `v_alert_kpi` 가 센 값을 씁니다 — **화면의 KPI 카드와 같은 숫자여야 하기 때문입니다.**
+
+이것이 `renew.prd` 32 의 실현입니다. 계산을 두 번 구현하면 두 구현은 반드시 갈라지고, 그러면 "AI 가 말한 숫자" 와 "화면에 뜬 숫자" 중 어느 쪽도 믿을 수 없게 됩니다.
+
+LLM 호출은 OpenAI 호환 `/v1/chat/completions` 를 `fetch` 로 직접 합니다(SDK 미도입). 1단계 클라우드에서 2단계 사내 vLLM 으로 옮기는 일이 **base URL 교체만으로** 끝나게 하기 위해서입니다.
+
+### 7.2 Guardrail 과 그 한계
+
+`ToolResult.numbers` 는 그 툴이 돌려준 모든 수치의 평평한 사전이고, **답변에 나온 숫자는 여기 있는 값만 허용됩니다.** 어긋나면 한 번 재생성을 요청하고, 그래도 남으면 답변을 포기하고 `CALCULATION_UNAVAILABLE` 을 냅니다.
+
+품목 코드·모델 코드·날짜·목록 번호는 수치 검사에서 제외하고, 질문에 있던 숫자는 통과시킵니다("향후 60일 결품 위험" 을 되풀이할 때의 60 은 모델이 지어낸 값이 아닙니다). 백분율 환산은 한 방향으로, 비율에만 적용합니다.
+
+측정된 성능은 단일 툴 답변 기준 오탐 통과 100건 중 5건이고, **그 5건은 전부 진짜 툴 값이었습니다 — 지어낸 값의 통과는 0건이었습니다.** 목록 툴은 넓은 조회의 성질상 통과율이 더 높습니다. 공급처 20곳 × 8필드면 허용 목록에 정수 100개가 들어가기 때문입니다.
+
+**알려진 한계를 명시합니다. 이 Guardrail 은 "지어낸 숫자" 를 막고 "잘못 붙인 숫자" 는 막지 못합니다.** 값만 대조하고 필드의 뜻은 확인하지 않습니다. `moq 100` 이라는 툴 값이 "100일 뒤" 라는 문장을 통과시킬 수 있습니다. 막으려면 근거의 출처 툴과 필드 의미까지 대조해야 하고, 그것은 아직 하지 않았습니다.
+
+영업 경로에는 날짜 검사가 추가로 켜집니다. 영업 답변은 거의 전부가 날짜인데 날짜가 수치 검사에서 빠져 있었기 때문입니다. 기존 동작을 바꾸지 않도록, 성공한 툴이 전부 날짜를 냈을 때만 켜집니다.
+
+### 7.3 영업 정보 차단은 두 겹입니다
+
+뷰에 컬럼이 아예 없고(6개 뷰를 `information_schema` 로 훑어 0개 확인), 오케스트레이터가 모든 툴 결과를 한 번 더 훑어 지웁니다. **`data` 뿐 아니라 `numbers` 도 함께 가려야 합니다** — Guardrail 이 `numbers` 의 값을 허용하므로, 거기 단가가 남아 있으면 "12,500원" 이 검사를 그대로 통과합니다.
+
+키는 `null` 로 바꾸지 않고 통째로 없앱니다. `null` 은 "산출할 수 없는 값" 으로 읽히는데, **영업에게 단가는 산출 불가가 아니라 보여 주지 않기로 한 값**입니다.
+
+역할이 ADMIN·USER 둘뿐이라 툴에 `group` 을 더했고, 툴 실행 허가 검사에도 그룹을 확인합니다. 역할만 보면 영업 사용자가 이름만 알면 SCM 툴을 그대로 부를 수 있었습니다.
+
+### 7.4 대화 기록은 core 테이블에서 직접 읽습니다
+
+이 프로젝트의 `analytics` 뷰는 `security_invoker` 가 아니어서 **소유자 권한으로 돌고, 그 밑의 RLS 가 적용되지 않습니다.** 대화는 본인 것만 보여야 하므로 RLS 가 실제로 거르는 `core` 테이블을 직접 읽습니다. 같은 이유로 ATP 문의 이력 뷰는 뷰 정의 안에 `asked_by = auth.uid() or core.is_admin()` 을 직접 넣었습니다.
+
+이 성질은 `sql/22` → `sql/23` → `sql/26` → `sql/28` 로 이어지는 하나의 실입니다. **뷰는 RLS 를 대신해 주지 않습니다.**
+
+## 8. 외부 API
+
+`/api/v1` 아래 라우트 19개(POST 11 · GET 8, OpenAPI 문서 포함)입니다. 세션이 아니라 API 키로 인증하므로 `middleware.ts` 의 공개 경로에 있고, 인증은 각 Route Handler 가 `lib/api/auth.ts` 로 직접 합니다 — **목록에 있다고 열려 있는 것이 아닙니다.**
+
+키는 sha256 해시로 저장하고, scope 6종·호출 제한·멱등성을 갖췄습니다.
+
+### 8.1 검증 파이프라인을 파일 업로드와 공유합니다
+
+`renew.prd` 9.1. 인바운드는 파일 업로드와 **같은 `lib/import/validate.ts` 를 부릅니다.** 검증 규칙이 두 벌이 되면 두 경로가 서로 다른 데이터를 받아들이게 됩니다.
+
+STEP 4 가 검증 로직을 단일 모듈로 뽑아 둔 것이 여기서 회수됩니다. 다만 API 에는 미리보기 단계가 없어 두 가지가 다릅니다.
+
+- 전량 거부일 때도 배치를 남깁니다. "적재 없음" 은 지키되 관리자가 이유를 볼 수 있어야 합니다. 응답은 200 이 아니라 **422** 입니다.
+- `mode: "replace"` 는 지우는 기간을 반드시 밝히게 합니다. 미리보기가 없으므로 창을 모르는 replace 를 받을 수 없습니다. **기간 기준 컬럼은 호출자가 아니라 `data_type` 이 정합니다** — 호출자가 고르면 아무 날짜 컬럼으로나 지울 수 있습니다.
+
+### 8.2 쓰기 대상은 호출자가 정하지 않습니다
+
+`core.api_target_for_data_type()` 이 대상 테이블·기간 컬럼·키 컬럼을 **전부 `data_type` 에서 도출**하고, `source_type` 은 `'API'` 로 고정합니다. `demand:write` 키가 `raw.usage_history` 밖으로 나갈 수 없습니다. 표가 두 벌이 된 대비로 `schema-parity.test.ts` 가 SQL 원문을 읽어 TypeScript 쪽 정의와 대조합니다.
+
+인증 함수도 같은 원칙입니다. `api_import_commit` 은 두 번째 인자로 `key_id` 가 아니라 **키 해시**를 받습니다. `key_id` 는 관리자 화면과 로그에 보이는 값이라 비밀이 아니고, 그것으로만 막으면 배치 번호 하나만 맞히면 남의 배치를 적재할 수 있습니다.
+
+### 8.3 아웃바운드는 서버 전용 secret 키로 나갑니다
+
+`sql/28` 이 anon 의 뷰 조회를 거두면서 GET 라우트가 전부 502 가 되었습니다. 뷰를 다시 열면 잠금이 무의미해지므로, `lib/supabase/service.ts` 를 새로 두고 **세 겹으로 서버에 묶었습니다.**
+
+1. 첫 줄이 `import 'server-only'` — 클라이언트 번들에 들어가면 빌드가 실패합니다.
+2. 환경변수 이름에 `NEXT_PUBLIC_` 이 없습니다.
+3. 부르는 곳이 Route Handler 뿐입니다.
+
+키가 없으면 예외를 던지지 않고 `null` 을 돌려줍니다. throw 하면 "설정을 안 했다" 가 500 으로 나가 연동 쪽이 원인을 모릅니다. 쿠키는 읽지도 쓰지도 않습니다 — 세션이 섞이면 남의 세션 권한으로 나갑니다. 이 사슬은 코드가 아니라 `service-key-guard.test.ts` 9건이 묶고 있습니다.
+
+여기서 하나 배웠습니다. **`service_role` 의 `BYPASSRLS` 는 정책만 우회하고 테이블 GRANT 는 우회하지 않습니다.** secret 키로 접속해도 `permission denied for schema analytics` 가 났습니다. 그래서 읽는 뷰 9개와 함수 1개에만 명시적으로 권한을 줬습니다. `grant all` 로 넓게 열지 않은 것은 **목록이 늘면 여기에 한 줄을 더해야 하고, 그 마찰이 의도된 것**이기 때문입니다.
+
+## 9. 저장소 구조
+
+| 경로 | 담는 것 |
+|---|---|
+| `middleware.ts` | 세션 갱신 · 미로그인 리다이렉트 · 공개 경로 |
+| `app/(auth)` · `(user)` · `(admin)` · `(legacy)` | 라우트 그룹으로 권한 경계를 나눕니다. 그룹 이름은 URL 에 나타나지 않습니다 |
+| `app/api/v1/**` | 외부 API. `app/api/cron/` 은 알림 스캔, 나머지는 CSV·헬스체크 |
+| `components/shell/` | 사이드바 · 탑바 · 페이지 헤더 · 사용자 메뉴 |
+| `components/ui/` | 디자인 시스템 컴포넌트 14개 |
+| `components/chart/` | `recharts` 를 import 하는 **유일한 위치**. 4개 |
+| `components/workflow/` | **레거시 데모. 수정하지 않습니다** |
+| `lib/<도메인>.ts` | 조회 함수. Supabase 클라이언트를 씁니다 |
+| `lib/<도메인>-model.ts` | 타입 · 정규화 · 순수 함수. 테스트가 닿는 곳 |
+| `lib/agent/` | 툴 레지스트리 · 오케스트레이터 · Guardrail · 영업 가림 |
+| `lib/api/` | 외부 API 의 인증 · 검증 · 라우팅 · OpenAPI |
+| `lib/import/` | 파싱 · 검증 · 적재. 화면과 API 가 공유합니다 |
+| `styles/` | `shell.css` · `components.css` · `chart.css` · `legacy.css`. **화면별 CSS 를 만들지 않습니다** |
+| `sql/` | 29개 파일. 적용 순서는 `sql/README.md` |
+| `forecast-service/` | Python 예측 서비스 (선택) |
+| `scripts/sql-verify/` | 로컬 SQL 검증 하네스 |
+
+### 9.1 `lib/x.ts` 와 `lib/x-model.ts` 를 나누는 이유
+
+취향이 아니라 **테스트 실행 가능성에서 파생된 구조**입니다. 조회 파일은 Supabase 서버 클라이언트를 import 하므로 `node --test` 가 모듈 로딩 단계에서 죽습니다. 그래서 타입·정규화·CSV 조립 같은 순수 함수를 `-model.ts` 로 뽑고 테스트는 그쪽만 봅니다.
+
+같은 이유로 확장자 규약이 갈립니다. **테스트가 닿는 순수 함수 파일의 상대 import 에는 `.ts` 를 붙이고, 조회 파일은 확장자 없이 둡니다.** `node --test` 의 ESM 해석기는 확장자를 보완하지 않지만 Next 번들러는 보완하기 때문입니다.
+
+`'use client'` 파일이 서버 전용 모듈을 상수 하나 때문에 import 하면 모듈 전체가 클라이언트 번들에 딸려 들어갑니다. 그럴 때는 상수만 든 경계 파일을 뽑습니다(`lib/api/scopes.ts`).
+
+### 9.2 디자인 시스템
+
+`design.md` 가 기준입니다. **현재 v2 — 밝은 회색 캔버스에 흰 카드가 떠 있는 뉴모피즘 라이트 테마**입니다. v1 의 다크 토큰은 폐기되었고, 변수 이름은 유지한 채 값만 바뀌어서 화면 코드는 고치지 않았습니다.
+
+```text
+app/globals.css     토큰    색 · 서피스 · 상태 · 간격 · 반경 · 글꼴
+      ↓ var(--*)
+styles/*.css        클래스  .panel · .kpi · .badge · .table · .alert-row
+      ↓ className
+components/ui/*     컴포넌트
+      ↓ props
+app/**/page.tsx     화면
+```
+
+화면에서 색과 간격을 직접 쓰지 않습니다. 새 시각 요소가 필요하면 `design.md` §6 에 스펙을 **먼저** 추가하고 `styles/components.css` 에 클래스를 만듭니다. Tailwind·styled-components·CSS Modules 는 도입하지 않습니다.
+
+상태 표현은 `lib/status.ts` 가 단일 출처입니다.
 
 | 상태 | 배지 | 색 |
 |---|---|---|
@@ -205,116 +391,151 @@ app/**/page.tsx          화면 — 조회 결과를 컴포넌트에 넘긴다
 | `CRITICAL` | 위험 | 빨강 |
 | `CALCULATION_UNAVAILABLE` | 산출 불가 | **회색(무채색)** |
 
-산출 불가에 색을 주지 않는 것이 의도다. 초록·노랑·빨강 중 하나로 보이면 판단을 오염시킨다.
+사유 코드는 5종입니다 — `NO_INVENTORY_DATA` · `NO_LEADTIME` · `NO_FORECAST` · `NO_USAGE_HISTORY` · `INSUFFICIENT_SAMPLE`. **이 목록을 늘리면 모든 화면과 AI 가 따라가야 하므로** 새 사유를 만들 때는 그 비용을 먼저 계산합니다.
 
-값이 없는 자리는 `EmptyValue`가 `—`와 사유 코드를 그리고, `nullsLast`가 정렬에서 맨 뒤로 보낸다. `0`으로 취급하면 가장 급한 품목처럼 보인다.
+## 10. SQL 파일과 적용 순서
 
-현재 `analytics.v_stockout_risk`는 `SAFE`·`CRITICAL`·`UNKNOWN` 3종만 돌려준다. `WARNING`은 STEP 9에서 Forecast 기반으로 뷰를 재작성할 때 채워진다.
+`sql/` 에는 29개 파일이 있고, 그중 **26개를 `sql/README.md` 의 순서대로 한 번씩** 실행하면 전체가 설치됩니다. 나머지 셋은 `02`(폐기 — anon 에게 쓰기를 열던 수업용 정책), `05`(첫 관리자 지정, 일회성), `14`(실데이터 적재, 일회성)입니다.
 
-## 6. 새 화면을 만드는 순서
+**번호 순서와 실행 순서가 다릅니다.** `25-python-models.sql` 은 12번째로 실행합니다 — 이 파일이 `core.is_admin()` 을 "JWT 없는 postgres 접속도 관리자로 인정" 하도록 확장하는데, Supabase SQL Editor 가 정확히 그 경우라서 먼저 깔아두면 뒤 파일에서 관리자 전용 함수를 손으로 시험할 수 있습니다. 그리고 `28-anon-lockdown.sql` 은 **항상 마지막**입니다.
 
-```text
-1  SQL 뷰                    analytics 에 계산 결과를 만든다
-2  lib/scm-model.ts          타입과 정규화 함수
-3  lib/scm.ts                조회 함수
-4  app/(user|admin)/**/page.tsx   서버 컴포넌트로 조회
-5  components/ui/*           design.md 의 컴포넌트를 조립
-6  lib/menu.ts               ready 를 true 로
-```
+### 10.1 재실행 규칙
 
-계산은 1번에서 끝난다. 4·5번에서 평균을 내거나 분위수를 구하지 않는다.
+`sql/15`~`21` 의 `drop view` 는 전부 **cascade** 입니다. cascade 가 없으면 뒤 번호 파일이 그 뷰 위에 뷰를 만든 순간부터 재실행 자체가 막힙니다. 대신 cascade 는 뒤 파일이 만든 뷰까지 말없이 함께 지웁니다.
 
-서버와 클라이언트 경계는 이렇게 고정한다.
+> **N 번 파일을 다시 실행했으면, N 보다 뒤에 있는 파일을 순서대로 전부 다시 실행합니다.**
 
-```text
-서버 컴포넌트       lib/scm.ts 로 조회 · (STEP 2 이후) 권한 검증
-      ↓ props
-클라이언트 컴포넌트   차트 · 토글 · 폼만 'use client'
-```
+빠뜨려도 **오류는 나지 않습니다.** 화면만 조용히 비어 보이고, `sql/28` 을 빠뜨리면 로그인 전에도 데이터가 읽히는 상태로 되돌아갑니다. 이 규칙은 각 파일 머리말과 `sql/README.md` 양쪽에 적혀 있습니다.
 
-조회 오류와 빈 결과는 다르게 다룬다. 오류는 `ErrorState`로 원인 메시지까지 보여주고, 오류 없이 행이 없으면 `EmptyState`를 쓴다. 빈 배열을 "데이터 없음"으로만 표시하면 Exposed schemas 누락 같은 문제를 놓친다.
+두 개의 꼬리 규칙이 더 있습니다. `11` · `13` · `15` · `17` 중 하나라도 재실행했으면 **`27` 을 이어서** 실행해야 합니다(특히 `11` 은 인자 하나짜리 옛 예측 실행 함수를 되살려 `function is not unique` 를 만듭니다). 그리고 `13` · `15`~`21` · `23` 중 하나라도 재실행했으면 **`29` 를 이어서** 실행해야 합니다. 마지막은 언제나 `28` 입니다.
 
-## 7. Supabase 데이터 계층
+> ⚠ **`sql/01-grants.sql` 을 다시 실행했으면 `sql/29` 도 반드시 다시 실행합니다.** `01` 의 일괄 grant 가 `sql/29` 가 만들어 둔 `_src` 원본 뷰 20개를 `authenticated` 와 `anon` 에게 **전부 다시 엽니다.** 실제로 마이그레이션이 끝난 클러스터에서 재현되었고, 영업 계정이 리드타임 분포 전체를 읽었습니다. **오류 없이 조용히 풀리므로 운영자가 알아챌 방법이 없습니다.** 이 경고는 아직 `sql/README.md` 에 반영되어 있지 않습니다.
 
-### `raw`
+앞 파일마다 명시적 의존 목록을 두는 대안은 검토 끝에 기각되었습니다. 새 파일이 생길 때마다 앞선 파일을 전부 고쳐야 해서 썩기 때문입니다. **cascade + 재실행 규칙은 비용을 없앤 것이 아니라 "사람이 뒤 파일을 다시 돌린다" 로 옮겼을 뿐입니다.**
 
-CSV 원본. `shipment_log`, `usage_history`, `inventory`, `item_master`, `supplier_master`, `purchase_order`, `goods_receipt`. 앱에서 직접 조회하지 않는다.
+### 10.2 SQL 파일에는 DDL 만 씁니다
 
-### `core`
+Supabase SQL Editor 는 붙여넣은 스크립트 **전체를 하나의 트랜잭션**으로 실행합니다. 따라서 파일 마지막 줄의 오류가 앞의 DDL 을 전부 되돌립니다. 증상은 "오류 한 줄" 이 아니라 **"아무것도 설치되지 않음"** 이고, 다음 파일까지 연쇄로 넘어집니다.
 
-정제 규칙과 회사 기준. `v_fact_shipment`, `v_shipment_valid`, `v_leadtime_stat`, `v_leadtime_effective`, `v_usage_effective`, `v_item_master`, `v_stock_on_hand`, `v_inbound_qty`와 확정값 테이블 `leadtime_plan`, `usage_profile`이 있다.
+두 번째 이유는 SQL Editor 에 JWT 가 없어 `auth.uid()` 가 NULL 이라는 것입니다. `core.is_admin()` 게이트가 걸린 함수를 파일 안에서 부를 수 없습니다.
 
-`core.leadtime_plan`을 바꾸면 화면 코드를 고치지 않아도 판정이 즉시 달라진다. 정책과 코드를 분리하는 지점이다.
+그래서 **파일 끝의 확인 블록에는 읽기 전용 select 만** 둡니다. 알림 스캔 같은 관리자 함수는 적용 후 화면 버튼이나 SQL Editor 에서 따로 한 줄 실행합니다.
 
-### `analytics`
+## 11. 로컬 검증
 
-화면과 AI가 읽는 결과 계층. `v_leadtime_gap`, `v_stockout_risk`, `v_stockout_kpi`, `v_usage_profile`, `v_usage_anomaly`. 현재 화면이 쓰는 것은 앞의 세 개다.
+단일 검증 명령은 없습니다. **세 도구가 서로 다른 것을 잡습니다.**
 
-### 별도 `public` 구조
-
-초기 MVP의 수요확정 입력 테이블 6개가 `public`에 있다. 화면과 연결되어 있지 않다.
-
-## 8. 환경변수·보안·권한
-
-- 브라우저 공개 환경변수는 `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`다.
-- `sb_secret_...` 키는 클라이언트 코드에 넣지 않는다.
-- `sql/01-grants.sql`은 `raw`를 노출하지 않고 `core`·`analytics`만 읽게 한다.
-
-### 3중 방어
-
-`renew.prd` 32장 — 화면 숨김만으로는 부족하다. 세 층이 각각 독립적으로 막는다.
-
-| 층 | 위치 | 하는 일 |
-|---|---|---|
-| Frontend | `lib/menu.ts` | 역할별 메뉴만 그린다 |
-| Backend | `middleware.ts` · `app/(admin)/layout.tsx` · Server Action | 미로그인은 `/login`으로, USER의 관리자 화면 접근은 403. 액션은 첫 줄에서 `requireAdminOrThrow()` |
-| Database | `sql/03-auth.sql` · `04-rls.sql`의 RLS | 앞의 두 층을 우회해도 DB가 거부한다 |
-
-역할 검증을 `middleware.ts`에서 하지 않는 이유는 매 요청에 DB 조회가 붙기 때문이다. middleware는 세션 갱신과 미로그인 차단만 맡고, 역할은 서버 레이아웃이 판정한다.
-
-middleware는 로그인한 사용자를 `/login`에서 되돌려보내지 **않는다.** middleware는 auth 세션만 알기 때문에, `core.app_user` 행이 없는 계정이 `/login`과 `/dashboard`를 무한히 오가게 된다. 이 경우 `requireUser()`가 `?reason=no_profile`을 붙이고 로그인 화면이 원인을 설명한다.
-
-### 계정 발급
-
-계정은 Supabase Auth가 만들고, 트리거가 `core.app_user`에 `USER`로 넣는다. 역할 상향은 `/admin/users`에서 하며 감사 로그에 남는다. 첫 관리자만 `sql/05-first-admin.sql`로 지정한다.
-
-관리자는 자기 계정의 역할과 활성 상태를 스스로 바꿀 수 없다. 관리자가 0명이 되는 상태를 막기 위해서다.
-
-## 9. 테스트·검증·배포
-
-### 테스트
-
-`npm test`는 `lib/**/*.test.ts`를 Node 내장 러너로 실행한다. 현재 정규화·상태 코드 변환 테스트 7건이 있다. `npm run build`는 타입 검사와 프로덕션 빌드를 수행하는 필수 검증 명령이다.
-
-### 운영 확인 순서
-
-1. `.env.local`에 Supabase URL과 publishable key를 입력한다.
-2. Supabase API의 Exposed schemas에 `core`, `analytics`를 추가한다.
-3. 덤프를 복원했다면 `sql/01-grants.sql`을 실행한다.
-4. `/api/health/supabase`와 `/analysis/leadtime`을 확인한다.
-5. 화면 행 수가 DB와 일치하는지 센다. 리드타임 12행, 재고 소진 20행이 기대값이다.
-6. `npm test`와 `npm run build`를 실행한다.
-
-### 배포
-
-`vercel.json`이 Next.js 프레임워크를 지정한다. `.env.local`은 커밋하지 않고 Vercel 환경변수로 같은 값을 설정한다.
-
-폰트는 CDN에서 받는다(Pretendard는 jsDelivr, Inter·JetBrains Mono는 Google Fonts). 빌드 시점에 네트워크를 요구하지 않는다.
-
-## 10. 현재 제약과 다음 단계
-
-| 제약 | 해소 시점 |
+| 도구 | 이 도구만 잡는 것 |
 |---|---|
-| **인증 SQL이 아직 적용되지 않았다.** `sql/03-auth.sql`·`04-rls.sql`을 Supabase에서 실행해야 로그인이 동작한다 | 즉시 |
-| 계정 발급이 수동이다. 초대·비밀번호 재설정 흐름이 없다 | 미정 |
-| 데이터를 넣는 수단이 없다. 업로드·검증·적재 이력이 없다 | STEP 4 |
-| 예측·백테스트·Champion이 없다 | STEP 6~8 |
-| 재고 소진 계산이 `가용재고 ÷ 일평균`이다. `renew.prd` 19장의 기간별 전개가 아니다 | STEP 9 |
-| `WARNING` 상태가 뷰에서 나오지 않는다 | STEP 9 |
-| 차트가 없다. `recharts`는 아직 설치하지 않았다 | STEP 7 |
-| 미구현 화면 24개가 안내만 표시한다 | STEP 2~20 |
-| 레거시 데모의 폐기 여부가 미정이다 | `step.md` §5 |
+| `npx tsc --noEmit` | 타입, `??`/`\|\|` 혼용, target 관련 반복자 문제 |
+| `npm test` (`node --test`, 테스트 파일 29개) | 확장자 없는 상대 import. 번들러가 보완해 주므로 build 는 통과합니다 |
+| `npm run build` | 서버/클라이언트 번들 경계. 앞의 둘은 원리상 보지 못합니다 |
 
-## 11. 한 문장 요약
+테스트 중 일부는 기능이 아니라 **규약을 강제합니다.** `use-server-exports.test.ts` 는 `'use server'` 파일이 async 함수만 export 하는지 훑고(동적 페이지라 빌드가 못 잡습니다), `kpi-filter.test.ts` 는 카드-목록 규약을, `schema-parity.test.ts` 는 SQL 원문과 TypeScript 정의의 일치를, `service-key-guard.test.ts` 는 secret 키가 서버 밖으로 나가지 않는 사슬을 지킵니다.
 
-SuperSCM은 `design.md`의 다크 관제 콘솔 디자인 시스템 위에 `renew.prd`의 ADMIN/USER 라우트 골격과 3중 권한 검증을 세우고, Supabase `raw → core → analytics` 계층을 `lib`의 조회·정규화 계층으로 연결해 화면을 하나씩 채워 나가는 SCM 의사결정 플랫폼이다.
+### 11.1 SQL 하네스
+
+`sql/15` 이후의 파일들은 **한 번도 실행되지 않은 채 작성되었습니다.** 운영 DB 는 Supabase 이고 DDL 은 SQL Editor 에서 사람만 돌릴 수 있어서, 컬럼명이 틀렸다는 사실을 운영에 붙여넣는 순간 처음 알게 됩니다. `scripts/sql-verify/run.sh` 가 그 간극을 메웁니다.
+
+일회용 PostgreSQL 클러스터를 `mktemp -d` 에 만들고(유닉스 소켓 전용이라 기존 Postgres 와 충돌하지 않으며, Ctrl-C 를 포함한 어떤 종료에서도 삭제됩니다) 실제 덤프를 적재한 뒤 네 단계를 돕니다.
+
+| 단계 | 하는 일 | 이 단계만 증명하는 것 |
+|---|---|---|
+| Pass 1 | SQL Editor 처럼 JWT 없이, 파생 테이블이 빈 상태로 전 파일 실행 | 파일이 맨 DB 에 적용되는가 |
+| Seed | **프로젝트 자신의 함수**로 파생 계층을 채웁니다 | 데이터를 지어내지 않습니다 |
+| Pass 2 | 데이터가 있는 상태로 관리자를 가장해 전 파일 재실행 | 뷰 정의 내부의 런타임 오류, **재실행 가능성** |
+| Pass 3 | 어떤 파일도 부르지 않는 write-path RPC 10개를 실제 호출 | 함수 본문이 한 번이라도 도는가 |
+
+Pass 3 가 따로 있는 이유가 이 프로젝트의 교훈 하나를 담고 있습니다. **`CREATE FUNCTION` 은 plpgsql 문법만 검사합니다.** 본문의 테이블과 컬럼은 첫 실행 때 해석되므로, 잘못된 컬럼 참조가 앞의 두 패스를 멀쩡히 통과합니다. **파일이 통과했다는 것은 파싱만 됐다는 뜻입니다.**
+
+`EDITOR_TXN=1` 은 SQL Editor 의 암묵적 트랜잭션을 재현하고, `ORDER=25first` 는 파일 간 순서 의존성을 실증합니다. 결과 해석도 정해져 있습니다 — pass 1 만 실패하면 권한이나 빈 데이터 문제이고, pass 2 만 실패하면 재실행 가능성 문제입니다.
+
+### 11.2 하네스가 증명하지 못하는 것
+
+이것을 명확히 아는 것이 하네스를 갖는 것만큼 중요합니다.
+
+- **실제 RLS.** 전부 클러스터 슈퍼유저로 돌아 row-level security 를 우회합니다. 정책은 만들어지고 표현식은 파싱되지만, **실제 `anon` · `authenticated` 세션에 대해 강제되는 일은 한 번도 없습니다.** `sql/04-rls.sql` 의 존재 이유 자체가 미검증입니다.
+- **PostgREST 노출.** 뷰가 REST 로 도달하는지, 응답 모양, RPC 인자의 JSON 변환, Exposed schemas — 아무것도 시험되지 않습니다.
+- **Supabase Auth.** `auth.users` 는 35컬럼짜리를 13컬럼으로 흉내 낸 것이고 `auth.uid()` 는 직접 세팅한 GUC 를 읽습니다. **인증이 아니라 사칭입니다.**
+- **소유권과 security definer 의 도달 범위.** 여기서는 슈퍼유저 하나가 전부를 소유하므로 definer 함수가 무엇이든 읽습니다. Supabase 에서는 소유자가 중요합니다.
+- **숫자의 정확성.** Pass 3 는 함수가 예외 없이 도는 것만 주장합니다. 예측·안전재고·전개가 *맞는지* 는 아무것도 검사하지 않습니다.
+- **성능.** `fsync` off, 품목 20개. 운영 쿼리 시간을 전혀 예측하지 못합니다.
+- **데이터 현실성.** 덤프가 STEP 9 이전 시점이라 `raw.sales_order` 등이 비어 있어, **확정 수주가 필요한 분기는 한 번도 실행되지 않습니다.**
+
+## 12. 일부러 하지 않은 것
+
+| 하지 않은 것 | 이유 |
+|---|---|
+| Tailwind · CSS-in-JS · 화면별 CSS | 토큰 4파일 체계가 단일 출처입니다 (`design.md` §13.1) |
+| 라이트/다크 테마 전환 | v2 라이트 단일 테마입니다 |
+| LLM SDK 도입 | OpenAI 호환 REST 를 직접 부르면 사내 vLLM 전환이 base URL 교체로 끝납니다 |
+| 화면에서 정규분포 분위수 계산 | `core.z_table` 에 없으면 지어내지 않고 거절합니다 (`AGENTS.md` 규칙 2) |
+| 재귀 CTE 로 재고 전개 | window sum 으로 충분하고 훨씬 빠릅니다 |
+| materialized view | 아직 품목 20개 규모라 필요 없습니다. 수천 개가 되면 필요합니다 (§13) |
+| 레거시 `/workflow` 삭제 | 되돌리기 어려워 사용자 결정으로 남겼습니다 |
+
+## 13. 알려진 미결 항목
+
+`step.md` 의 보류 항목과 각 단계 보고서의 "걱정되는 점" 에서 가져왔습니다. 지어낸 항목은 없습니다.
+
+### 13.1 먼저 해야 할 것
+
+- **DB 적용과 배포 설정.** `sql/README.md` 순서대로 26개 파일 실행, `app.cron_secret` 설정, Exposed schemas 에 `core`·`analytics` 추가, Vercel 환경변수 등록. 그전까지 화면은 조회 실패나 빈 상태입니다.
+- **적용 직후 운영 실행 1회.** 빠뜨리면 재고 전개·발주 추천·대시보드가 조용히 빈 채로 남습니다.
+- **실데이터 3년치 적재.** 현재 `raw.usage_history` 는 약 17개월입니다. 계절성 모델과 간헐 수요 모델(Croston 계열)은 그전까지 값을 내지 못합니다. 실측으로 19품목 전부 SMOOTH 이고 수요가 0인 달이 하나도 없어, 간헐 수요 경로가 한 번도 실행되지 않았습니다.
+
+### 13.2 성능
+
+**재고 전개(`analytics.v_inventory_projection`)가 단일 병목입니다.** `v_stockout_risk` 가 3회, `v_safety_stock` 이 1회 읽고, 그 위에 발주 추천과 SKU Detail 과 대시보드가 얹혀 있습니다. 대시보드 KPI 한 줄이 무거운 뷰 넷을 한꺼번에 깨우므로, 품목이 수천 개가 되면 **로그인 첫 화면이 가장 느린 화면**이 됩니다. 처방은 세 보고서가 공통으로 materialized view 전환을 지목합니다.
+
+### 13.3 정확성에 영향을 주는 가정
+
+- **일별 예측 오차가 독립이라는 가정.** σ_d 를 `√30.4` 로 나눠 일 단위로 만듭니다. 실제로는 자기상관이 있어 **안전재고가 실제보다 작게 나올 수 있습니다.** 제대로 하려면 일 단위 백테스트가 필요합니다.
+- **`earliest_eta` 가 추정치입니다.** 기록된 도착 예정일이 아니라 `발주일 + 리드타임` 이라 ±2주 해상도이며, **이미 늦은 선적 82건이 창 안으로 계산됩니다.**
+- **σ_d 의 두 출처를 같은 단위로 봅니다.** 백테스트 RMSE(월 검증 오차)와 모델 잔차 σ 를 섞으며, `sigma_source` 로 어느 쪽인지는 항상 드러납니다.
+- **가예약이 ATP 에서 이중 차감됩니다.** 가예약 100개가 ATP 를 114 줄입니다. 가예약이 `v_demand_window` 를 거쳐 안전재고를 키우기 때문입니다. **안전재고는 수요의 불확실성을 덮는 값이고 가예약은 확정된 약속이라 불확실하지 않습니다.** 지금은 과소 약속 쪽이라 초과 약속은 나지 않습니다.
+
+### 13.4 보안·권한의 남은 구멍
+
+**영업 정보 차단의 DB 층이 미완성입니다.** 최종 검토에서 영업 계정으로 `renew.prd` 4.5 의 금지 5범주를 전부 읽어냈습니다. 세 경로 모두 `sql/29` 가 다루지 않는 표면입니다.
+
+| 경로 | 위치 | 새는 것 |
+|---|---|---|
+| 승인 근거 Snapshot | `analytics.v_approval_snapshot` | payload 가 **jsonb 라 컬럼 마스킹이 원리적으로 걸리지 않습니다.** 단가·발주 금액·공급처·리드타임 분위수·Champion 후보 전체 성능이 원문 그대로. **PostgREST 한 번 호출이면 되는 가장 치명적인 경로입니다** |
+| `core` 기반 테이블 직접 조회 | `core.champion_model` · `core.model_performance` (+ `core.forecast_result.sigma`) | RLS 가 `using (true)` 이고 `core` 는 노출 스키마라, 정확도 지표를 뷰를 거치지 않고 직접 읽습니다 |
+| `raw` 원본에서 재구성 | `raw.item_master` · `supplier_master` · `purchase_order` · `shipment_log` | 모든 로그인 사용자가 `select` 가능. 검토자가 리드타임 P80 과 표준편차를 **직접 재계산해 가려진 값과 일치**시켰습니다 |
+
+`sql/29` 자체의 결함이 아니라 **범위의 문제**입니다. 다음 작업의 대상은 뷰가 아니라 "영업 토큰이 PostgREST 로 닿을 수 있는 모든 객체" 여야 합니다.
+
+그 밖에도 남아 있습니다.
+
+- **`service_role` 은 영업 가림막이 적용되지 않습니다.** `auth.uid()` 가 null 이라 `core.is_sales()` 가 false 입니다. **영업 담당자에게 API 키를 발급하면 `renew.prd` 4.5 가 우회됩니다.**
+- **`sql/01` 재실행이 가드를 조용히 풉니다** (§10.1 의 경고 참조).
+- **`ReasonCode` 에 "권한 없음" 이 없습니다.** 가려진 자리가 사유 없는 `—` 로 나오고, 대시보드 정확도 랭킹은 영업에게 "백테스트를 돌려 Champion 이 정해지면" 이라는 사실과 다른 문장을 보여줍니다 — 같은 화면에 Champion 19개가 보이는데도.
+- **호출 제한이 인스턴스별입니다.** 서버리스에서 실제 상한은 "인스턴스 수 × 60/분" 이라, **폭주를 늦추는 장치이지 남용을 막는 장치가 아닙니다.**
+- **멱등성에 경합이 있습니다.** 같은 Idempotency-Key 두 요청이 동시에 오면 둘 다 적재됩니다.
+- **쓰기 scope 키는 검증을 건너뛸 수 있습니다.** PostgREST 로 스테이징 함수를 직접 부르면 됩니다. 권한 상승이 아니므로 설계 속성으로 기록되어 있습니다.
+
+### 13.5 미검증
+
+- **AI Agent 를 진짜 모델로 한 번도 돌리지 못했습니다.** 가짜 fetch 로만 시험했습니다. 첫 확인 지점은 툴을 부르지 않고 바로 답하려는 경향과, `response_format` 과 `tools` 를 함께 보낼 때의 호환성입니다.
+- **`getOpenPO` 툴이 대시보드의 지연 발주 조회를 놓칩니다.** "지연되는 발주 있어?" 가 입고 예정 품목 목록으로 답합니다. 다른 질문에 대한 답입니다.
+- **외부 API 는 HTTP 종단 시험을 못 했습니다.** 하네스에 PostgREST 가 없습니다.
+- **`.or()` 를 쓰는 대시보드 정확도 랭킹 조건이 실제 PostgREST 로 미검증입니다.**
+- **예측 재현성이 미증명입니다.** 같은 스냅샷·버전으로 재실행하면 같은 결과가 나오는지 2회차를 돌려보지 않았습니다.
+
+### 13.6 알려진 결함
+
+- **`sql/24-what-if.sql` 의 자기모순.** `open_po_delay_days` 손잡이가 재고 전개에서는 물량을 미루면서 발주 추천에서는 전량을 그대로 뺍니다. 창 분리로 부분 해결되었습니다.
+- **`app/(user)/decision-history/[approvalId]/page.tsx` 의 근거 표가 옛 문구입니다.** 이 화면은 승인 시점에 얼어붙은 Snapshot 을 그리므로, 옛 Snapshot 에는 새 컬럼 셋이 아예 없습니다. 그냥 바꾸면 옛 이력의 그 칸이 전부 빕니다 — **Snapshot 의 나이를 보고 갈라야 합니다.**
+- **알림과 일부 목록이 상위 N 건에서 잘립니다.** KPI 는 전체를 세고 목록은 잘린 것을 세므로 건수가 어긋나 보일 수 있습니다.
+- **문의 이력이 사람의 질문이 아니라 툴 호출마다 1행입니다.** AI 한 대화가 툴을 3번 부르면 3줄이 되어 `INQUIRY_SPIKE` 가 부풀 수 있습니다.
+- **레거시 `/workflow` 의 폐기 여부가 미정입니다.**
+
+### 13.7 업무 확정이 필요한 것
+
+`step.md` §5 에 미해결로 남아 있습니다 — 예측 단위(월/주), 품목 수와 등급 체계, MOQ·Pack Size 마스터 확보, 확정 수주 연동 방식, 등급별 서비스 수준, 가예약 유효기간, 초기 계정 발급 방식, 일반 사용자 업로드 허용 여부.
+
+## 14. 한 문장 요약
+
+SuperSCM 은 계산과 판정을 전부 PostgreSQL 의 `raw → core → analytics` 계층에 두고, 화면과 AI Agent 와 외부 API 가 **같은 뷰와 같은 함수를 읽게** 함으로써 세 경로가 같은 숫자를 말하도록 강제하고, 권한을 메뉴·서버·DB 세 층에서 독립적으로 막으며, **값을 낼 수 없을 때 숫자를 지어내지 않는 것**을 가장 중요한 규칙으로 삼는 SCM 의사결정 플랫폼입니다.

@@ -34,6 +34,7 @@
 | `kpi-filter` 예외를 적었는데 `npm test` 가 계속 실패 | JSX 주석 `{/* */}` 은 검사 정규식(`//`)에 안 걸림 | [#24](#24-kpi-filter-없음-예외-주석은--여야-한다-jsx-주석은-안-걸린다) |
 | `structure of query does not match function result type` | `information_schema` 컬럼은 `text` 가 아니라 `sql_identifier` | [#25](#25-structure-of-query-does-not-match-function-result-type--information_schema-컬럼은-text-가-아니다) |
 | `permission denied for schema analytics` — secret 키인데도 | `service_role` 의 RLS 우회는 GRANT 를 면제하지 않음 | [#26](#26-service_role-은-rls-만-우회한다--grant-는-우회하지-않는다) |
+| `WITHIN GROUP is required for ordered-set aggregate mode` | 정렬식의 컬럼 이름이 `mode` | [#27](#27-within-group-is-required-for-ordered-set-aggregate-mode--컬럼-이름이-mode-일-때) |
 
 > **Supabase 3층 구조를 먼저 기억하면 #3·#4·#5 를 헷갈리지 않습니다.**
 >
@@ -648,3 +649,32 @@ grant select on analytics.v_stockout_risk to service_role;   -- 필요한 것만
 ```
 
 **예방** "이 키는 관리자니까 다 될 것" 이라고 넘기지 마세요. RLS 와 GRANT 는 **서로 다른 층**입니다 (#3·#4·#5 의 3층 구조와 같은 이야기). 권한을 회수하는 파일을 새로 만들었다면, 그 뒤에 **각 롤로 실제 조회를 한 번씩 해 보세요.** (STEP 19 에서 발견)
+
+---
+
+## #27 `WITHIN GROUP is required for ordered-set aggregate mode` — 컬럼 이름이 `mode` 일 때
+
+```
+ERROR:  42809: WITHIN GROUP is required for ordered-set aggregate mode
+LINE 140:    order by (fr.mode = 'PRODUCTION') desc, fr.started_at desc
+                       ^
+```
+
+**증상** `sql/21-dashboard.sql` · `sql/27-admin-ops.sql` 을 Supabase SQL Editor 에 붙여넣으면 이 오류로 거부됩니다. 로컬 PostgreSQL 17.10 에서 같은 스키마·뷰·CTE 구조로 재현을 시도했으나 **재현되지 않았습니다** — 순수 문법으로는 `fr.mode = 'PRODUCTION'` 은 평범한 컬럼 비교이지 `mode()` 집계 호출이 아닙니다. 원인을 확정하지 못했습니다(운영 DB 의 특정 확장·버전·SQL Editor 전처리 중 하나로 추정).
+
+**증상이 나는 자리** `order by (컬럼 = '값') desc` 형태에서 그 컬럼 이름이 하필 `mode` 일 때. `mode` 는 PostgreSQL 의 순서 집계 함수(`mode() within group (order by …)`) 와 이름이 같습니다.
+
+**해결** 원인을 몰라도 형태 자체를 없애면 안전합니다. 괄호 있는 불린 정렬식을 `case` 식으로 바꿉니다.
+
+```sql
+-- ✕ 특정 환경에서 거부됨
+order by (fr.mode = 'PRODUCTION') desc, fr.started_at desc
+
+-- ○
+order by case when fr.mode = 'PRODUCTION' then 0 else 1 end,
+         fr.started_at desc
+```
+
+두 식은 결과가 같습니다 — `PRODUCTION` 이 먼저, 그 안에서 `started_at` 내림차순.
+
+**예방** 정렬 기준으로 쓰는 컬럼 이름이 `mode` · `rank` · `percentile_cont` · `percentile_disc` · `cume_dist` · `dense_rank` 등 PostgreSQL 내장 함수·집계 이름과 겹치면, 괄호로 감싼 불린 식보다 `case` 식을 기본으로 씁니다. (STEP 20 산출물을 실제 Supabase 에 적용하며 발견 · 로컬 하네스로 수정 후 26/26 재확인)
