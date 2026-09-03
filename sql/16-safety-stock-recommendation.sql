@@ -448,7 +448,36 @@ comment on view analytics.v_demand_window is
 --   σ_L  리드타임 표준편차      core.v_leadtime_stat.std_days
 --   Z    Service Level 계수     core.v_item_service_level
 create view analytics.v_safety_stock as
-with item as (
+-- ★ 아래 세 `materialized` CTE 는 성능을 위한 울타리입니다. **결과를 바꾸지 않습니다.**
+--   빼면 계획기가 이 뷰들을 Nested Loop 안쪽에 놓고 품목 수만큼 통째로 다시 계산합니다.
+--   `materialized` 는 "정확히 한 번만 계산하라" 는 지시입니다 (PostgreSQL 12+).
+--
+--   하네스 실측(품목 20개 · 7회 중앙값 · select *):
+--     analytics.v_safety_stock                0.56초 → 0.05초
+--     analytics.v_dashboard_kpi               1.99초 → 0.90초
+--     analytics.v_dashboard_purchase_priority 0.96초 → 0.40초
+--     analytics.v_sku_detail                  1.83초 → 0.85초
+--   `except` 양방향 비교 0건 — 한 행도 다르지 않았습니다.
+--   품목이 늘면 이 차이는 품목 수에 비례해 벌어집니다.
+--
+--   ★ 울타리를 더 치면 더 빨라지지 않습니다. analytics.v_purchase_recommendation 에
+--     같은 것을 쳐 봤더니 v_dashboard_kpi 가 0.90초 → 1.10초로 오히려 느려졌습니다.
+--     울타리는 계획기의 선택지를 뺏는 일이라, 옳게 고르던 자리에 치면 손해입니다.
+--     반드시 재고 나서 넣으세요. 자세한 것은 error.md #30 에 있습니다.
+with dw_win as materialized (
+  select * from analytics.v_demand_window
+),
+lt_eff as materialized (
+  select * from core.v_leadtime_effective
+),
+lt_stat as materialized (
+  -- ★ sql/29 가 이 파일의 정의에서 'core.v_leadtime_stat ' 를 찾아
+  --   'core.v_leadtime_stat_src ' 로 갈아끼웁니다 (영업에게 안전재고가 작아지는 것을
+  --   막는 보안 치환). 그래서 **별칭 st 를 지우지 마세요** — 지우면 뒤에 공백이 사라져
+  --   치환이 실패하고 sql/29 가 통째로 멈춥니다.
+  select * from core.v_leadtime_stat st
+),
+item as (
   select i.item_id, i.item_name, i.supplier_id
     from core.v_item_master i
    where i.is_active = 'Y'
@@ -489,9 +518,9 @@ base as (
          end as sigma_source
     from item it
     left join core.v_item_service_level sl on sl.item_id    = it.item_id
-    left join core.v_leadtime_effective le on le.supplier_id = it.supplier_id
-    left join core.v_leadtime_stat      st on st.supplier_id = it.supplier_id
-    left join analytics.v_demand_window dw on dw.item_id    = it.item_id
+    left join lt_eff le                    on le.supplier_id = it.supplier_id
+    left join lt_stat st                   on st.supplier_id = it.supplier_id
+    left join dw_win dw                    on dw.item_id    = it.item_id
     left join sig_backtest sb              on sb.item_id    = it.item_id
     left join sig_insample si              on si.item_id    = it.item_id
 ),

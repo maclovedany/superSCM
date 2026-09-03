@@ -738,3 +738,84 @@ or connect to your database directly.
 **결정성은 어떻게 되나** temperature 를 못 고정하면 문장은 매번 조금씩 달라질 수 있습니다. 다만 **답변 속 수치는 그대로 지켜집니다** — Guardrail 이 툴이 돌려준 값 사전에 없는 숫자를 통과시키지 않기 때문입니다(renew.prd 26.3). 흔들리는 것은 표현이지 숫자가 아닙니다.
 
 **예방** 모델을 바꾸면 지원 범위도 바뀝니다. `temperature` · `response_format` · `tools` 처럼 **모델마다 갈리는 항목은 400 을 받아 한 번 낮추는 경로**를 두고, 그 판단을 모델 이름으로 기억하세요. 코드에 특정 모델 이름을 하드코딩하지 않습니다.
+
+---
+
+## #30 `canceling statement due to statement timeout` — 계획기가 뷰를 품목 수만큼 다시 계산합니다
+
+**증상** 대시보드 첫 화면이 `조회에 실패했습니다 / canceling statement due to statement timeout` 으로 끝납니다. SQL 은 전부 정상 적용됐고, 로컬에서는 1~2초에 끝나 재현이 안 됩니다.
+
+**처음에 잘못 짚은 것** "인덱스가 없어서 전체 스캔을 수십 번 한다" 고 보고 `sql/30-indexes.sql` 을 만들었습니다. 실측 결과 **효과가 없었습니다** — 표가 작으면 전체 스캔이 인덱스보다 빠르고, 계획기의 판단이 옳았습니다. 스캔 횟수는 증상이지 원인이 아니었습니다.
+
+**원인을 찾은 방법** 뷰를 하나씩 따로 재서 비용이 뛰는 지점을 좁혔습니다.
+
+```
+v_inventory_projection  0.02초
+v_stockout_risk         0.02초
+v_demand_window         0.04초
+v_safety_stock          0.51초   ← 여기서 25배
+```
+
+재료가 전부 0.02초인데 그것들을 조인한 뷰가 0.51초입니다. `explain (analyze)` 의 `loops` 를 보니 답이 나왔습니다.
+
+```
+GroupAggregate (actual time=11.066..30.547 rows=19 loops=20)
+  → analytics.v_demand_window 를 품목마다 한 번씩, 20회 다시 계산
+    그 안에서 다시 20회 → 안쪽 집계는 loops=400
+```
+
+`enable_nestloop = off` 로 걸어 보니 0.52초 → 0.02초. 원인이 확정됐습니다. **계획기가 비싼 하위 뷰를 Nested Loop 안쪽에 놓고 바깥 행마다 통째로 다시 실행**하고 있었습니다. 뷰가 여러 겹 쌓이면 계획기는 안쪽 행 수를 크게 빗나가게 추정하고, 그러면 "안쪽은 싸니까 반복해도 된다" 고 판단합니다.
+
+**해결** `enable_nestloop = off` 는 전역 설정이라 품목 하나를 찾는 조회처럼 Nested Loop 이 옳은 경우까지 망칩니다. 대신 **문제가 되는 그 자리에만 CTE 울타리**를 쳤습니다. `materialized` 는 "이 CTE 를 정확히 한 번만 계산하라" 는 지시입니다 (PostgreSQL 12+).
+
+```sql
+create view analytics.v_safety_stock as
+with dw_win as materialized (
+  select * from analytics.v_demand_window
+),
+lt_eff as materialized (
+  select * from core.v_leadtime_effective
+),
+lt_stat as materialized (
+  select * from core.v_leadtime_stat st
+),
+...
+    left join dw_win dw  on dw.item_id    = it.item_id
+    left join lt_eff le  on le.supplier_id = it.supplier_id
+    left join lt_stat st on st.supplier_id = it.supplier_id
+```
+
+**결과** (하네스, 품목 20개 · 7회 중앙값, `select *`)
+
+| 뷰 | 전 | 후 |
+|---|---|---|
+| `v_dashboard_kpi` | 1.99초 | 0.90초 |
+| `v_dashboard_purchase_priority` | 0.96초 | 0.40초 |
+| `v_safety_stock` | 0.56초 | 0.05초 |
+| `v_purchase_recommendation` | 1.06초 | 0.57초 |
+| `v_sku_detail` | 1.83초 | 0.85초 |
+
+대시보드 첫 화면 2.95초 → 1.30초. **결과는 한 행도 바뀌지 않았습니다** (`except` 양방향 비교 0건).
+
+**★ 울타리를 더 치면 더 빨라지지 않습니다** `analytics.v_purchase_recommendation` 에도 같은 울타리를 쳐 봤더니 `v_dashboard_kpi` 가 0.90초 → 1.10초로 **느려졌습니다.** 울타리는 계획기의 선택지를 뺏는 일이라, 계획기가 옳게 고르던 자리에 치면 손해입니다. 반드시 재고 나서 넣으세요.
+
+**★ sql/29 와의 충돌** `lt_stat` CTE 를 처음 쓸 때 `select * from core.v_leadtime_stat` 로 적었더니 sql/29 가 통째로 멈췄습니다.
+
+```
+ERROR: analytics.v_safety_stock 의 정의에서 core.v_leadtime_stat 를 찾지 못했습니다
+```
+
+sql/29 는 v_safety_stock 정의에서 `'core.v_leadtime_stat '` (**뒤에 공백**) 을 찾아 `'core.v_leadtime_stat_src '` 로 갈아끼웁니다. 영업에게 σ_L 이 null 로 가려지면 `coalesce(lead_time_sd, 0)` 때문에 안전재고가 조용히 작아지고, 그 값이 ATP 로 흘러 **영업 화면의 판매 가능 수량이 실제보다 커집니다.** 별칭 `st` 를 붙여 뒤 공백을 되살렸습니다. 검증:
+
+| | 관리자 | 영업 |
+|---|---|---|
+| 안전재고 합계 | 9,248 | 9,248 |
+| `sigma_d` | 값 있음 | 전부 null |
+| `lead_time_sd` | 값 있음 | 전부 null |
+
+**예방**
+- 뷰가 3겹 이상 쌓이면 `explain (analyze)` 에서 **`loops=` 를 먼저 보세요.** `loops` 가 품목 수만큼 크면 비용은 데이터가 아니라 반복입니다.
+- 원인 가설은 `set enable_nestloop = off` 로 **먼저 확인**하고 고치세요. 세션 한정이라 안전하고, 몇 초면 답이 나옵니다.
+- 성능 수정 전후에는 `except` 양방향으로 **결과가 같은지 반드시 대조**하세요.
+- 스캔 횟수·인덱스 부재는 눈에 잘 띄지만 원인이 아닐 수 있습니다. **재기 전에는 고치지 마세요.**
+- `count(*)` 로 재면 계획기가 컬럼을 건너뛰어 과소평가됩니다. `select *` 로 재세요.
