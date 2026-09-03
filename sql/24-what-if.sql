@@ -989,127 +989,145 @@ select p.proname, p.provolatile
                      'simulate_scenario', 'simulate_scenario_summary')
  order by p.proname;
 
--- ③ ★ Base = 뷰. 여기가 0행이어야 합니다.
---    simulate_scenario_summary 가 아니라 core.fn_scenario_summary 를 직접 부릅니다.
---    앞의 것은 Base 와 시나리오를 둘 다 계산하는데, 여기서 볼 것은 Base 뿐이라
---    품목 수만큼 전개를 두 번씩 돌게 됩니다. 감싼 함수는 확인 ⑥ 이 봅니다.
-with s as (
-  select r.item_id,
-         core.fn_scenario_summary(r.item_id, '{}'::jsonb) as base
-    from analytics.v_stockout_risk r
-),
-cmp as (
-  select s.item_id,
-         (s.base ->> 'stockout_date')::date        as fn_stockout_date,
-         r.stockout_date                           as view_stockout_date,
-         s.base ->> 'risk'                         as fn_risk,
-         r.risk_status                             as view_risk,
-         coalesce(s.base ->> 'reason', '')         as fn_reason,
-         coalesce(r.reason, '')                    as view_reason,
-         (s.base ->> 'safety_stock')::numeric      as fn_safety_stock,
-         ss.safety_stock                           as view_safety_stock,
-         (s.base ->> 'order_qty')::numeric         as fn_order_qty,
-         pr.final_recommended_qty                  as view_order_qty,
-         (s.base ->> 'required_order_date')::date  as fn_required_order_date,
-         pr.required_order_date                    as view_required_order_date,
-         -- ★ 여기부터 여섯 쌍은 AI 툴(lib/agent/tools.ts 의 simulateScenario)이
-         --   numbers 로 내보내는 값입니다. Guardrail 이 답변에 허용하는 숫자가
-         --   바로 이것들이라, 뷰와 어긋나면 사람이 보는 화면과 AI 가 말하는 값이
-         --   갈라집니다. 그래서 요약이 내보내는 열 가지를 전부 대조합니다.
-         --
-         -- ★ daily_demand · sigma_dlt 만 round(x, 10) 으로 감쌉니다.
-         --   값은 같은데 numeric 의 scale 이 달라 19번째 소수 자리부터 어긋나기 때문입니다
-         --   (§6 의 오류 #23 — 같은 공식을 함수로 옮길 때 생기는 자릿수 차이).
-         --   10자리면 실제 드리프트는 잡고 자릿수 잡음은 흡수합니다.
-         --   나머지 네 개는 정수에 가까운 값이라 그대로 비교합니다.
-         round((s.base ->> 'daily_demand')::numeric, 10)   as fn_daily_demand,
-         round(ss.daily_demand::numeric, 10)               as view_daily_demand,
-         round((s.base ->> 'sigma_dlt')::numeric, 10)      as fn_sigma_dlt,
-         round(ss.sigma_dlt::numeric, 10)                  as view_sigma_dlt,
-         -- 창 수요 = 리드타임+검토 구간의 적용수요. 뷰에서는 consensus_forecast 입니다
-         -- (sql/16 609행 — v_stockout_risk.leadtime_demand_qty 를 그대로 받습니다).
-         (s.base ->> 'window_demand_qty')::numeric as fn_window_demand_qty,
-         pr.consensus_forecast                     as view_window_demand_qty,
-         (s.base ->> 'raw_order_qty')::numeric     as fn_raw_order_qty,
-         pr.raw_recommended_qty                    as view_raw_order_qty,
-         (s.base ->> 'z_value')::numeric           as fn_z_value,
-         ss.z_value                                as view_z_value,
-         (s.base ->> 'current_stock')::numeric     as fn_current_stock,
-         pr.current_inventory                      as view_current_stock
-    from s
-    join analytics.v_stockout_risk            r  on r.item_id  = s.item_id
-    left join analytics.v_safety_stock        ss on ss.item_id = s.item_id
-    left join analytics.v_purchase_recommendation pr on pr.item_id = s.item_id
-)
-select c.*
-  from cmp c
- where c.fn_stockout_date        is distinct from c.view_stockout_date
-    or c.fn_risk                 is distinct from c.view_risk
-    or c.fn_reason               is distinct from c.view_reason
-    or c.fn_safety_stock         is distinct from c.view_safety_stock
-    or c.fn_order_qty            is distinct from c.view_order_qty
-    or c.fn_required_order_date  is distinct from c.view_required_order_date
-    or c.fn_daily_demand         is distinct from c.view_daily_demand
-    or c.fn_sigma_dlt            is distinct from c.view_sigma_dlt
-    or c.fn_window_demand_qty    is distinct from c.view_window_demand_qty
-    or c.fn_raw_order_qty        is distinct from c.view_raw_order_qty
-    or c.fn_z_value              is distinct from c.view_z_value
-    or c.fn_current_stock        is distinct from c.view_current_stock
- order by c.item_id;
+-- ★★ 아래 ③~⑥ 은 **주석 처리해 두었습니다.** 이 파일에 붙여 두면 안 됩니다.
+--
+--   이유 — 이 네 확인은 품목마다 시뮬레이션을 다시 돌립니다. 20개 품목 기준
+--   30~55초가 걸리고, Supabase SQL Editor 는 그 전에 끊습니다:
+--     Error: SQL query ran into an upstream timeout
+--   DDL 자체는 1초도 안 걸리는데, 확인 쿼리 때문에 **파일 전체가 실패**합니다.
+--   error.md #22 와 같은 교훈입니다 — 파일의 일은 DDL 이고, 비싸거나 권한이
+--   필요한 일은 붙여넣기 밖에 둡니다.
+--
+--   ★ 그래도 ③ 과 ④ 는 이 단계에서 **가장 중요한 확인**입니다.
+--     빈 params 로 돌린 Base 가 뷰와 다르면 그 위에 세운 시나리오는 전부 장식입니다.
+--     파일을 적용한 뒤, 아래 블록을 **하나씩 따로** 실행해 0행인지 보세요.
+--     한 번에 하나면 30초 안에 끝납니다. 그래도 끊기면 psql 로 직접 붙거나
+--     Supabase 대시보드에서 statement timeout 을 잠시 올리세요.
+--
+--   로컬에서 한 번에 확인하려면 (운영 DB 에 붙지 않습니다):
+--     scripts/sql-verify/run.sh
 
--- ④ ★ Base 전개 = analytics.v_inventory_projection. 여기도 0행이어야 합니다.
-with fp as (
-  select p.item_id,
-         f.period, f.opening_qty, f.receipt_qty, f.demand_qty, f.closing_qty
-    from (select distinct ip.item_id from analytics.v_inventory_projection ip) p
-    cross join lateral core.fn_projection(p.item_id, '{}'::jsonb) f
-)
--- 한쪽에만 있는 행도 나오므로 키는 coalesce 로 씁니다 (안 그러면 어느 품목인지 안 보입니다).
-select coalesce(fp.item_id, v.item_id) as item_id,
-       coalesce(fp.period,  v.period)  as period,
-       fp.opening_qty as fn_opening, v.opening_qty as view_opening,
-       fp.receipt_qty as fn_receipt, v.receipt_qty as view_receipt,
-       fp.demand_qty  as fn_demand,  v.demand_qty  as view_demand,
-       fp.closing_qty as fn_closing, v.closing_qty as view_closing
-  from fp
-  full join analytics.v_inventory_projection v
-    on v.item_id = fp.item_id and v.period = fp.period
--- ★ 한쪽에만 있는 행을 먼저 봅니다.
---   full join 이라 짝이 없으면 반대쪽 네 열이 전부 null 인데, 있는 쪽도 네 값이
---   모두 null 이면 아래 네 비교가 전부 거짓이 되어 그 행이 조용히 빠집니다
---   (재고 행이 없어 전개가 전부 null 인 품목이 그렇습니다).
---   기간이 통째로 빠지거나 남는 것이야말로 이 확인이 잡아야 할 어긋남입니다.
- where fp.item_id is null
-    or v.item_id  is null
-    or fp.opening_qty is distinct from v.opening_qty
-    or fp.receipt_qty is distinct from v.receipt_qty
-    or fp.demand_qty  is distinct from v.demand_qty
-    or fp.closing_qty is distinct from v.closing_qty
- order by 1, 2;
-
--- ⑤ 한 품목을 눈으로. 시나리오가 실제로 달라지는지 봅니다
---    (수요 +20% · 리드타임 60일 · 입고 20일 지연).
-select w.*
-  from analytics.v_stockout_risk r
-  cross join lateral core.simulate_scenario(
-    r.item_id,
-    '{"demand_pct": 20, "lead_time_days": 60, "open_po_delay_days": 20}'::jsonb) w
- where r.item_id = (select r2.item_id
-                      from analytics.v_stockout_risk r2
-                     where r2.risk_status <> 'CALCULATION_UNAVAILABLE'
-                     order by r2.stockout_days nulls last
-                     limit 1)
- order by w.period
- limit 24;
-
--- ⑥ 같은 품목의 요약. base 와 scenario 가 나란히 나옵니다
-select jsonb_pretty(core.simulate_scenario_summary(
-         (select r2.item_id
-            from analytics.v_stockout_risk r2
-           where r2.risk_status <> 'CALCULATION_UNAVAILABLE'
-           order by r2.stockout_days nulls last
-           limit 1),
-         '{"demand_pct": 20, "lead_time_days": 60, "open_po_delay_days": 20, "typo_key": 1}'::jsonb));
+-- -- ③ ★ Base = 뷰. 여기가 0행이어야 합니다.
+-- --    simulate_scenario_summary 가 아니라 core.fn_scenario_summary 를 직접 부릅니다.
+-- --    앞의 것은 Base 와 시나리오를 둘 다 계산하는데, 여기서 볼 것은 Base 뿐이라
+-- --    품목 수만큼 전개를 두 번씩 돌게 됩니다. 감싼 함수는 확인 ⑥ 이 봅니다.
+-- with s as (
+--   select r.item_id,
+--          core.fn_scenario_summary(r.item_id, '{}'::jsonb) as base
+--     from analytics.v_stockout_risk r
+-- ),
+-- cmp as (
+--   select s.item_id,
+--          (s.base ->> 'stockout_date')::date        as fn_stockout_date,
+--          r.stockout_date                           as view_stockout_date,
+--          s.base ->> 'risk'                         as fn_risk,
+--          r.risk_status                             as view_risk,
+--          coalesce(s.base ->> 'reason', '')         as fn_reason,
+--          coalesce(r.reason, '')                    as view_reason,
+--          (s.base ->> 'safety_stock')::numeric      as fn_safety_stock,
+--          ss.safety_stock                           as view_safety_stock,
+--          (s.base ->> 'order_qty')::numeric         as fn_order_qty,
+--          pr.final_recommended_qty                  as view_order_qty,
+--          (s.base ->> 'required_order_date')::date  as fn_required_order_date,
+--          pr.required_order_date                    as view_required_order_date,
+--          -- ★ 여기부터 여섯 쌍은 AI 툴(lib/agent/tools.ts 의 simulateScenario)이
+--          --   numbers 로 내보내는 값입니다. Guardrail 이 답변에 허용하는 숫자가
+--          --   바로 이것들이라, 뷰와 어긋나면 사람이 보는 화면과 AI 가 말하는 값이
+--          --   갈라집니다. 그래서 요약이 내보내는 열 가지를 전부 대조합니다.
+--          --
+--          -- ★ daily_demand · sigma_dlt 만 round(x, 10) 으로 감쌉니다.
+--          --   값은 같은데 numeric 의 scale 이 달라 19번째 소수 자리부터 어긋나기 때문입니다
+--          --   (§6 의 오류 #23 — 같은 공식을 함수로 옮길 때 생기는 자릿수 차이).
+--          --   10자리면 실제 드리프트는 잡고 자릿수 잡음은 흡수합니다.
+--          --   나머지 네 개는 정수에 가까운 값이라 그대로 비교합니다.
+--          round((s.base ->> 'daily_demand')::numeric, 10)   as fn_daily_demand,
+--          round(ss.daily_demand::numeric, 10)               as view_daily_demand,
+--          round((s.base ->> 'sigma_dlt')::numeric, 10)      as fn_sigma_dlt,
+--          round(ss.sigma_dlt::numeric, 10)                  as view_sigma_dlt,
+--          -- 창 수요 = 리드타임+검토 구간의 적용수요. 뷰에서는 consensus_forecast 입니다
+--          -- (sql/16 609행 — v_stockout_risk.leadtime_demand_qty 를 그대로 받습니다).
+--          (s.base ->> 'window_demand_qty')::numeric as fn_window_demand_qty,
+--          pr.consensus_forecast                     as view_window_demand_qty,
+--          (s.base ->> 'raw_order_qty')::numeric     as fn_raw_order_qty,
+--          pr.raw_recommended_qty                    as view_raw_order_qty,
+--          (s.base ->> 'z_value')::numeric           as fn_z_value,
+--          ss.z_value                                as view_z_value,
+--          (s.base ->> 'current_stock')::numeric     as fn_current_stock,
+--          pr.current_inventory                      as view_current_stock
+--     from s
+--     join analytics.v_stockout_risk            r  on r.item_id  = s.item_id
+--     left join analytics.v_safety_stock        ss on ss.item_id = s.item_id
+--     left join analytics.v_purchase_recommendation pr on pr.item_id = s.item_id
+-- )
+-- select c.*
+--   from cmp c
+--  where c.fn_stockout_date        is distinct from c.view_stockout_date
+--     or c.fn_risk                 is distinct from c.view_risk
+--     or c.fn_reason               is distinct from c.view_reason
+--     or c.fn_safety_stock         is distinct from c.view_safety_stock
+--     or c.fn_order_qty            is distinct from c.view_order_qty
+--     or c.fn_required_order_date  is distinct from c.view_required_order_date
+--     or c.fn_daily_demand         is distinct from c.view_daily_demand
+--     or c.fn_sigma_dlt            is distinct from c.view_sigma_dlt
+--     or c.fn_window_demand_qty    is distinct from c.view_window_demand_qty
+--     or c.fn_raw_order_qty        is distinct from c.view_raw_order_qty
+--     or c.fn_z_value              is distinct from c.view_z_value
+--     or c.fn_current_stock        is distinct from c.view_current_stock
+--  order by c.item_id;
+--
+-- -- ④ ★ Base 전개 = analytics.v_inventory_projection. 여기도 0행이어야 합니다.
+-- with fp as (
+--   select p.item_id,
+--          f.period, f.opening_qty, f.receipt_qty, f.demand_qty, f.closing_qty
+--     from (select distinct ip.item_id from analytics.v_inventory_projection ip) p
+--     cross join lateral core.fn_projection(p.item_id, '{}'::jsonb) f
+-- )
+-- -- 한쪽에만 있는 행도 나오므로 키는 coalesce 로 씁니다 (안 그러면 어느 품목인지 안 보입니다).
+-- select coalesce(fp.item_id, v.item_id) as item_id,
+--        coalesce(fp.period,  v.period)  as period,
+--        fp.opening_qty as fn_opening, v.opening_qty as view_opening,
+--        fp.receipt_qty as fn_receipt, v.receipt_qty as view_receipt,
+--        fp.demand_qty  as fn_demand,  v.demand_qty  as view_demand,
+--        fp.closing_qty as fn_closing, v.closing_qty as view_closing
+--   from fp
+--   full join analytics.v_inventory_projection v
+--     on v.item_id = fp.item_id and v.period = fp.period
+-- -- ★ 한쪽에만 있는 행을 먼저 봅니다.
+-- --   full join 이라 짝이 없으면 반대쪽 네 열이 전부 null 인데, 있는 쪽도 네 값이
+-- --   모두 null 이면 아래 네 비교가 전부 거짓이 되어 그 행이 조용히 빠집니다
+-- --   (재고 행이 없어 전개가 전부 null 인 품목이 그렇습니다).
+-- --   기간이 통째로 빠지거나 남는 것이야말로 이 확인이 잡아야 할 어긋남입니다.
+--  where fp.item_id is null
+--     or v.item_id  is null
+--     or fp.opening_qty is distinct from v.opening_qty
+--     or fp.receipt_qty is distinct from v.receipt_qty
+--     or fp.demand_qty  is distinct from v.demand_qty
+--     or fp.closing_qty is distinct from v.closing_qty
+--  order by 1, 2;
+--
+-- -- ⑤ 한 품목을 눈으로. 시나리오가 실제로 달라지는지 봅니다
+-- --    (수요 +20% · 리드타임 60일 · 입고 20일 지연).
+-- select w.*
+--   from analytics.v_stockout_risk r
+--   cross join lateral core.simulate_scenario(
+--     r.item_id,
+--     '{"demand_pct": 20, "lead_time_days": 60, "open_po_delay_days": 20}'::jsonb) w
+--  where r.item_id = (select r2.item_id
+--                       from analytics.v_stockout_risk r2
+--                      where r2.risk_status <> 'CALCULATION_UNAVAILABLE'
+--                      order by r2.stockout_days nulls last
+--                      limit 1)
+--  order by w.period
+--  limit 24;
+--
+-- -- ⑥ 같은 품목의 요약. base 와 scenario 가 나란히 나옵니다
+-- select jsonb_pretty(core.simulate_scenario_summary(
+--          (select r2.item_id
+--             from analytics.v_stockout_risk r2
+--            where r2.risk_status <> 'CALCULATION_UNAVAILABLE'
+--            order by r2.stockout_days nulls last
+--            limit 1),
+--          '{"demand_pct": 20, "lead_time_days": 60, "open_po_delay_days": 20, "typo_key": 1}'::jsonb));
 
 -- ⑦ 실행 기록은 앱이 씁니다. 여기서는 표가 비어 있는 것만 확인합니다
 select count(*) as what_if_log_rows from core.what_if_log;

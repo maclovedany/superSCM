@@ -35,6 +35,7 @@
 | `structure of query does not match function result type` | `information_schema` 컬럼은 `text` 가 아니라 `sql_identifier` | [#25](#25-structure-of-query-does-not-match-function-result-type--information_schema-컬럼은-text-가-아니다) |
 | `permission denied for schema analytics` — secret 키인데도 | `service_role` 의 RLS 우회는 GRANT 를 면제하지 않음 | [#26](#26-service_role-은-rls-만-우회한다--grant-는-우회하지-않는다) |
 | `WITHIN GROUP is required for ordered-set aggregate mode` | 실은 그 컬럼이 뷰에 없음 (`X.Y` → `Y(X)` 로 해석됨) | [#27](#27-within-group-is-required-for-ordered-set-aggregate-mode--실은-컬럼이-없다-는-뜻) |
+| `SQL query ran into an upstream timeout` | DDL 이 아니라 파일 끝의 확인 쿼리가 느림 | [#28](#28-sql-query-ran-into-an-upstream-timeout--ddl-이-아니라-파일-끝의-확인-쿼리-때문) |
 
 > **Supabase 3층 구조를 먼저 기억하면 #3·#4·#5 를 헷갈리지 않습니다.**
 >
@@ -691,3 +692,26 @@ cascade 가 뒤 파일의 뷰를 함께 지우므로, `sql/README.md` 의 규칙
 select column_name from information_schema.columns
  where table_schema='analytics' and table_name='v_forecast_run';
 ```
+
+---
+
+## #28 `SQL query ran into an upstream timeout` — DDL 이 아니라 파일 끝의 확인 쿼리 때문
+
+```
+Error: SQL query ran into an upstream timeout
+
+You can either optimize your query, or increase the statement timeout
+or connect to your database directly.
+```
+
+**증상** `sql/24-what-if.sql` 을 SQL Editor 에 붙여넣으면 시간 초과로 실패합니다.
+
+**원인** DDL 은 1초도 안 걸립니다. 파일 끝의 **확인 쿼리**가 품목마다 시뮬레이션 함수를 다시 돌려 20개 품목 기준 30~55초가 걸리고, 편집기가 그 전에 끊습니다. 붙여넣기는 한 덩어리라 **확인 쿼리 하나 때문에 파일 전체가 실패**합니다.
+
+**#22 와 같은 계열입니다.** 거기서는 관리자 전용 함수 호출 한 줄이 파일 전체를 롤백시켰고, 여기서는 비싼 확인 쿼리가 파일 전체를 시간 초과시킵니다. **파일의 일은 DDL 입니다. 비싸거나 권한이 필요한 일은 붙여넣기 밖에 둡니다.**
+
+**해결** 무거운 확인은 주석 처리하고, 검증 자체는 **로컬 하네스로 옮깁니다** (`scripts/sql-verify/exercise.sql`).
+
+주석 처리만 하고 끝내면 그 확인은 아무도 안 보게 됩니다. `sql/24` 의 ③·④ 는 "빈 params 로 돌린 Base 가 뷰와 같은가" 를 보는, 이 단계에서 **가장 중요한 확인**이었습니다. 그래서 지우지 않고 하네스로 옮겨 매 실행마다 자동으로 돌게 했습니다.
+
+**예방** SQL 파일에 확인 쿼리를 붙일 때, 그 쿼리가 **행마다 함수를 부르는지** 보세요. `cross join lateral 함수(...)` 나 `select 함수(t.id) from 테이블 t` 는 품목 수만큼 반복됩니다. 카탈로그 조회(`to_regprocedure` · `count(*)`)는 싸고, 계산 함수를 도는 확인은 비쌉니다. 후자는 하네스로 보냅니다.

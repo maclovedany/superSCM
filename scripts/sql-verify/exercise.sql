@@ -130,4 +130,56 @@ savepoint sp; select * from core.import_commit('batch-does-not-exist'); rollback
 \echo '### EXERCISE core.rollback_batch (missing batch: a clean domain error is a PASS)'
 savepoint sp; select * from core.rollback_batch('batch-does-not-exist'); rollback to sp;
 
+-- ── STEP 18 What-If — Base 가 뷰와 같은가 ★ ───────────────────
+--
+-- 이 두 확인은 원래 sql/24-what-if.sql 끝에 있었습니다. 품목마다 시뮬레이션을
+-- 다시 돌려 30~55초가 걸리는데, Supabase SQL Editor 가 그 전에 끊어
+-- 파일 전체가 실패했습니다(error.md #28). 그래서 그 파일에서는 주석 처리하고
+-- 확인은 여기로 옮겼습니다. **여기서 빠지면 아무도 안 보게 되므로** 옮긴 것입니다.
+--
+-- 빈 params 로 돌린 Base 가 뷰와 다르면 그 위에 세운 시나리오는 전부 장식입니다.
+-- 둘 다 0 이어야 합니다.
+
+\echo '### EXERCISE what-if Base = 뷰 (0 이어야 PASS)'
+with s as (
+  select r.item_id, core.fn_scenario_summary(r.item_id, '{}'::jsonb) as base
+    from analytics.v_stockout_risk r
+)
+select count(*) as base_vs_view_mismatches
+  from s
+  join analytics.v_stockout_risk                r  on r.item_id  = s.item_id
+  left join analytics.v_safety_stock            ss on ss.item_id = s.item_id
+  left join analytics.v_purchase_recommendation pr on pr.item_id = s.item_id
+ where (s.base ->> 'stockout_date')::date       is distinct from r.stockout_date
+    or  s.base ->> 'risk'                       is distinct from r.risk_status
+    or  coalesce(s.base ->> 'reason', '')       is distinct from coalesce(r.reason, '')
+    or (s.base ->> 'safety_stock')::numeric     is distinct from ss.safety_stock
+    or (s.base ->> 'order_qty')::numeric        is distinct from pr.final_recommended_qty
+    or (s.base ->> 'required_order_date')::date is distinct from pr.required_order_date
+    or round((s.base ->> 'daily_demand')::numeric, 10)
+         is distinct from round(ss.daily_demand::numeric, 10)
+    or round((s.base ->> 'sigma_dlt')::numeric, 10)
+         is distinct from round(ss.sigma_dlt::numeric, 10)
+    or (s.base ->> 'window_demand_qty')::numeric is distinct from pr.consensus_forecast
+    or (s.base ->> 'raw_order_qty')::numeric     is distinct from pr.raw_recommended_qty
+    or (s.base ->> 'z_value')::numeric           is distinct from ss.z_value
+    or (s.base ->> 'current_stock')::numeric     is distinct from pr.current_inventory;
+
+\echo '### EXERCISE what-if Base 전개 = v_inventory_projection (0 이어야 PASS)'
+with fp as (
+  select p.item_id, f.period, f.opening_qty, f.receipt_qty, f.demand_qty, f.closing_qty
+    from (select distinct ip.item_id from analytics.v_inventory_projection ip) p
+    cross join lateral core.fn_projection(p.item_id, '{}'::jsonb) f
+)
+select count(*) as projection_mismatches
+  from fp
+  full join analytics.v_inventory_projection v
+    on v.item_id = fp.item_id and v.period = fp.period
+ where fp.item_id is null
+    or v.item_id  is null
+    or fp.opening_qty is distinct from v.opening_qty
+    or fp.receipt_qty is distinct from v.receipt_qty
+    or fp.demand_qty  is distinct from v.demand_qty
+    or fp.closing_qty is distinct from v.closing_qty;
+
 rollback;
