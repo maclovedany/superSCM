@@ -36,6 +36,7 @@
 | `permission denied for schema analytics` — secret 키인데도 | `service_role` 의 RLS 우회는 GRANT 를 면제하지 않음 | [#26](#26-service_role-은-rls-만-우회한다--grant-는-우회하지-않는다) |
 | `WITHIN GROUP is required for ordered-set aggregate mode` | 실은 그 컬럼이 뷰에 없음 (`X.Y` → `Y(X)` 로 해석됨) | [#27](#27-within-group-is-required-for-ordered-set-aggregate-mode--실은-컬럼이-없다-는-뜻) |
 | `SQL query ran into an upstream timeout` | DDL 이 아니라 파일 끝의 확인 쿼리가 느림 | [#28](#28-sql-query-ran-into-an-upstream-timeout--ddl-이-아니라-파일-끝의-확인-쿼리-때문) |
+| `'temperature' does not support 0 with this model` | 모델이 기본값 외 temperature 를 거절 | [#29](#29-temperature-does-not-support-0-with-this-model--모델이-기본값만-받습니다) |
 
 > **Supabase 3층 구조를 먼저 기억하면 #3·#4·#5 를 헷갈리지 않습니다.**
 >
@@ -715,3 +716,25 @@ or connect to your database directly.
 주석 처리만 하고 끝내면 그 확인은 아무도 안 보게 됩니다. `sql/24` 의 ③·④ 는 "빈 params 로 돌린 Base 가 뷰와 같은가" 를 보는, 이 단계에서 **가장 중요한 확인**이었습니다. 그래서 지우지 않고 하네스로 옮겨 매 실행마다 자동으로 돌게 했습니다.
 
 **예방** SQL 파일에 확인 쿼리를 붙일 때, 그 쿼리가 **행마다 함수를 부르는지** 보세요. `cross join lateral 함수(...)` 나 `select 함수(t.id) from 테이블 t` 는 품목 수만큼 반복됩니다. 카탈로그 조회(`to_regprocedure` · `count(*)`)는 싸고, 계산 함수를 도는 확인은 비쌉니다. 후자는 하네스로 보냅니다.
+
+---
+
+## #29 `'temperature' does not support 0 with this model` — 모델이 기본값만 받습니다
+
+```json
+{ "error": {
+  "message": "Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported.",
+  "type": "invalid_request_error", "param": "temperature", "code": "unsupported_value" } }
+```
+
+**증상** `/agent` 에서 질문하면 `AI 응답에 실패했습니다 (HTTP 400)` 로 끝납니다. 키와 모델 이름은 맞습니다.
+
+**원인** `lib/agent/llm.ts` 가 결정성을 위해 `temperature: 0` 을 보냅니다. 같은 질문에 같은 수치가 나와야 하기 때문입니다(renew.prd 26 · 35). 그런데 **일부 모델은 기본값 외의 temperature 를 아예 받지 않습니다** — 확인된 예: `gpt-5-nano`.
+
+**해결** 400 본문에 `temperature` 가 보이면 그 항목을 **빼고 한 번만 다시** 겁니다. 보내지 않으면 서버 기본값이 쓰입니다. 그리고 `baseUrl|model` 을 열쇠로 기억해, 다음부터는 그 모델에 아예 보내지 않습니다 — 매번 재시도하면 툴 루프가 6회 도는 동안 호출이 두 배가 됩니다.
+
+`json_schema` 를 모르는 서버에 `json_object` 로 한 번 내려앉는 기존 처리와 같은 모양입니다.
+
+**결정성은 어떻게 되나** temperature 를 못 고정하면 문장은 매번 조금씩 달라질 수 있습니다. 다만 **답변 속 수치는 그대로 지켜집니다** — Guardrail 이 툴이 돌려준 값 사전에 없는 숫자를 통과시키지 않기 때문입니다(renew.prd 26.3). 흔들리는 것은 표현이지 숫자가 아닙니다.
+
+**예방** 모델을 바꾸면 지원 범위도 바뀝니다. `temperature` · `response_format` · `tools` 처럼 **모델마다 갈리는 항목은 400 을 받아 한 번 낮추는 경로**를 두고, 그 판단을 모델 이름으로 기억하세요. 코드에 특정 모델 이름을 하드코딩하지 않습니다.

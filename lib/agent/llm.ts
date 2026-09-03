@@ -93,6 +93,20 @@ export function readLlmConfig(env: EnvLike = process.env): LlmConfig {
   };
 }
 
+/**
+ * `temperature` 를 거절하는 모델을 기억합니다 — `baseUrl|model` 이 열쇠입니다.
+ *
+ * 일부 모델(예: gpt-5-nano)은 기본값 외의 temperature 를 받지 않고 400 을 냅니다:
+ *   Unsupported value: 'temperature' does not support 0 with this model.
+ * 처음 한 번은 부딪혀 보고, 그 뒤로는 그 모델에 아예 안 보냅니다. 매번 재시도하면
+ * 툴 루프가 최대 6회 도는 동안 호출이 두 배가 됩니다.
+ *
+ * 모델 이름을 열쇠에 넣었으므로 모델을 바꾸면 다시 판단합니다. 기억이 틀려도
+ * 손해는 "결정성을 조금 잃는 것" 뿐입니다 — 답변 속 수치는 Guardrail 이
+ * 툴 반환값과 대조하므로 temperature 와 무관하게 지켜집니다 (renew.prd 26.3).
+ */
+const noCustomTemperature = new Set<string>();
+
 export type ChatRequest = {
   messages: ChatMessage[];
   tools?: { type: 'function'; function: { name: string; description: string; parameters: unknown } }[];
@@ -176,12 +190,15 @@ export async function chatCompletion(request: ChatRequest): Promise<ChatResult> 
   // 판정했으므로, 헤더만 원본을 쓰면 공백이 붙은 키가 통과했다가 서버에서 401 이 됩니다.
   const apiKey = ((request.env ?? process.env).OPENAI_API_KEY ?? '').trim();
 
-  const send = async (format: ResponseFormat | undefined) => {
+  const modelKey = `${config.baseUrl}|${config.model}`;
+
+  const send = async (format: ResponseFormat | undefined, withTemperature: boolean) => {
     const body: Record<string, unknown> = {
       model: config.model,
       messages: request.messages,
-      temperature: request.temperature ?? 0,
     };
+    // 보내지 않으면 서버 기본값이 쓰입니다. 기본값만 받는 모델을 위해 뺄 수 있어야 합니다.
+    if (withTemperature) body.temperature = request.temperature ?? 0;
     if (request.tools && request.tools.length > 0) {
       body.tools = request.tools;
       body.tool_choice = 'auto';
@@ -202,17 +219,36 @@ export async function chatCompletion(request: ChatRequest): Promise<ChatResult> 
   try {
     let format = request.responseFormat;
     let fellBack = false;
-    let response = await send(format);
+    let withTemperature = !noCustomTemperature.has(modelKey);
+
+    let response = await send(format, withTemperature);
+    // 400 이면 본문을 여기서 한 번만 읽습니다. text() 는 본문을 소비하므로
+    // 재시도 판단과 오류 메시지가 같은 값을 나눠 씁니다.
+    let detail = response.ok ? '' : await response.text().catch(() => '');
 
     if (!response.ok && response.status === 400 && format?.type === 'json_schema') {
       // 호환 서버가 Structured Outputs 를 모릅니다. 한 번만 낮춰서 다시 겁니다.
       format = JSON_OBJECT_RESPONSE_FORMAT;
       fellBack = true;
-      response = await send(format);
+      response = await send(format, withTemperature);
+      detail = response.ok ? '' : await response.text().catch(() => '');
+    }
+
+    if (
+      !response.ok &&
+      response.status === 400 &&
+      withTemperature &&
+      /temperature/i.test(detail)
+    ) {
+      // 기본값 외의 temperature 를 받지 않는 모델입니다. 빼고 한 번만 다시 겁니다.
+      // 다음부터는 이 모델에 아예 보내지 않습니다.
+      noCustomTemperature.add(modelKey);
+      withTemperature = false;
+      response = await send(format, withTemperature);
+      detail = response.ok ? '' : await response.text().catch(() => '');
     }
 
     if (!response.ok) {
-      const detail = await response.text().catch(() => '');
       return failure(
         `AI 응답에 실패했습니다 (HTTP ${response.status}). ${detail.slice(0, 300)}`.trim(),
         response.status,

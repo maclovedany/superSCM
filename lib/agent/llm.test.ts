@@ -263,3 +263,70 @@ test('산출 불가 응답은 회색 상태와 사유를 함께 낸다 — desig
   assert.equal(answer.data_as_of, '2026-09-01');
   assert.deepEqual(answer.evidence, []);
 });
+
+// ── temperature 를 받지 않는 모델 (error.md #29) ────────────────
+//
+// gpt-5-nano 처럼 기본값 외의 temperature 를 거절하는 모델이 있습니다.
+// 한 번 부딪히면 빼고 다시 걸고, 그 뒤로는 같은 모델에 아예 보내지 않습니다.
+
+const TEMP_400 = {
+  status: 400,
+  body: {
+    error: {
+      message:
+        "Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported.",
+      type: 'invalid_request_error',
+      param: 'temperature',
+      code: 'unsupported_value',
+    },
+  },
+};
+
+test('temperature 를 거절하면 빼고 다시 걸어 성공한다', async () => {
+  const { impl, calls } = fakeFetch([TEMP_400, chatResponse({ content: '{}' })]);
+  const result = await chatCompletion({
+    messages: [{ role: 'user', content: '안녕' }],
+    // 이 모델 이름은 이 테스트에서만 씁니다 — 기억이 다른 테스트로 새지 않게 합니다
+    env: { ...ENV, OPENAI_MODEL: 'temp-picky-1' },
+    fetchImpl: impl,
+  });
+
+  assert.equal(result.error, null);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].body.temperature, 0, '첫 호출은 temperature 를 보냅니다');
+  assert.ok(!('temperature' in calls[1].body), '두 번째 호출은 빼고 보냅니다');
+});
+
+test('한 번 거절당한 모델에는 다음부터 temperature 를 보내지 않는다', async () => {
+  const env = { ...ENV, OPENAI_MODEL: 'temp-picky-2' };
+
+  const first = fakeFetch([TEMP_400, chatResponse({ content: '{}' })]);
+  await chatCompletion({ messages: [{ role: 'user', content: 'a' }], env, fetchImpl: first.impl });
+
+  // 두 번째 대화는 처음부터 빼고 보내므로 호출이 한 번뿐이어야 합니다
+  const second = fakeFetch([chatResponse({ content: '{}' })]);
+  const result = await chatCompletion({
+    messages: [{ role: 'user', content: 'b' }],
+    env,
+    fetchImpl: second.impl,
+  });
+
+  assert.equal(result.error, null);
+  assert.equal(second.calls.length, 1, '재시도 없이 한 번에 끝납니다');
+  assert.ok(!('temperature' in second.calls[0].body));
+});
+
+test('temperature 와 무관한 400 은 재시도하지 않고 그대로 알린다', async () => {
+  const { impl, calls } = fakeFetch([
+    { status: 400, body: { error: { message: 'model not found' } } },
+  ]);
+  const result = await chatCompletion({
+    messages: [{ role: 'user', content: '안녕' }],
+    env: { ...ENV, OPENAI_MODEL: 'temp-picky-3' },
+    fetchImpl: impl,
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(result.error ?? '', /HTTP 400/);
+  assert.match(result.error ?? '', /model not found/);
+});
