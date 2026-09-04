@@ -103,3 +103,138 @@ test('toAccuracyBars — 좋은 5 다음 나쁜 5, 순위대로, wape null 은 �
   assert.equal(bars[2].label, 'Z');
   assert.equal(bars[2].wape, null);
 });
+
+// ── Plan B — 분석 · 예측 화면 ──────────────────────────────────
+
+import {
+  demandTypeMixFromKpi,
+  normalizeChampionShare,
+  normalizeHeatmapCell,
+  pivotHeatmap,
+  toErrorPoints,
+  toImprovementBars,
+  toLeadtimeBars,
+  toMetricBars,
+  toQuadrantPoints,
+  toReasonBars,
+  toStockoutBars,
+  toWapeBars,
+} from './chart-model.ts';
+import type { SkuDemandProfile } from './demand-profile.ts';
+import type { ChampionModel, ModelPerformance } from './backtest.ts';
+import type { LeadtimeGap, StockoutRisk } from './scm-model.ts';
+import type { ValueAddByReason, ValueAddRow } from './override-model.ts';
+
+const profile = (over: Partial<SkuDemandProfile>): SkuDemandProfile =>
+  ({
+    itemId: 'X', itemName: null, supplierId: null, firstPeriod: null, lastPeriod: null, periods: 12,
+    activePeriods: 12, zeroPeriods: 0, totalQty: 0, meanQty: null, sdQty: null, cv: null, cvSquared: null,
+    adi: null, zeroDemandRate: null, trendPctPerPeriod: null, recentChangePct: null, peakMonth: null,
+    peakQty: null, demandType: null, demandTypeReason: null, seasonalityIndex: null, seasonalityReason: null,
+    stability: null, ...over,
+  }) as SkuDemandProfile;
+
+test('toQuadrantPoints — ADI · CV² 가 둘 다 있는 행만', () => {
+  const pts = toQuadrantPoints([
+    profile({ itemId: 'A', itemName: '가', adi: 1.1, cvSquared: 0.2, demandType: 'SMOOTH' }),
+    profile({ itemId: 'B', adi: null, cvSquared: 0.2 }),
+    profile({ itemId: 'C', adi: 2, cvSquared: 0.9, demandType: 'LUMPY' }),
+  ]);
+  assert.deepEqual(pts.map((p) => p.itemId), ['A', 'C']);
+  assert.equal(pts[0].label, '가');
+  assert.equal(pts[1].label, 'C');
+  assert.equal(pts[1].cv2, 0.9);
+});
+
+test('demandTypeMixFromKpi — 여섯 구간 순서와 라벨', () => {
+  const mix = demandTypeMixFromKpi({
+    items: 10, smooth: 4, intermittent: 2, erratic: 1, lumpy: 1, noDemand: 1, unclassified: 1,
+    crostonNeeded: 3, avgCv: null, avgAdi: null, trainPeriods: 12,
+  });
+  assert.deepEqual(mix.map((s) => s.key), ['SMOOTH', 'INTERMITTENT', 'ERRATIC', 'LUMPY', 'NO_DEMAND', 'UNCLASSIFIED']);
+  assert.deepEqual(mix.map((s) => s.n), [4, 2, 1, 1, 1, 1]);
+  assert.equal(mix[5].label, '판정 불가');
+});
+
+test('pivotHeatmap — 품목별 행, 기간 열, max 는 색용', () => {
+  const cells = [
+    { item_id: 'A', item_name: '가', period: '2026-01-01', qty: '10' },
+    { item_id: 'A', item_name: '가', period: '2026-02-01', qty: '30' },
+    { item_id: 'B', item_name: null, period: '2026-02-01', qty: null },
+  ].map(normalizeHeatmapCell);
+  const grid = pivotHeatmap(cells);
+  assert.deepEqual(grid.periods, ['2026-01', '2026-02']);
+  assert.equal(grid.rows.length, 2);
+  assert.deepEqual(grid.rows[0].cells.map((c) => c.qty), [10, 30]);
+  assert.equal(grid.rows[0].max, 30);
+  assert.deepEqual(grid.rows[1].cells.map((c) => c.qty), [null, null]);
+  assert.equal(grid.rows[1].max, null);
+  assert.equal(grid.rows[1].label, 'B');
+});
+
+test('toLeadtimeBars — 표본 30 미만 표시, 값은 그대로', () => {
+  const bars = toLeadtimeBars([
+    { supplier: 'S1', country: 'JP', masterLeadTime: 30, sampleCount: 12, actualAverage: 35, p80: 41, gap: 11 },
+    { supplier: 'S2', country: 'CN', masterLeadTime: null, sampleCount: 40, actualAverage: 20, p80: 25, gap: null },
+  ] as LeadtimeGap[]);
+  assert.equal(bars[0].lowSample, true);
+  assert.equal(bars[1].lowSample, false);
+  assert.equal(bars[1].master, null);
+  assert.equal(bars[0].gap, 11);
+});
+
+test('toStockoutBars — 일수 null 은 뒤로, limit 까지', () => {
+  const risk = (id: string, days: number | null, status: string) =>
+    ({ itemId: id, itemName: null, stockoutDays: days, plannedLeadTime: 30, riskStatus: status }) as unknown as StockoutRisk;
+  const bars = toStockoutBars([risk('A', null, 'CALCULATION_UNAVAILABLE'), risk('B', 5, 'CRITICAL'), risk('C', 40, 'SAFE')], 2);
+  assert.deepEqual(bars.map((b) => b.itemId), ['B', 'C']);
+  assert.equal(bars[0].status, 'CRITICAL');
+  assert.equal(bars[0].leadTime, 30);
+});
+
+test('toWapeBars — WAPE 내림차순, null 뒤, 수동 표시', () => {
+  const ch = (id: string, wape: number | null, method: 'AUTO' | 'MANUAL') =>
+    ({ itemId: id, itemName: null, wape, baselineImprovement: 0.1, selectionMethod: method, modelName: 'MA3' }) as unknown as ChampionModel;
+  const bars = toWapeBars([ch('A', 0.1, 'AUTO'), ch('B', null, 'AUTO'), ch('C', 0.5, 'MANUAL')]);
+  assert.deepEqual(bars.map((b) => b.itemId), ['C', 'A', 'B']);
+  assert.equal(bars[0].manual, true);
+  assert.equal(bars[2].wape, null);
+});
+
+test('toImprovementBars — 개선율 있는 행만, 값 그대로', () => {
+  const ch = (id: string, imp: number | null) =>
+    ({ itemId: id, itemName: id, wape: 0.1, baselineImprovement: imp, selectionMethod: 'AUTO', modelName: null }) as unknown as ChampionModel;
+  const bars = toImprovementBars([ch('A', 0.2), ch('B', null), ch('C', -0.1)]);
+  assert.deepEqual(bars.map((b) => `${b.itemId}:${b.improvement}`), ['A:0.2', 'C:-0.1']);
+});
+
+test('normalizeChampionShare — 실제 컬럼명', () => {
+  const row = normalizeChampionShare({ model_id: 'MA3', model_name: '이동평균 3', n_items: 7, n_manual: 1, avg_wape: '0.1234' });
+  assert.deepEqual(row, { modelId: 'MA3', modelName: '이동평균 3', nItems: 7, nManual: 1, avgWape: 0.1234 });
+});
+
+test('toMetricBars — 모델별 WAPE · Bias, Champion 표시', () => {
+  const perf = (id: string, wape: number | null, bias: number | null, champ: boolean) =>
+    ({ modelId: id, modelName: id, wape, bias, isChampion: champ }) as unknown as ModelPerformance;
+  const bars = toMetricBars([perf('MA3', 0.2, -0.05, true), perf('SN', null, null, false)]);
+  assert.equal(bars[0].isChampion, true);
+  assert.equal(bars[1].wape, null);
+  assert.equal(bars[0].bias, -0.05);
+});
+
+test('toReasonBars — 사유 라벨을 함수로 받는다', () => {
+  const bars = toReasonBars(
+    [{ reasonCode: 'PROMOTION', n: 3, aiWape: 0.3, consensusWape: 0.2, improvementPct: 0.33 }] as ValueAddByReason[],
+    (code) => (code === 'PROMOTION' ? '프로모션' : code),
+  );
+  assert.deepEqual(bars, [{ reasonCode: 'PROMOTION', label: '프로모션', n: 3, aiWape: 0.3, consensusWape: 0.2 }]);
+});
+
+test('toErrorPoints — 두 오차가 다 있는 행만', () => {
+  const row = (id: string, ai: number | null, cons: number | null, improved: boolean | null) =>
+    ({ itemId: id, period: '2026-01-01', aiAbsError: ai, consensusAbsError: cons, improved }) as unknown as ValueAddRow;
+  const pts = toErrorPoints([row('A', 10, 5, true), row('B', null, 5, null), row('C', 3, 8, false)]);
+  assert.deepEqual(pts.map((p) => p.itemId), ['A', 'C']);
+  assert.equal(pts[0].period, '2026-01');
+  assert.equal(pts[1].improved, false);
+});

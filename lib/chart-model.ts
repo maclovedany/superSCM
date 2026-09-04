@@ -216,3 +216,285 @@ export function toAccuracyBars(rows: AccuracyRankingRow[]): AccuracyBar[] {
     }));
   return [...best, ...worst];
 }
+
+// ══ Plan B — 분석 · 예측 화면 ═══════════════════════════════════
+//
+// 여기서도 모양만 바꿉니다. 정렬 · 걸러내기 · 피벗까지가 허용 범위입니다.
+
+import type { DemandProfileKpi, SkuDemandProfile } from './demand-profile.ts';
+import type { ChampionModel, ModelPerformance } from './backtest.ts';
+import type { LeadtimeGap, StockoutRisk } from './scm-model.ts';
+import type { ValueAddByReason, ValueAddRow } from './override-model.ts';
+import type { RiskStatus } from './status.ts';
+
+// ── 수요 프로파일 — CV² × ADI 사분면 ───────────────────────────
+
+export type QuadrantPoint = {
+  itemId: string;
+  label: string;
+  adi: number;
+  cv2: number;
+  demandType: string | null;
+};
+
+/** Syntetos-Boylan 경계. ADI 1.32 · CV² 0.49 (renew.prd 10장) */
+export const QUADRANT_ADI = 1.32;
+export const QUADRANT_CV2 = 0.49;
+
+/** ADI · CV² 가 둘 다 있는 품목만 점이 됩니다 */
+export function toQuadrantPoints(rows: SkuDemandProfile[]): QuadrantPoint[] {
+  const points: QuadrantPoint[] = [];
+  for (const row of rows) {
+    if (row.adi === null || row.cvSquared === null) continue;
+    points.push({
+      itemId: row.itemId,
+      label: row.itemName ?? row.itemId,
+      adi: row.adi,
+      cv2: row.cvSquared,
+      demandType: row.demandType,
+    });
+  }
+  return points;
+}
+
+export type DemandTypeKey = 'SMOOTH' | 'INTERMITTENT' | 'ERRATIC' | 'LUMPY' | 'NO_DEMAND' | 'UNCLASSIFIED';
+export type DemandTypeSlice = { key: DemandTypeKey; label: string; n: number };
+
+export const DEMAND_TYPE_MIX_LABEL: Record<DemandTypeKey, string> = {
+  SMOOTH: '평활',
+  INTERMITTENT: '간헐',
+  ERRATIC: '불규칙',
+  LUMPY: '덩어리',
+  NO_DEMAND: '수요 없음',
+  UNCLASSIFIED: '판정 불가',
+};
+
+/** v_demand_profile_kpi 의 여섯 건수를 순서대로 놓습니다 */
+export function demandTypeMixFromKpi(kpi: DemandProfileKpi): DemandTypeSlice[] {
+  return [
+    { key: 'SMOOTH', label: DEMAND_TYPE_MIX_LABEL.SMOOTH, n: kpi.smooth },
+    { key: 'INTERMITTENT', label: DEMAND_TYPE_MIX_LABEL.INTERMITTENT, n: kpi.intermittent },
+    { key: 'ERRATIC', label: DEMAND_TYPE_MIX_LABEL.ERRATIC, n: kpi.erratic },
+    { key: 'LUMPY', label: DEMAND_TYPE_MIX_LABEL.LUMPY, n: kpi.lumpy },
+    { key: 'NO_DEMAND', label: DEMAND_TYPE_MIX_LABEL.NO_DEMAND, n: kpi.noDemand },
+    { key: 'UNCLASSIFIED', label: DEMAND_TYPE_MIX_LABEL.UNCLASSIFIED, n: kpi.unclassified },
+  ];
+}
+
+// ── 수요 프로파일 — 품목 × 월 히트맵 ───────────────────────────
+
+export type HeatmapCell = { itemId: string; itemName: string | null; period: string; qty: number | null };
+
+export function normalizeHeatmapCell(row: Record<string, unknown>): HeatmapCell {
+  return {
+    itemId: text(row.item_id) ?? '',
+    itemName: text(row.item_name),
+    period: (text(row.period) ?? '').slice(0, 7),
+    qty: num(row.qty),
+  };
+}
+
+export type HeatmapRow = {
+  itemId: string;
+  label: string;
+  cells: { period: string; qty: number | null }[];
+  /** 그 품목의 최댓값. 칸 색의 진하기를 고르는 데만 씁니다 — 숫자가 아니라 명도입니다 */
+  max: number | null;
+};
+
+/** 품목별 한 행, 기간이 열. 기간이 없는 칸은 null 입니다 */
+export function pivotHeatmap(cells: HeatmapCell[]): { periods: string[]; rows: HeatmapRow[] } {
+  const periodSet = new Set<string>();
+  const byItem = new Map<string, { label: string; values: Map<string, number | null> }>();
+  for (const cell of cells) {
+    if (cell.period === '') continue;
+    periodSet.add(cell.period);
+    let item = byItem.get(cell.itemId);
+    if (item === undefined) {
+      item = { label: cell.itemName ?? cell.itemId, values: new Map() };
+      byItem.set(cell.itemId, item);
+    }
+    item.values.set(cell.period, cell.qty);
+  }
+  const periods = Array.from(periodSet).sort();
+  const rows: HeatmapRow[] = [];
+  byItem.forEach((item, itemId) => {
+    const rowCells = periods.map((period) => ({ period, qty: item.values.get(period) ?? null }));
+    let max: number | null = null;
+    for (const c of rowCells) if (c.qty !== null && (max === null || c.qty > max)) max = c.qty;
+    rows.push({ itemId, label: item.label, cells: rowCells, max });
+  });
+  return { periods, rows };
+}
+
+// ── 리드타임 ─────────────────────────────────────────────────────
+
+export type LeadtimeBar = {
+  supplier: string;
+  master: number | null;
+  p80: number | null;
+  avg: number | null;
+  gap: number | null;
+  /** 표본 30건 미만 (renew.prd 18.2) */
+  lowSample: boolean;
+};
+
+export function toLeadtimeBars(rows: LeadtimeGap[]): LeadtimeBar[] {
+  return rows.map((row) => ({
+    supplier: row.supplier,
+    master: row.masterLeadTime,
+    p80: row.p80,
+    avg: row.actualAverage,
+    gap: row.gap,
+    lowSample: row.sampleCount < 30,
+  }));
+}
+
+// ── 결품 위험 ────────────────────────────────────────────────────
+
+export type StockoutBar = {
+  itemId: string;
+  label: string;
+  days: number | null;
+  leadTime: number | null;
+  status: RiskStatus;
+};
+
+/** 일수가 있는 품목을 뷰 순서(소진 임박 순)대로 limit 까지. null 은 뒤로 보냅니다 */
+export function toStockoutBars(rows: StockoutRisk[], limit = 20): StockoutBar[] {
+  const withDays = rows.filter((r) => r.stockoutDays !== null);
+  const without = rows.filter((r) => r.stockoutDays === null);
+  return [...withDays, ...without].slice(0, limit).map((row) => ({
+    itemId: row.itemId,
+    label: row.itemName ?? row.itemId,
+    days: row.stockoutDays,
+    leadTime: row.plannedLeadTime,
+    status: row.riskStatus,
+  }));
+}
+
+// ── 모델 평가 ────────────────────────────────────────────────────
+
+export type WapeBar = {
+  itemId: string;
+  label: string;
+  wape: number | null;
+  improvement: number | null;
+  manual: boolean;
+  modelName: string | null;
+};
+
+/** WAPE 내림차순(부정확한 품목이 위). null 은 뒤 */
+export function toWapeBars(rows: ChampionModel[]): WapeBar[] {
+  return rows
+    .map((row): WapeBar => ({
+      itemId: row.itemId,
+      label: row.itemName ?? row.itemId,
+      wape: row.wape,
+      improvement: row.baselineImprovement,
+      manual: row.selectionMethod === 'MANUAL',
+      modelName: row.modelName,
+    }))
+    .sort((a, b) => {
+      if (a.wape === null) return b.wape === null ? 0 : 1;
+      if (b.wape === null) return -1;
+      return b.wape - a.wape;
+    });
+}
+
+export type ImprovementBar = { itemId: string; label: string; improvement: number };
+
+/** 개선율이 있는 품목만, 뷰 순서 그대로 */
+export function toImprovementBars(rows: ChampionModel[]): ImprovementBar[] {
+  const bars: ImprovementBar[] = [];
+  for (const row of rows) {
+    if (row.baselineImprovement === null) continue;
+    bars.push({ itemId: row.itemId, label: row.itemName ?? row.itemId, improvement: row.baselineImprovement });
+  }
+  return bars;
+}
+
+export type ChampionShareRow = {
+  modelId: string;
+  modelName: string | null;
+  nItems: number;
+  nManual: number;
+  avgWape: number | null;
+};
+
+export function normalizeChampionShare(row: Record<string, unknown>): ChampionShareRow {
+  return {
+    modelId: text(row.model_id) ?? '',
+    modelName: text(row.model_name),
+    nItems: count(row.n_items) ?? 0,
+    nManual: count(row.n_manual) ?? 0,
+    avgWape: num(row.avg_wape),
+  };
+}
+
+// ── 모델 비교 ────────────────────────────────────────────────────
+
+export type MetricBar = {
+  modelId: string;
+  label: string;
+  wape: number | null;
+  bias: number | null;
+  isChampion: boolean;
+};
+
+export function toMetricBars(rows: ModelPerformance[]): MetricBar[] {
+  return rows.map((row) => ({
+    modelId: row.modelId,
+    label: row.modelName ?? row.modelId,
+    wape: row.wape,
+    bias: row.bias,
+    isChampion: row.isChampion,
+  }));
+}
+
+// ── 예측 보정 ────────────────────────────────────────────────────
+
+export type ReasonBar = {
+  reasonCode: string;
+  label: string;
+  n: number;
+  aiWape: number | null;
+  consensusWape: number | null;
+};
+
+export function toReasonBars(
+  rows: ValueAddByReason[],
+  labelOf: (code: string) => string,
+): ReasonBar[] {
+  return rows.map((row) => ({
+    reasonCode: row.reasonCode ?? 'NONE',
+    label: row.reasonCode === null ? '사유 없음' : labelOf(row.reasonCode),
+    n: row.n,
+    aiWape: row.aiWape,
+    consensusWape: row.consensusWape,
+  }));
+}
+
+export type ErrorPoint = {
+  itemId: string;
+  period: string;
+  aiError: number;
+  consensusError: number;
+  improved: boolean | null;
+};
+
+/** 두 오차가 다 있는 (품목 × 기간) 만 점이 됩니다 */
+export function toErrorPoints(rows: ValueAddRow[]): ErrorPoint[] {
+  const points: ErrorPoint[] = [];
+  for (const row of rows) {
+    if (row.aiAbsError === null || row.consensusAbsError === null) continue;
+    points.push({
+      itemId: row.itemId,
+      period: row.period.slice(0, 7),
+      aiError: row.aiAbsError,
+      consensusError: row.consensusAbsError,
+      improved: row.improved,
+    });
+  }
+  return points;
+}

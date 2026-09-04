@@ -96,3 +96,50 @@ export async function getApprovalMonthly(): Promise<{ rows: ApprovalMonthlyRow[]
     return { rows: [], error: failure(error) };
   }
 }
+
+// ══ Plan B ═══════════════════════════════════════════════════════
+
+import {
+  normalizeChampionShare,
+  normalizeHeatmapCell,
+  type ChampionShareRow,
+  type HeatmapCell,
+} from './chart-model';
+
+/** 수요 프로파일 — 품목 × 월 사용량 12개월, 상위 40품목 (최대 480행) */
+export async function getUsageHeatmap(): Promise<{ rows: HeatmapCell[]; error: string | null }> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase
+      .schema('analytics')
+      .from('v_chart_usage_heatmap')
+      .select('*')
+      .limit(600);
+    if (error) return { rows: [], error: error.message };
+    return {
+      rows: (data ?? []).map((row) => normalizeHeatmapCell(row as Record<string, unknown>)),
+      error: null,
+    };
+  } catch (error) {
+    return { rows: [], error: failure(error) };
+  }
+}
+
+/** 모델 평가 — 모델별 Champion 품목 수 */
+export async function getChampionShare(): Promise<{ rows: ChampionShareRow[]; error: string | null }> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase
+      .schema('analytics')
+      .from('v_chart_champion_share')
+      .select('*')
+      .limit(50);
+    if (error) return { rows: [], error: error.message };
+    return {
+      rows: (data ?? []).map((row) => normalizeChampionShare(row as Record<string, unknown>)),
+      error: null,
+    };
+  } catch (error) {
+    return { rows: [], error: failure(error) };
+  }
+}
