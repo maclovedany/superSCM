@@ -39,3 +39,18 @@ export function colorMap(seriesIds: string[]): Record<string, string> {
   });
   return map;
 }
+
+/**
+ * 상태색 — app/globals.css 의 --crit · --warn · --info 와 같은 값입니다.
+ * recharts 는 CSS 변수를 읽지 못해 값을 복제합니다. globals.css 를 바꾸면 여기도 바꾸세요.
+ * 색만으로 구분하지 않습니다 — 툴팁과 범례에 상태 글자를 함께 둡니다 (design.md §7.4).
+ */
+export const STATUS_COLORS = {
+  CRITICAL: '#dc2626',
+  WARNING: '#f59e0b',
+  SAFE: '#16a34a',
+  INFO: '#2563eb',
+  UNKNOWN: '#a1a1aa',
+} as const;
+
+export type StatusKey = keyof typeof STATUS_COLORS;
