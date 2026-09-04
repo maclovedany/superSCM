@@ -12,6 +12,9 @@
 //   (lib/dashboard-model.ts 의 railSentences). STEP 16 의 AI Agent 가 없어도,
 //   있어도 응답하지 못해도 이 화면은 그대로 나옵니다.
 //
+// ★ 차트 띠 6종(spec §4.1)은 각자의 뷰 숫자만 그립니다. 표와 다른 값을 보이면 뷰가 다른 것이지
+//   화면이 계산한 것이 아닙니다.
+//
 // kpi-filter: 없음 — 카드는 다른 화면으로 가는 링크입니다.
 //   대시보드에는 좁힐 목록이 없습니다. 카드를 누르면 그 숫자를 만든 화면으로 갑니다.
 //
@@ -47,7 +50,28 @@ import Badge, { StatusBadge } from '@/components/ui/badge';
 import AlertRow from '@/components/ui/alert-row';
 import { EmptyState, ErrorState } from '@/components/ui/state';
 import Sparkline, { type SparklineDatum } from '@/components/chart/sparkline';
-import { requireUser } from '@/lib/auth';
+import ChartFrame from '@/components/chart/_base/chart-frame';
+import DashboardDemandTrend from '@/components/chart/dashboard-demand-trend';
+import DashboardRiskMix from '@/components/chart/dashboard-risk-mix';
+import DashboardSupplierAmount from '@/components/chart/dashboard-supplier-amount';
+import DashboardAccuracyRanking from '@/components/chart/dashboard-accuracy-ranking';
+import AlertsTypeMix from '@/components/chart/alerts-type-mix';
+import DecisionMonthly from '@/components/chart/decision-monthly';
+import { isSalesUser, requireUser } from '@/lib/auth';
+import { getStockoutKpi } from '@/lib/scm';
+import {
+  getAlertTypeMix,
+  getApprovalMonthly,
+  getDemandTrend,
+  getRecommendationBySupplier,
+} from '@/lib/charts';
+import {
+  pivotAlertTypeMix,
+  pivotApprovalMonthly,
+  riskMixFromKpi,
+  toAccuracyBars,
+  type RiskMixKey,
+} from '@/lib/chart-model';
 import {
   getDashboardAccuracyRanking,
   getDashboardKpi,
@@ -90,6 +114,21 @@ function delayText(days: number | null): string | null {
   if (days > 0) return `${days}일 경과`;
   if (days === 0) return '오늘';
   return `${-days}일 남음`;
+}
+
+/**
+ * 결품 위험 분포에서 누른 판정 → /analysis/stockout 의 필터.
+ * ★ 그 화면 FilterSpec 에 있는 키만 씁니다 (위 ?filter= 규칙). 없는 판정은 이동하지 않습니다.
+ */
+function riskHref(key: RiskMixKey): string | null {
+  if (key === 'CRITICAL') return '/analysis/stockout?filter=critical';
+  if (key === 'WARNING') return '/analysis/stockout?filter=risk';
+  return null;
+}
+
+/** 알림 유형 → /alerts 의 필터. 그 화면 FilterSpec 에 있는 유형 키만 씁니다 (지금은 excess 하나) */
+function alertTypeHref(type: string): string | null {
+  return type === 'EXCESS_INVENTORY' ? '/alerts?filter=excess' : '/alerts';
 }
 
 const priorityColumns = (
@@ -208,33 +247,23 @@ const openPoColumns: Column<OpenPoRiskRow>[] = [
   },
 ];
 
-/** 정확도 랭킹 한 줄. 막대 폭은 뷰가 낸 bar_pct 이고 화면은 그것을 CSS 폭으로 옮깁니다 */
-function RankRow({ row, tone }: { row: AccuracyRankingRow; tone: 'safe' | 'crit' }) {
-  return (
-    <div className="rank-row">
-      <span className="rank-row-name" title={row.itemName ?? row.itemId}>
-        {row.itemName ?? row.itemId}
-        {row.modelName && <span className="text-3"> · {row.modelName}</span>}
-      </span>
-      <span className="rank-row-value">
-        {row.wape === null ? <EmptyValue reason="INSUFFICIENT_SAMPLE" showLabel={false} /> : percentText(row.wape)}
-      </span>
-      <span className="rank-bar">
-        {row.barPct !== null && (
-          <span
-            className={tone === 'crit' ? 'rank-bar-fill crit' : 'rank-bar-fill'}
-            style={{ width: `${row.barPct}%` }}
-          />
-        )}
-      </span>
-    </div>
-  );
-}
-
 export default async function DashboardPage() {
-  await requireUser();
+  const user = await requireUser();
 
-  const [kpiResult, priority, ranking, openPo, approvals, projection, alerts] = await Promise.all([
+  const [
+    kpiResult,
+    priority,
+    ranking,
+    openPo,
+    approvals,
+    projection,
+    alerts,
+    demandTrend,
+    stockoutKpi,
+    supplierAmount,
+    alertMix,
+    approvalMonthly,
+  ] = await Promise.all([
     getDashboardKpi(),
     getDashboardPurchasePriority(),
     getDashboardAccuracyRanking(),
@@ -242,6 +271,11 @@ export default async function DashboardPage() {
     getDashboardRecentApprovals(),
     getProjectionItems(),
     getAlerts(5),
+    getDemandTrend(),
+    getStockoutKpi(),
+    getRecommendationBySupplier(8),
+    getAlertTypeMix(),
+    getApprovalMonthly(),
   ]);
 
   const kpi = kpiResult.data;
@@ -265,10 +299,6 @@ export default async function DashboardPage() {
   // 정확도가 없는 이유. Champion 이 하나도 없으면 아직 백테스트 전입니다.
   const accuracyReason = kpi !== null && kpi.nChampions === 0 ? 'INSUFFICIENT_SAMPLE' : null;
 
-  const best = ranking.rows.filter((row) => row.rankBest !== null && row.rankBest <= 5);
-  const worst = ranking.rows
-    .filter((row) => row.rankWorst !== null && row.rankWorst <= 5)
-    .sort((a, b) => (a.rankWorst ?? 0) - (b.rankWorst ?? 0));
   // ★ 겹침은 가져온 행 수가 아니라 뷰가 센 전체 Champion 수로 판정합니다.
   //   조회가 양 끝 10건만 받아 오므로 rows.length 는 언제나 10 이하입니다 —
   //   그것으로 판정하면 Champion 이 100개여도 "겹칩니다" 라고 말하게 됩니다.
@@ -446,6 +476,75 @@ export default async function DashboardPage() {
         </div>
       )}
 
+      {/* ── 차트 띠 — spec §4.1. 3×2. 각 차트는 자기 뷰의 숫자만 그립니다 ── */}
+      <div className="grid-charts" data-cols="3">
+        <ChartFrame
+          title="수요 추이"
+          desc="최근 12개월 실적 합계와 향후 3개월 Consensus 예측"
+          error={demandTrend.error}
+          empty={demandTrend.rows.length === 0 ? '실적이 아직 없습니다' : null}
+        >
+          <DashboardDemandTrend data={demandTrend.rows} />
+        </ChartFrame>
+
+        <ChartFrame
+          title="결품 위험 분포"
+          desc="재고 전개 판정별 품목 수 · 누르면 그 판정만 봅니다"
+          error={stockoutKpi.error}
+          empty={stockoutKpi.data === null ? '판정된 품목이 없습니다' : null}
+        >
+          {stockoutKpi.data !== null && (
+            <DashboardRiskMix slices={riskMixFromKpi(stockoutKpi.data)} hrefFor={riskHref} />
+          )}
+        </ChartFrame>
+
+        <ChartFrame
+          title="공급처별 추천 금액"
+          desc="추천 수량이 있는 품목의 금액 합계 · 상위 8 · 빨간 막대는 긴급 포함"
+          error={supplierAmount.error}
+          empty={supplierAmount.rows.length === 0 ? '추천 수량이 있는 품목이 없습니다' : null}
+          masked={isSalesUser(user)}
+        >
+          <DashboardSupplierAmount
+            rows={supplierAmount.rows}
+            hrefFor={(supplierId) => `/purchase-recommendation?supplier=${encodeURIComponent(supplierId)}`}
+          />
+        </ChartFrame>
+
+        <ChartFrame
+          title="예측 정확도 랭킹"
+          desc={`WAPE 낮을수록 정확 · 정확한 5 (초록) · 부정확한 5 (빨강)${
+            rankingOverlap ? ` · Champion 이 ${nRanked}개라 양쪽에 같은 품목이 있습니다` : ''
+          }`}
+          error={ranking.error}
+          empty={ranking.rows.length === 0 ? '정확도를 매길 품목이 없습니다' : null}
+          masked={isSalesUser(user)}
+        >
+          <DashboardAccuracyRanking
+            bars={toAccuracyBars(ranking.rows)}
+            hrefFor={(itemId) => `/model-comparison?item=${encodeURIComponent(itemId)}`}
+          />
+        </ChartFrame>
+
+        <ChartFrame
+          title="알림 유형별 현황"
+          desc="열린 알림을 유형과 심각도로 · 범례를 눌러 심각도를 끄고 켭니다"
+          error={alertMix.error}
+          empty={alertMix.rows.length === 0 ? '열린 알림이 없습니다' : null}
+        >
+          <AlertsTypeMix stacks={pivotAlertTypeMix(alertMix.rows)} hrefFor={alertTypeHref} />
+        </ChartFrame>
+
+        <ChartFrame
+          title="월별 결정"
+          desc="최근 6개월 발주 결정 건수 · 누르면 결정 이력으로"
+          error={approvalMonthly.error}
+          empty={approvalMonthly.rows.length === 0 ? '아직 내려진 결정이 없습니다' : null}
+        >
+          <DecisionMonthly stacks={pivotApprovalMonthly(approvalMonthly.rows)} href="/decision-history" />
+        </ChartFrame>
+      </div>
+
       <div className="grid grid-rail">
         {/* ── 주 패널 ─────────────────────────────────────────── */}
         <div className="grid">
@@ -499,50 +598,6 @@ export default async function DashboardPage() {
                   </Link>
                 ))}
               </div>
-            )}
-          </Panel>
-
-          <Panel
-            title="예측 정확도 랭킹"
-            actions={
-              <span className="t-label">
-                WAPE 낮을수록 정확 · 막대는 가장 나쁜 품목 대비 상대 폭
-              </span>
-            }
-          >
-            {ranking.error !== null ? (
-              <ErrorState detail={ranking.error} />
-            ) : ranking.rows.length === 0 ? (
-              <EmptyState
-                title="정확도를 매길 품목이 없습니다"
-                desc="백테스트를 돌려 Champion 모델이 정해지면 여기에 순위가 생깁니다."
-              />
-            ) : (
-              <>
-                <div className="grid grid-2">
-                  <div>
-                    <p className="t-label">정확한 5</p>
-                    <div className="rank-list">
-                      {best.map((row) => (
-                        <RankRow key={`best-${row.itemId}`} row={row} tone="safe" />
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <p className="t-label">부정확한 5</p>
-                    <div className="rank-list">
-                      {worst.map((row) => (
-                        <RankRow key={`worst-${row.itemId}`} row={row} tone="crit" />
-                      ))}
-                    </div>
-                  </div>
-                </div>
-                {rankingOverlap && (
-                  <p className="t-sm text-3">
-                    Champion 이 {nRanked}개라 양쪽 목록에 같은 품목이 들어갑니다.
-                  </p>
-                )}
-              </>
             )}
           </Panel>
 

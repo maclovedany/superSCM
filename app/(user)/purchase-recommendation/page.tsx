@@ -86,7 +86,10 @@ export default async function PurchaseRecommendationPage({
     },
   ];
 
-  const activeFilter = readFilter(await searchParams);
+  const params = await searchParams;
+  const activeFilter = readFilter(params);
+  // 대시보드 "공급처별 추천 금액" 막대가 이 파라미터로 들어옵니다. 카드 필터와 함께 걸립니다.
+  const supplierParam = readFilter(params, 'supplier');
   const [{ rows, error }, { data: kpi }, run] = await Promise.all([
     getRecommendationsWithApproval(),
     getPurchaseRecommendationKpi(),
@@ -293,6 +296,8 @@ export default async function PurchaseRecommendationPage({
   );
 
   const visible = applyFilter(rows, FILTERS, activeFilter);
+  const shown =
+    supplierParam === null ? visible : visible.filter((row) => row.supplierId === supplierParam);
   const filterLabel = labelOf(FILTERS, activeFilter);
 
   const itemCount = kpi?.itemCount ?? rows.length;
@@ -414,18 +419,26 @@ export default async function PurchaseRecommendationPage({
         actions={<span className="t-label">발주 권고일 순 · 산출 불가는 맨 뒤</span>}
         flush
       >
-        {visible.length === 0 ? (
+        {shown.length === 0 ? (
           <EmptyState
             title={`${filterLabel ?? ''} 에 해당하는 품목이 없습니다`}
             desc="위 카드를 다시 눌러 전체 목록으로 돌아갈 수 있습니다."
           />
         ) : (
-          <DataTable
-            columns={columns}
-            rows={visible}
-            rowKey={(row) => row.itemId}
-            caption="analytics.v_purchase_recommendation_with_approval — 추천 수량 · 발주 권고일 · 유효한 결정"
-          />
+          <>
+            {supplierParam !== null && (
+              <p className="t-sm text-3" style={{ padding: 'var(--s-2) var(--s-4)' }}>
+                공급처 <span className="t-code">{supplierParam}</span> 만 보는 중 ·{' '}
+                <Link href="/purchase-recommendation">전체</Link>
+              </p>
+            )}
+            <DataTable
+              columns={columns}
+              rows={shown}
+              rowKey={(row) => row.itemId}
+              caption="analytics.v_purchase_recommendation_with_approval — 추천 수량 · 발주 권고일 · 유효한 결정"
+            />
+          </>
         )}
       </Panel>
     </>
