@@ -238,3 +238,71 @@ test('toErrorPoints — 두 오차가 다 있는 행만', () => {
   assert.equal(pts[0].period, '2026-01');
   assert.equal(pts[1].improved, false);
 });
+
+// ── Plan C — 운영 화면 ──────────────────────────────────────────
+
+import {
+  normalizeAlertDaily,
+  normalizeOrderCalendar,
+  normalizeProjectionTotal,
+  normalizeSalesStatus,
+  toAdjustmentBars,
+  toShortfallBars,
+  toSimulationItemBars,
+  toSimulationTotalPoints,
+  toWhatIfCompare,
+} from './chart-model.ts';
+import type { DecisionHistoryRow } from './approval-model.ts';
+import type { SalesPromiseRisk } from './atp-model.ts';
+import type { SimulationItem, SimulationTotals } from './simulation-model.ts';
+import type { WhatIfSide } from './what-if-model.ts';
+
+test('normalizeOrderCalendar · normalizeProjectionTotal · normalizeAlertDaily · normalizeSalesStatus — 실제 컬럼명', () => {
+  assert.deepEqual(
+    normalizeOrderCalendar({ week_start: '2026-09-07', n_items: 3, n_urgent: 1, total_qty: '120', total_amount: null }),
+    { weekStart: '2026-09-07', nItems: 3, nUrgent: 1, totalQty: 120, totalAmount: null },
+  );
+  assert.deepEqual(
+    normalizeProjectionTotal({ period: '2026-10-01', total_closing: '500', total_receipt: '0', total_demand: '80', n_stockout_items: 2, n_items: 20 }),
+    { period: '2026-10', totalClosing: 500, totalReceipt: 0, totalDemand: 80, nStockoutItems: 2, nItems: 20 },
+  );
+  assert.deepEqual(normalizeAlertDaily({ day: '2026-09-04', n_detected: 4, n_resolved: 1 }), { day: '2026-09-04', nDetected: 4, nResolved: 1 });
+  assert.deepEqual(normalizeSalesStatus({ status: '가능', n_items: 12 }), { status: '가능', nItems: 12 });
+});
+
+test('toAdjustmentBars — 승인이면서 조정량이 있는 행만, 절댓값 큰 순, limit', () => {
+  const row = (kind: string, ref: string, adj: number | null): DecisionHistoryRow =>
+    ({ kind, refId: ref, itemId: 'I', itemName: null, supplierId: null, actorEmail: null, at: '2026-09-01', decision: 'APPROVED', adjustment: adj, reasonCode: null, summary: null }) as unknown as DecisionHistoryRow;
+  const bars = toAdjustmentBars([row('APPROVAL', '1', 5), row('OVERRIDE', '2', 100), row('APPROVAL', '3', -30), row('APPROVAL', '4', null)], 5);
+  assert.deepEqual(bars.map((b) => `${b.refId}:${b.adjustment}`), ['3:-30', '1:5']);
+});
+
+test('toShortfallBars — 납기 순, 부족 수량 있는 수주만', () => {
+  const r = (so: string, due: string, short: number | null) =>
+    ({ soNo: so, itemId: 'I', itemName: null, customer: 'C', dueDate: due, qty: 10, shortfallQty: short, daysToDue: 3 }) as unknown as SalesPromiseRisk;
+  const bars = toShortfallBars([r('B', '2026-09-20', 4), r('A', '2026-09-10', 7), r('C', '2026-09-15', null)]);
+  assert.deepEqual(bars.map((b) => b.soNo), ['A', 'B']);
+});
+
+test('toSimulationTotalPoints — 기간을 YYYY-MM 으로, 값 그대로', () => {
+  const pts = toSimulationTotalPoints([
+    { period: '2026-01-01', actualTotalInventory: 100, simTotalInventory: 90, actualStockoutItems: 1, simStockoutItems: 0, demand: 20 },
+  ] as SimulationTotals[]);
+  assert.deepEqual(pts, [{ period: '2026-01', actualInventory: 100, simInventory: 90, actualStockoutItems: 1, simStockoutItems: 0 }]);
+});
+
+test('toSimulationItemBars — 결품 월 합이 큰 품목부터, limit', () => {
+  const it = (id: string, a: number, s: number) =>
+    ({ itemId: id, itemName: null, actualStockouts: a, simStockouts: s, actualAvgInv: 1, simAvgInv: 1 }) as unknown as SimulationItem;
+  const bars = toSimulationItemBars([it('A', 1, 0), it('B', 3, 2), it('C', 0, 0)], 2);
+  assert.deepEqual(bars.map((b) => b.itemId), ['B', 'A']);
+});
+
+test('toWhatIfCompare — 네 지표를 기준·시나리오 쌍으로', () => {
+  const side = (o: Partial<WhatIfSide>): WhatIfSide => ({ stockoutDays: 10, safetyStock: 50, orderQty: 100, leadTimeDays: 30, ...o }) as WhatIfSide;
+  const rows = toWhatIfCompare(side({}), side({ stockoutDays: 5, orderQty: null }));
+  assert.deepEqual(rows.map((r) => r.key), ['stockoutDays', 'safetyStock', 'orderQty', 'leadTimeDays']);
+  assert.equal(rows[0].scenario, 5);
+  assert.equal(rows[2].scenario, null);
+  assert.equal(rows[1].label, '안전재고');
+});

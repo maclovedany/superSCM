@@ -20,8 +20,10 @@ import {
   Tooltip,
   XAxis,
   YAxis,
+  Brush,
 } from 'recharts';
 import { ACTUAL_COLOR, CHART_TOKENS, colorMap } from '@/lib/chart-colors';
+import { brushProps } from './_base/period-brush';
 
 export type SeriesPoint = {
   /** YYYY-MM */
@@ -96,6 +98,8 @@ export default function ForecastOverlayChart({
       }),
     [data, bandModelId],
   );
+
+  const brush = brushProps(rows.length);
 
   return (
     <>
@@ -234,6 +238,8 @@ export default function ForecastOverlayChart({
                 );
               }}
             />
+            {/* 기간 브러시 — 점이 8개 이상일 때만 (spec §5) */}
+            {brush && <Brush {...brush} />}
           </ComposedChart>
         </ResponsiveContainer>
       </div>

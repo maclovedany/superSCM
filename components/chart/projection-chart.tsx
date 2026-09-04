@@ -19,8 +19,10 @@ import {
   Tooltip,
   XAxis,
   YAxis,
+  Brush,
 } from 'recharts';
 import { CHART_TOKENS, SERIES_COLORS } from '@/lib/chart-colors';
+import { brushProps } from './_base/period-brush';
 
 export type ProjectionPoint = {
   /** YYYY-MM */
@@ -82,6 +84,8 @@ export default function ProjectionChart({
     leadTimeDays === null || leadTimeDays === undefined
       ? null
       : leadTimeTick(periods, leadTimeDays);
+
+  const brush = brushProps(data.length);
 
   return (
     <>
@@ -176,6 +180,8 @@ export default function ProjectionChart({
                 );
               }}
             />
+            {/* 기간 브러시 — 점이 8개 이상일 때만 (spec §5) */}
+            {brush && <Brush {...brush} />}
           </ComposedChart>
         </ResponsiveContainer>
       </div>

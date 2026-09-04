@@ -143,3 +143,83 @@ export async function getChampionShare(): Promise<{ rows: ChampionShareRow[]; er
     return { rows: [], error: failure(error) };
   }
 }
+
+// ══ Plan C ═══════════════════════════════════════════════════════
+
+import {
+  normalizeAlertDaily,
+  normalizeOrderCalendar,
+  normalizeProjectionTotal,
+  normalizeSalesStatus,
+  type AlertDailyPoint,
+  type OrderCalendarRow,
+  type ProjectionTotalPoint,
+  type SalesStatusSlice,
+} from './chart-model';
+
+/** 발주 추천 — 발주 권고일 주별 건수 · 금액 */
+export async function getOrderCalendar(): Promise<{ rows: OrderCalendarRow[]; error: string | null }> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase
+      .schema('analytics')
+      .from('v_chart_order_calendar')
+      .select('*')
+      .order('week_start', { ascending: true })
+      .limit(60);
+    if (error) return { rows: [], error: error.message };
+    return { rows: (data ?? []).map((row) => normalizeOrderCalendar(row as Record<string, unknown>)), error: null };
+  } catch (error) {
+    return { rows: [], error: failure(error) };
+  }
+}
+
+/** 재고 전개 — 기간별 전 품목 합계 */
+export async function getProjectionTotal(): Promise<{ rows: ProjectionTotalPoint[]; error: string | null }> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase
+      .schema('analytics')
+      .from('v_chart_projection_total')
+      .select('*')
+      .order('period', { ascending: true })
+      .limit(60);
+    if (error) return { rows: [], error: error.message };
+    return { rows: (data ?? []).map((row) => normalizeProjectionTotal(row as Record<string, unknown>)), error: null };
+  } catch (error) {
+    return { rows: [], error: failure(error) };
+  }
+}
+
+/** 알림 — 최근 30일 일별 발생 · 해결 */
+export async function getAlertDaily(): Promise<{ rows: AlertDailyPoint[]; error: string | null }> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase
+      .schema('analytics')
+      .from('v_chart_alert_daily')
+      .select('*')
+      .order('day', { ascending: true })
+      .limit(31);
+    if (error) return { rows: [], error: error.message };
+    return { rows: (data ?? []).map((row) => normalizeAlertDaily(row as Record<string, unknown>)), error: null };
+  } catch (error) {
+    return { rows: [], error: failure(error) };
+  }
+}
+
+/** 판매 — 공급 상태별 품목 수 */
+export async function getSalesStatus(): Promise<{ rows: SalesStatusSlice[]; error: string | null }> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase
+      .schema('analytics')
+      .from('v_chart_sales_status')
+      .select('*')
+      .limit(20);
+    if (error) return { rows: [], error: error.message };
+    return { rows: (data ?? []).map((row) => normalizeSalesStatus(row as Record<string, unknown>)), error: null };
+  } catch (error) {
+    return { rows: [], error: failure(error) };
+  }
+}

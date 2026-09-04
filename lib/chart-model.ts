@@ -498,3 +498,202 @@ export function toErrorPoints(rows: ValueAddRow[]): ErrorPoint[] {
   }
   return points;
 }
+
+// ══ Plan C — 운영 화면 ═══════════════════════════════════════════
+
+import type { DecisionHistoryRow } from './approval-model.ts';
+import type { SalesPromiseRisk } from './atp-model.ts';
+import type { SimulationItem, SimulationTotals } from './simulation-model.ts';
+import type { WhatIfSide } from './what-if-model.ts';
+
+// ── 발주 추천 — 발주 권고일 주별 캘린더 ────────────────────────
+
+export type OrderCalendarRow = {
+  /** 주 시작(월요일) YYYY-MM-DD */
+  weekStart: string;
+  nItems: number;
+  nUrgent: number;
+  totalQty: number | null;
+  totalAmount: number | null;
+};
+
+export function normalizeOrderCalendar(row: Record<string, unknown>): OrderCalendarRow {
+  return {
+    weekStart: (text(row.week_start) ?? '').slice(0, 10),
+    nItems: count(row.n_items) ?? 0,
+    nUrgent: count(row.n_urgent) ?? 0,
+    totalQty: num(row.total_qty),
+    totalAmount: num(row.total_amount),
+  };
+}
+
+// ── 재고 전개 — 전체 합계 ───────────────────────────────────────
+
+export type ProjectionTotalPoint = {
+  period: string;
+  totalClosing: number | null;
+  totalReceipt: number | null;
+  totalDemand: number | null;
+  nStockoutItems: number;
+  nItems: number;
+};
+
+export function normalizeProjectionTotal(row: Record<string, unknown>): ProjectionTotalPoint {
+  return {
+    period: (text(row.period) ?? '').slice(0, 7),
+    totalClosing: num(row.total_closing),
+    totalReceipt: num(row.total_receipt),
+    totalDemand: num(row.total_demand),
+    nStockoutItems: count(row.n_stockout_items) ?? 0,
+    nItems: count(row.n_items) ?? 0,
+  };
+}
+
+// ── 알림 — 일별 발생 · 해결 ─────────────────────────────────────
+
+export type AlertDailyPoint = { day: string; nDetected: number; nResolved: number };
+
+export function normalizeAlertDaily(row: Record<string, unknown>): AlertDailyPoint {
+  return {
+    day: (text(row.day) ?? '').slice(0, 10),
+    nDetected: count(row.n_detected) ?? 0,
+    nResolved: count(row.n_resolved) ?? 0,
+  };
+}
+
+// ── 판매 — 공급 상태별 품목 수 ───────────────────────────────────
+
+export type SalesStatusSlice = { status: string; nItems: number };
+
+export function normalizeSalesStatus(row: Record<string, unknown>): SalesStatusSlice {
+  return { status: text(row.status) ?? '—', nItems: count(row.n_items) ?? 0 };
+}
+
+// ── 결정 이력 — 승인 조정량 ─────────────────────────────────────
+
+export type AdjustmentBar = {
+  refId: string;
+  itemId: string;
+  label: string;
+  adjustment: number;
+  at: string;
+  actorEmail: string | null;
+};
+
+/** 승인(APPROVAL)이면서 조정량이 있는 결정만. 절댓값이 큰 순으로 limit 까지 */
+export function toAdjustmentBars(rows: DecisionHistoryRow[], limit = 20): AdjustmentBar[] {
+  const bars: AdjustmentBar[] = [];
+  for (const row of rows) {
+    if (row.kind !== 'APPROVAL' || row.adjustment === null || row.refId === null) continue;
+    bars.push({
+      refId: row.refId,
+      itemId: row.itemId ?? '',
+      label: row.itemName ?? row.itemId ?? row.refId,
+      adjustment: row.adjustment,
+      at: row.at ?? '',
+      actorEmail: row.actorEmail,
+    });
+  }
+  return bars.sort((a, b) => Math.abs(b.adjustment) - Math.abs(a.adjustment)).slice(0, limit);
+}
+
+// ── 판매 — 납기 위험 수주 부족 수량 ─────────────────────────────
+
+export type ShortfallBar = {
+  soNo: string;
+  itemId: string;
+  label: string;
+  dueDate: string;
+  shortfallQty: number;
+  daysToDue: number | null;
+};
+
+/** 부족 수량이 있는 수주만, 납기 오름차순 */
+export function toShortfallBars(rows: SalesPromiseRisk[]): ShortfallBar[] {
+  const bars: ShortfallBar[] = [];
+  for (const row of rows) {
+    if (row.shortfallQty === null || row.dueDate === null) continue;
+    bars.push({
+      soNo: row.soNo,
+      itemId: row.itemId,
+      label: `${row.soNo} · ${row.itemName ?? row.itemId}`,
+      dueDate: row.dueDate.slice(0, 10),
+      shortfallQty: row.shortfallQty,
+      daysToDue: row.daysToDue,
+    });
+  }
+  return bars.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+}
+
+// ── 가상 운영 ───────────────────────────────────────────────────
+
+export type SimulationTotalPoint = {
+  period: string;
+  actualInventory: number | null;
+  simInventory: number | null;
+  actualStockoutItems: number;
+  simStockoutItems: number;
+};
+
+export function toSimulationTotalPoints(rows: SimulationTotals[]): SimulationTotalPoint[] {
+  return rows.map((row) => ({
+    period: row.period.slice(0, 7),
+    actualInventory: row.actualTotalInventory,
+    simInventory: row.simTotalInventory,
+    actualStockoutItems: row.actualStockoutItems,
+    simStockoutItems: row.simStockoutItems,
+  }));
+}
+
+export type SimulationItemBar = {
+  itemId: string;
+  label: string;
+  actualStockouts: number;
+  simStockouts: number;
+  actualAvgInv: number | null;
+  simAvgInv: number | null;
+};
+
+/** 결품 월 합(실제 + 시뮬)이 큰 품목부터 limit 까지 */
+export function toSimulationItemBars(rows: SimulationItem[], limit = 15): SimulationItemBar[] {
+  return rows
+    .map((row): SimulationItemBar => ({
+      itemId: row.itemId,
+      label: row.itemName ?? row.itemId,
+      actualStockouts: row.actualStockouts,
+      simStockouts: row.simStockouts,
+      actualAvgInv: row.actualAvgInv,
+      simAvgInv: row.simAvgInv,
+    }))
+    .sort((a, b) => b.actualStockouts + b.simStockouts - (a.actualStockouts + a.simStockouts))
+    .slice(0, limit);
+}
+
+// ── What-If ─────────────────────────────────────────────────────
+
+export type WhatIfCompareKey = 'stockoutDays' | 'safetyStock' | 'orderQty' | 'leadTimeDays';
+export type WhatIfCompareRow = {
+  key: WhatIfCompareKey;
+  label: string;
+  unit: string;
+  base: number | null;
+  scenario: number | null;
+};
+
+const WHAT_IF_METRICS: { key: WhatIfCompareKey; label: string; unit: string }[] = [
+  { key: 'stockoutDays', label: '결품까지 일수', unit: '일' },
+  { key: 'safetyStock', label: '안전재고', unit: '개' },
+  { key: 'orderQty', label: '발주 수량', unit: '개' },
+  { key: 'leadTimeDays', label: '리드타임', unit: '일' },
+];
+
+/** 기준과 시나리오의 같은 지표를 나란히. 값은 시뮬레이션 함수가 냈습니다 */
+export function toWhatIfCompare(base: WhatIfSide, scenario: WhatIfSide): WhatIfCompareRow[] {
+  return WHAT_IF_METRICS.map((m) => ({
+    key: m.key,
+    label: m.label,
+    unit: m.unit,
+    base: base[m.key],
+    scenario: scenario[m.key],
+  }));
+}
