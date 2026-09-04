@@ -216,9 +216,16 @@ const FILTERS: FilterSpec<StockoutRisk>[] = [
 화면에서 `recharts` 를 직접 import 하지 마세요. 축 포맷과 색이 화면마다 달라집니다.
 
 ```
+components/chart/_base/           공통 — 툴팁 · 범례 토글 · 브러시 props · 프레임 (차트 없음)
 components/chart/forecast-overlay-chart.tsx
 components/chart/projection-chart.tsx
-lib/chart-colors.ts        모델별 색 고정 매핑
+components/chart/comparison-chart.tsx
+components/chart/sparkline.tsx
+components/chart/<화면>-<차트>.tsx   화면별 맞춤 차트 (docs/superpowers/specs/2026-09-04-screen-charts-design.md §4)
+lib/chart-colors.ts        시리즈 · 상태 색 고정 매핑
+lib/chart-format.ts        축 · 툴팁 포맷
+lib/chart-model.ts         뷰 행 → 차트 데이터 (모양만 바꿉니다)
+lib/charts.ts              차트 집계 조회 (서버 전용)
 ```
 
 ### 12. 변경 후 `npm run build` 를 실행한다
