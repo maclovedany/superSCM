@@ -63,3 +63,42 @@
   font-variant-numeric: tabular-nums;
   color: var(--text-1);
 }
+
+/* ── 차트 띠 — spec §2. 기본 2열, data-cols="3" 이면 3열, 좁으면 1열 ── */
+.grid-charts {
+  display: grid;
+  gap: var(--s-4);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.grid-charts[data-cols="3"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+@media (max-width: 1159px) {
+  .grid-charts[data-cols="3"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 899px) {
+  .grid-charts,
+  .grid-charts[data-cols="3"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 차트 카드. 높이는 각 차트가 정합니다 (기본 240px) */
+.chart-card .panel-body {
+  min-height: 240px;
+}
+.chart-card .chart-wrap {
+  min-height: 0;
+}
+.chart-card-desc {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+/* 막대 · 점을 누르면 이동하는 차트 */
+.chart-clickable .recharts-bar-rectangle,
+.chart-clickable .recharts-scatter-symbol {
+  cursor: pointer;
+}
