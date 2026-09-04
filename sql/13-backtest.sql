@@ -398,12 +398,31 @@ select b.*,
          where p.backtest_run_id = b.backtest_run_id) as perf_rows
   from core.backtest_run b;
 
+-- ★ 품목마다 **가장 최근에 성공한 백테스트 한 번**만 냅니다.
+--
+--   core.model_performance 의 기본키는 (backtest_run_id, model_id, item_id) 라
+--   백테스트를 돌릴 때마다 같은 모델의 행이 하나씩 더 쌓입니다. 거르지 않으면
+--   실행 횟수만큼 같은 모델이 반복되어 모델 비교 표 · CSV · 에이전트 도구가
+--   전부 중복 행을 받습니다 (error.md #31).
+--
+--   Champion 의 run 이 아니라 "최근 run" 으로 고르는 이유 — 수동 지정
+--   (set_champion_manual) 은 champion_model.backtest_run_id 를 갱신하지 않고
+--   지표는 최신 run 에서 가져옵니다. 최근 run 을 기준으로 해야 그 지표와 맞습니다.
+--   자동 선정 품목은 어차피 두 run 이 같습니다.
 create or replace view analytics.v_model_performance as
+with latest as (
+  select distinct on (p.item_id) p.item_id, p.backtest_run_id
+    from core.model_performance p
+    join core.backtest_run r on r.backtest_run_id = p.backtest_run_id
+   where r.status = 'SUCCESS'
+   order by p.item_id, r.started_at desc, p.backtest_run_id desc
+)
 select p.*, m.model_name, m.family, im.item_name,
        (c.champion_model_id = p.model_id) as is_champion
   from core.model_performance p
-  left join core.model_config m using (model_id)
-  left join core.v_item_master im using (item_id)
+  join latest l on l.item_id = p.item_id and l.backtest_run_id = p.backtest_run_id
+  left join core.model_config m on m.model_id = p.model_id
+  left join core.v_item_master im on im.item_id = p.item_id
   left join core.champion_model c on c.item_id = p.item_id;
 
 create or replace view analytics.v_champion_model as

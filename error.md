@@ -37,6 +37,8 @@
 | `WITHIN GROUP is required for ordered-set aggregate mode` | 실은 그 컬럼이 뷰에 없음 (`X.Y` → `Y(X)` 로 해석됨) | [#27](#27-within-group-is-required-for-ordered-set-aggregate-mode--실은-컬럼이-없다-는-뜻) |
 | `SQL query ran into an upstream timeout` | DDL 이 아니라 파일 끝의 확인 쿼리가 느림 | [#28](#28-sql-query-ran-into-an-upstream-timeout--ddl-이-아니라-파일-끝의-확인-쿼리-때문) |
 | `'temperature' does not support 0 with this model` | 모델이 기본값 외 temperature 를 거절 | [#29](#29-temperature-does-not-support-0-with-this-model--모델이-기본값만-받습니다) |
+| `Encountered two children with the same key, 'SEASONAL_NAIVE'` — 모델 비교 표에 같은 모델이 여러 줄 | `v_model_performance` 가 백테스트 run 을 거르지 않음 | [#31](#31-encountered-two-children-with-the-same-key--모델-비교-표에-같은-모델이-run-수만큼-반복됩니다) |
+| `… 에 없는 컬럼을 가리려 했습니다: …` (P0001, sql/29) | 앞 파일의 뷰가 `16` 의 cascade 로 지워진 채 `29` 를 돌림 | [#32](#32-에-없는-컬럼을-가리려-했습니다--앞-파일의-뷰가-cascade-로-지워진-채-29-를-돌렸습니다) |
 
 > **Supabase 3층 구조를 먼저 기억하면 #3·#4·#5 를 헷갈리지 않습니다.**
 >
@@ -819,3 +821,90 @@ sql/29 는 v_safety_stock 정의에서 `'core.v_leadtime_stat '` (**뒤에 공�
 - 성능 수정 전후에는 `except` 양방향으로 **결과가 같은지 반드시 대조**하세요.
 - 스캔 횟수·인덱스 부재는 눈에 잘 띄지만 원인이 아닐 수 있습니다. **재기 전에는 고치지 마세요.**
 - `count(*)` 로 재면 계획기가 컬럼을 건너뛰어 과소평가됩니다. `select *` 로 재세요.
+
+---
+
+## #31 `Encountered two children with the same key` — 모델 비교 표에 같은 모델이 run 수만큼 반복됩니다
+
+**증상** `/model-comparison` 을 열면 콘솔 오류가 모델 수만큼 쌓입니다.
+
+```
+Encountered two children with the same key, `SEASONAL_NAIVE`. Keys should be unique ...
+components/ui/data-table.tsx (73:15)
+```
+
+표에도 SEASONAL_NAIVE · MA3 … 이 두세 줄씩 나오고, Champion 수동 지정 드롭다운과 CSV 내보내기에도 같은 모델이 반복됩니다. 백테스트를 **한 번만** 돌린 DB 에서는 나지 않습니다.
+
+**원인** `core.model_performance` 의 기본키가 `(backtest_run_id, model_id, item_id)` 입니다. 백테스트를 돌릴 때마다 새 `backtest_run_id` 로 행이 **추가**되고 이전 run 은 남습니다. 그런데 `analytics.v_model_performance` 는 run 을 거르지 않았고, `getItemPerformance` 도 `item_id` 로만 걸렀습니다. run 이 N 번이면 모델마다 N 행이 오고, 화면은 `rowKey={(row) => row.modelId}` 라 키가 겹칩니다.
+
+하네스에서 재현 — 백테스트를 두 번 돌리자 중복 쌍이 0 → 95 (품목 19 × 모델 5) 가 됐습니다.
+
+**해결** 뷰에서 품목마다 **가장 최근에 성공한 run** 하나만 내도록 CTE 로 걸렀습니다 (`sql/13-backtest.sql`).
+
+```sql
+with latest as (
+  select distinct on (p.item_id) p.item_id, p.backtest_run_id
+    from core.model_performance p
+    join core.backtest_run r on r.backtest_run_id = p.backtest_run_id
+   where r.status = 'SUCCESS'
+   order by p.item_id, r.started_at desc, p.backtest_run_id desc
+)
+select …
+  from core.model_performance p
+  join latest l on l.item_id = p.item_id and l.backtest_run_id = p.backtest_run_id
+```
+
+Champion 의 run 이 아니라 최근 run 을 고른 이유 — `set_champion_manual` 은 `champion_model.backtest_run_id` 를 갱신하지 않으면서 지표는 최신 run 에서 가져옵니다. 최근 run 이어야 그 지표와 맞습니다. 자동 선정 품목은 두 run 이 같습니다.
+
+뷰 한 곳을 고치면 화면 · CSV(`app/api/backtest/performance.csv`) · 에이전트 도구(`lib/agent/tools.ts`) 가 함께 맞습니다. 키를 `${runId}-${modelId}` 로 바꾸면 경고만 사라지고 중복은 남으므로 그렇게 하지 않았습니다.
+
+**주의 — `using (item_id)` 가 깨집니다** CTE `latest` 에도 `item_id` 가 있어서 기존 `left join core.v_item_master im using (item_id)` 가 `common column name "item_id" appears more than once in left table` 로 실패합니다. `on im.item_id = p.item_id` 로 바꿨습니다.
+
+**적용** `sql/13` 을 다시 돌리면 `27 → 29 → 28` 을 이어서 돌립니다 (`sql/README.md` 의 재실행 규칙). 하네스에서 이 순서로 재적용해 중복 95 → 0, 뷰 행수 = 최신 run 행수(95), sql/29 가림막이 다시 씌워진 것을 확인했습니다.
+
+**예방**
+- 이력이 쌓이는 표(`*_run_id` 가 키에 있는 표) 위에 뷰를 만들 때는 **어느 run 을 낼지** 뷰 안에서 정하세요. 화면이 거르게 두면 소비자마다 따로 틀립니다.
+- 하네스 seed 는 백테스트를 한 번만 돌립니다. run 을 두 번 돌려야 드러나는 문제는 `KEEP_CLUSTER=1` 로 남긴 클러스터에서 `core.run_backtest()` 를 한 번 더 부르고 보세요.
+
+---
+
+## #32 `… 에 없는 컬럼을 가리려 했습니다` — 앞 파일의 뷰가 cascade 로 지워진 채 29 를 돌렸습니다
+
+**증상** `sql/29` 가 SQL Editor 에서 이렇게 멈춥니다.
+
+```
+ERROR:  P0001: analytics.v_dashboard_kpi 에 없는 컬럼을 가리려 했습니다: forecast_accuracy, avg_wape, forecast_bias, n_bias_items, total_recommended_amount, n_missing_price
+CONTEXT:  PL/pgSQL function core.__sales_guard(text,text,text[],text,text) line 18 at RAISE
+```
+
+**읽는 법** 가림막 함수는 가릴 컬럼이 `information_schema.columns` 에 있는지 먼저 봅니다. **요청한 컬럼이 전부** "없다" 고 나오면 컬럼 이름이 틀린 게 아니라 **뷰 자체가 없는** 것입니다. 위 여섯 개는 `29` 가 `v_dashboard_kpi` 에 요청하는 목록 전부입니다.
+
+**원인** `sql/16` 은 `drop view … cascade` 로 시작합니다 (`v_safety_stock` · `v_purchase_recommendation` · `v_approval_kpi` …). 그 위에 얹힌 뷰가 함께 지워집니다 — `v_dashboard_kpi` · `v_dashboard_purchase_priority` · `v_dashboard_recent_approvals` (`sql/21`) · `v_what_if_run` (`sql/24`) 등. `16 → 17 → 18 → 19 → 20` 까지만 다시 돌리고 `21` 부터를 건너뛴 채 `29` 를 돌리면 이 오류가 납니다. `13 → 27 → 29 → 28` 만 안내한 `step.md` 0.1-c 가 이 전제를 적지 않았던 것도 원인입니다.
+
+SQL Editor 는 파일 하나를 한 트랜잭션으로 돌리므로 (#22) `29` 는 **아무것도 적용되지 않고** 통째로 되돌아갑니다. DB 는 `27` 까지 적용된 상태 그대로입니다.
+
+**확인 — 어느 뷰가 없는지 로그인 없이 찾기** PostgREST 는 권한을 보기 전에 스키마 캐시에서 이름을 찾습니다. 그래서 `28` 이 anon 을 잠근 뒤에도, publishable 키만으로 **있는 뷰는 `42501` · 없는 뷰는 `PGRST205`** 로 갈립니다.
+
+```bash
+set -a; source .env.local; set +a
+for v in v_dashboard_kpi v_dashboard_purchase_priority v_dashboard_recent_approvals v_what_if_run; do
+  printf '%-34s ' $v
+  curl -s -H "apikey: $NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY" -H "Accept-Profile: analytics" \
+    "$NEXT_PUBLIC_SUPABASE_URL/rest/v1/$v?select=*&limit=1" | head -c 60; echo
+done
+# 42501 permission denied  → 뷰가 있음
+# PGRST205 Could not find  → 뷰가 없음 → 그 뷰를 만드는 파일부터 다시
+```
+
+운영 DB 에서 실제로 잰 결과 — 대시보드 뷰 여섯 중 `v_safety_stock` 위에 얹힌 셋만 없고, 얹히지 않은 셋(`open_po_risk` · `accuracy_ranking` · `sparkline`)은 남아 있었습니다. cascade 의 흔적 그대로입니다.
+
+**해결** 없는 뷰를 만드는 파일부터 `28` 까지 `sql/README.md` 순서로 이어갑니다. 위 경우는
+
+```
+21 → 22 → 23 → 24 → 26 → 27 → 29 → 28
+```
+
+**예방**
+- `29` 와 `28` 은 **항상 맨 끝**입니다. 앞 파일을 하나라도 다시 돌렸으면 그 뒤 번호를 전부 거쳐 `29 → 28` 로 끝내세요.
+- 재적용 안내를 쓸 때는 "어디까지 적용된 상태에서" 시작하는지 **전제를 함께** 적습니다.
+
