@@ -385,6 +385,13 @@ select core.__sales_guard('analytics', 'v_purchase_recommendation_kpi', array[
   'total_recommended_amount', 'n_missing_price'
 ]);
 
+-- 차트 집계 (sql/31). 공급처명과 금액은 §4 · §5 와 같은 이유로 가립니다.
+-- n_missing_price 를 함께 가리는 이유는 위 v_purchase_recommendation_kpi 와 같습니다.
+select core.__sales_guard('analytics', 'v_chart_recommendation_by_supplier', array[
+  'supplier_name', 'total_amount', 'n_missing_price'
+]);
+select core.__sales_guard('analytics', 'v_chart_order_calendar', array['total_amount']);
+
 
 -- ══ 5. 공급처 상세 ═════════════════════════════════════════════
 --
@@ -428,6 +435,7 @@ select core.__sales_guard('analytics', 'v_champion_model', array[
 ]);
 
 select core.__sales_guard('analytics', 'v_backtest_kpi', array['avg_wape', 'avg_abs_bias']);
+select core.__sales_guard('analytics', 'v_chart_champion_share', array['avg_wape']);
 
 -- 대시보드 KPI 카드. 정확도 넷은 core.champion_model 테이블에서 바로 오므로
 -- 위 뷰들을 가린 것으로는 닫히지 않습니다. 금액 둘은 §4 에서 이미 null 입니다.

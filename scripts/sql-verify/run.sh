@@ -106,6 +106,7 @@ ALL_FILES=(
   25-python-models.sql
   26-api.sql
   27-admin-ops.sql
+  31-chart-views.sql
   29-sales-column-guard.sql
   28-anon-lockdown.sql
 )
@@ -125,7 +126,8 @@ if [[ "${ORDER:-}" == "25first" ]]; then
     16-safety-stock-recommendation.sql 17-virtual-operation.sql
     18-forecast-override.sql 19-approval.sql 25-python-models.sql
     20-alert.sql 21-dashboard.sql 22-agent.sql 23-atp-sales.sql
-    24-what-if.sql 26-api.sql 27-admin-ops.sql 29-sales-column-guard.sql
+    24-what-if.sql 26-api.sql 27-admin-ops.sql 31-chart-views.sql
+    29-sales-column-guard.sql
     28-anon-lockdown.sql
   )
 fi
