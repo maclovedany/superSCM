@@ -30,6 +30,16 @@ import {
   type AlertItem,
 } from '@/lib/alerts';
 import ScanForm from './scan-form';
+import ChartFrame from '@/components/chart/_base/chart-frame';
+import AlertsTypeMix from '@/components/chart/alerts-type-mix';
+import AlertsDaily from '@/components/chart/alerts-daily';
+import { getAlertDaily, getAlertTypeMix } from '@/lib/charts';
+import { pivotAlertTypeMix } from '@/lib/chart-model';
+
+/** 유형 막대 → 이 화면의 카드 필터. FilterSpec 에 있는 유형 키는 excess 하나입니다 */
+function alertTypeFilterHref(type: string): string | null {
+  return type === 'EXCESS_INVENTORY' ? '?filter=excess' : null;
+}
 import AcknowledgeForm from './acknowledge-form';
 
 export const dynamic = 'force-dynamic';
@@ -125,11 +135,13 @@ export default async function AlertsPage({
   searchParams: Promise<SearchParams>;
 }) {
   const activeFilter = readFilter(await searchParams);
-  const [{ rows, error }, { data: kpi }, { rows: history }, user] = await Promise.all([
+  const [{ rows, error }, { data: kpi }, { rows: history }, user, typeMix, daily] = await Promise.all([
     getAlerts(),
     getAlertKpi(),
     getAlertHistory(50),
     getSessionUser(),
+    getAlertTypeMix(),
+    getAlertDaily(),
   ]);
 
   const isAdmin = user?.role === 'ADMIN';
@@ -223,6 +235,26 @@ export default async function AlertsPage({
       )}
 
       {filterLabel && <FilterNotice label={filterLabel} shown={visible.length} total={rows.length} />}
+
+      {/* ── 차트 띠 — spec §4.3 ── */}
+      <div className="grid-charts">
+        <ChartFrame
+          title="유형별 현황"
+          desc="열린 알림을 유형과 심각도로 · 범례를 눌러 심각도를 끄고 켭니다"
+          error={typeMix.error}
+          empty={typeMix.rows.length === 0 ? '열린 알림이 없습니다' : null}
+        >
+          <AlertsTypeMix stacks={pivotAlertTypeMix(typeMix.rows)} hrefFor={alertTypeFilterHref} />
+        </ChartFrame>
+        <ChartFrame
+          title="최근 30일 발생 · 해결"
+          desc="하루에 새로 잡힌 알림과 닫힌 알림"
+          error={daily.error}
+          empty={daily.rows.length === 0 ? '기록이 없습니다' : null}
+        >
+          <AlertsDaily points={daily.rows} />
+        </ChartFrame>
+      </div>
 
       <Panel
         title="미해결 알림"

@@ -50,6 +50,18 @@ import {
 import AllocationForm from './allocation-form';
 import FeasibilityForm from './feasibility-form';
 import { EXPIRING_WITHIN_DAYS } from './state';
+import ChartFrame from '@/components/chart/_base/chart-frame';
+import SalesStatusMix from '@/components/chart/sales-status-mix';
+import SalesShortfall from '@/components/chart/sales-shortfall';
+import { getSalesStatus } from '@/lib/charts';
+import { toShortfallBars } from '@/lib/chart-model';
+
+/** 공급 상태 → 이 화면의 카드 필터. FilterSpec 에 있는 키만 (blocked · watch) */
+function salesStatusHref(status: string): string | null {
+  if (status === '불가') return '?filter=blocked';
+  if (status === '주의') return '?filter=watch';
+  return null;
+}
 
 export const dynamic = 'force-dynamic';
 
@@ -268,11 +280,12 @@ export default async function SalesPage({
   const sales = isSalesUser(user);
   const activeFilter = readFilter(await searchParams);
 
-  const [supply, allocations, inquiries, promise] = await Promise.all([
+  const [supply, allocations, inquiries, promise, statusMix] = await Promise.all([
     getSalesSupplyStatus(),
     getSoftAllocations(),
     getSalesInquiries(),
     getSalesPromiseRisk(),
+    getSalesStatus(),
   ]);
 
   const header = (
@@ -389,6 +402,26 @@ export default async function SalesPage({
       {filterLabel && (
         <FilterNotice label={filterLabel} shown={visible.length} total={supplyRows.length} />
       )}
+
+      {/* ── 차트 띠 — spec §4.3 (ATP 버킷 막대는 제외 — 화면이 v_atp 를 조회하지 않습니다) ── */}
+      <div className="grid-charts">
+        <ChartFrame
+          title="공급 상태 분포"
+          desc="품목별 수급 판정 · 누르면 그 판정만 봅니다"
+          error={statusMix.error}
+          empty={statusMix.rows.length === 0 ? '판정된 품목이 없습니다' : null}
+        >
+          <SalesStatusMix slices={statusMix.rows} hrefFor={salesStatusHref} />
+        </ChartFrame>
+        <ChartFrame
+          title="납기별 부족 수량"
+          desc="납기 위험 수주 · 납기가 이른 순 · 빨강은 7일 이내"
+          error={promise.error}
+          empty={toShortfallBars(promise.rows).length === 0 ? '납기 위험 수주가 없습니다' : null}
+        >
+          <SalesShortfall bars={toShortfallBars(promise.rows)} />
+        </ChartFrame>
+      </div>
 
       <Panel
         title="품목별 수급 상태"

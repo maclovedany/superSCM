@@ -43,6 +43,10 @@ import {
 import { deltaDirection, monthOf } from '@/lib/simulation-model';
 import { applyFilter, labelOf, readFilter, type FilterSpec, type SearchParams } from '@/lib/filter';
 import RunForm from './run-form';
+import ChartFrame from '@/components/chart/_base/chart-frame';
+import SimulationTotalsChart from '@/components/chart/simulation-totals';
+import SimulationItemBars from '@/components/chart/simulation-item-bars';
+import { toSimulationItemBars, toSimulationTotalPoints } from '@/lib/chart-model';
 
 export const dynamic = 'force-dynamic';
 
@@ -533,6 +537,24 @@ export default async function VirtualOperationPage({
       {filterLabel && (
         <FilterNotice label={filterLabel} shown={visible.length} total={items.length} />
       )}
+
+      {/* ── 차트 띠 — spec §4.3 ── */}
+      <div className="grid-charts">
+        <ChartFrame
+          title="전 품목 재고 합 · 결품 품목 수"
+          desc="실제 vs AI 추천대로 발주했을 때 · 범례를 눌러 시리즈를 끄고 켭니다"
+          empty={totals.length === 0 ? '시뮬레이션 결과가 비어 있습니다' : null}
+        >
+          <SimulationTotalsChart points={toSimulationTotalPoints(totals)} />
+        </ChartFrame>
+        <ChartFrame
+          title="품목별 결품 월"
+          desc="결품 월이 많은 품목부터 15 · 누르면 그 품목의 추이"
+          empty={items.length === 0 ? '비교할 품목이 없습니다' : null}
+        >
+          <SimulationItemBars bars={toSimulationItemBars(items)} hrefFor={(id) => `?item=${encodeURIComponent(id)}`} />
+        </ChartFrame>
+      </div>
 
       <Panel
         title="품목별 비교"

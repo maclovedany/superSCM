@@ -43,6 +43,10 @@ import {
   type RecommendationWithApproval,
 } from '@/lib/approval-model';
 import { applyFilter, labelOf, readFilter, type FilterSpec, type SearchParams } from '@/lib/filter';
+import ChartFrame from '@/components/chart/_base/chart-frame';
+import RecommendationCalendar from '@/components/chart/recommendation-calendar';
+import DashboardSupplierAmount from '@/components/chart/dashboard-supplier-amount';
+import { getOrderCalendar, getRecommendationBySupplier } from '@/lib/charts';
 
 export const dynamic = 'force-dynamic';
 
@@ -90,10 +94,12 @@ export default async function PurchaseRecommendationPage({
   const activeFilter = readFilter(params);
   // 대시보드 "공급처별 추천 금액" 막대가 이 파라미터로 들어옵니다. 카드 필터와 함께 걸립니다.
   const supplierParam = readFilter(params, 'supplier');
-  const [{ rows, error }, { data: kpi }, run] = await Promise.all([
+  const [{ rows, error }, { data: kpi }, run, calendar, bySupplier] = await Promise.all([
     getRecommendationsWithApproval(),
     getPurchaseRecommendationKpi(),
     getLatestSuccessfulRun(),
+    getOrderCalendar(),
+    getRecommendationBySupplier(8),
   ]);
 
   const header = (
@@ -413,6 +419,27 @@ export default async function PurchaseRecommendationPage({
       {filterLabel && (
         <FilterNotice label={filterLabel} shown={visible.length} total={rows.length} />
       )}
+
+      {/* ── 차트 띠 — spec §4.3. 값은 sql/31 의 집계 뷰가 냈습니다 ── */}
+      <div className="grid-charts">
+        <ChartFrame
+          title="발주 권고일 캘린더"
+          desc="주별로 발주해야 할 품목 수와 금액 · 빨간 막대는 그중 긴급"
+          error={calendar.error}
+          empty={calendar.rows.length === 0 ? '발주 권고일이 있는 품목이 없습니다' : null}
+        >
+          <RecommendationCalendar rows={calendar.rows} showAmount={!sales} />
+        </ChartFrame>
+        <ChartFrame
+          title="공급처별 추천 금액"
+          desc="상위 8 · 누르면 그 공급처만 봅니다"
+          error={bySupplier.error}
+          empty={bySupplier.rows.length === 0 ? '추천 수량이 있는 품목이 없습니다' : null}
+          masked={sales}
+        >
+          <DashboardSupplierAmount rows={bySupplier.rows} hrefFor={(id) => `?supplier=${encodeURIComponent(id)}`} />
+        </ChartFrame>
+      </div>
 
       <Panel
         title="품목별 발주 추천"

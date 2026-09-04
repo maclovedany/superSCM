@@ -48,6 +48,9 @@ import {
 import type { SearchParams } from '@/lib/filter';
 import WhatIfForm from './what-if-form';
 import WhatIfNlForm from './what-if-nl-form';
+import ChartFrame from '@/components/chart/_base/chart-frame';
+import WhatIfCompare from '@/components/chart/whatif-compare';
+import { toWhatIfCompare } from '@/lib/chart-model';
 
 export const dynamic = 'force-dynamic';
 
@@ -431,6 +434,11 @@ export default async function WhatIfPage({
               <SideCards side={summary.scenario} against={summary.base} />
             </Panel>
           </div>
+
+          {/* ── 지표 비교 — spec §4.3 ── */}
+          <ChartFrame title="지표 비교" desc="기준과 시나리오의 결품까지 일수 · 안전재고 · 발주 수량 · 리드타임">
+            <WhatIfCompare rows={toWhatIfCompare(summary.base, summary.scenario)} />
+          </ChartFrame>
 
           <Panel
             title="재고 전개 비교"

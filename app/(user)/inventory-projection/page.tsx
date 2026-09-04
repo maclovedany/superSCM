@@ -32,6 +32,9 @@ import {
 import { getLatestSuccessfulRun } from '@/lib/forecast';
 import { getStockoutRisks } from '@/lib/scm';
 import type { SearchParams } from '@/lib/filter';
+import ChartFrame from '@/components/chart/_base/chart-frame';
+import ProjectionTotal from '@/components/chart/projection-total';
+import { getProjectionTotal } from '@/lib/charts';
 
 export const dynamic = 'force-dynamic';
 
@@ -158,10 +161,11 @@ export default async function InventoryProjectionPage({
   await requireUser();
 
   const params = await searchParams;
-  const [{ rows: items, error: itemError }, { rows: risks }, run] = await Promise.all([
+  const [{ rows: items, error: itemError }, { rows: risks }, run, total] = await Promise.all([
     getProjectionItems(),
     getStockoutRisks(),
     getLatestSuccessfulRun(),
+    getProjectionTotal(),
   ]);
 
   const requested = param(params, 'item');
@@ -304,6 +308,16 @@ export default async function InventoryProjectionPage({
       {itemChips(activeItem)}
 
       <StaleBanner />
+
+      {/* ── 전 품목 합계 — spec §4.3. 품목 하나의 전개 위에 전체 흐름을 먼저 둡니다 ── */}
+      <ChartFrame
+        title="전 품목 재고 전개 합계"
+        desc="기간별 기말 재고 합계와 그 기간에 기말이 음수인 품목 수"
+        error={total.error}
+        empty={total.rows.length === 0 ? '전개할 기간이 없습니다' : null}
+      >
+        <ProjectionTotal points={total.rows} />
+      </ChartFrame>
 
       <div className="grid grid-kpi">
         <KpiCard

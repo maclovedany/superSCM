@@ -26,6 +26,11 @@ import { requireUser } from '@/lib/auth';
 import { getApprovalKpi, getDecisionHistory } from '@/lib/approval';
 import { KIND_LABEL, KIND_TONE, type DecisionHistoryRow } from '@/lib/approval-model';
 import { applyFilter, labelOf, readFilter, type FilterSpec, type SearchParams } from '@/lib/filter';
+import ChartFrame from '@/components/chart/_base/chart-frame';
+import DecisionMonthly from '@/components/chart/decision-monthly';
+import DecisionAdjustment from '@/components/chart/decision-adjustment';
+import { getApprovalMonthly } from '@/lib/charts';
+import { pivotApprovalMonthly, toAdjustmentBars } from '@/lib/chart-model';
 
 export const dynamic = 'force-dynamic';
 
@@ -76,9 +81,10 @@ export default async function DecisionHistoryPage({
   ];
 
   const activeFilter = readFilter(await searchParams);
-  const [{ rows, error }, { data: kpi }] = await Promise.all([
+  const [{ rows, error }, { data: kpi }, monthly] = await Promise.all([
     getDecisionHistory(),
     getApprovalKpi(),
+    getApprovalMonthly(),
   ]);
 
   const header = (
@@ -259,6 +265,25 @@ export default async function DecisionHistoryPage({
       {filterLabel && (
         <FilterNotice label={filterLabel} shown={visible.length} total={rows.length} />
       )}
+
+      {/* ── 차트 띠 — spec §4.3 (산점도 대신 조정량 막대 — 이력 뷰에 추천·승인 수량이 없습니다) ── */}
+      <div className="grid-charts">
+        <ChartFrame
+          title="월별 결정"
+          desc="최근 6개월 발주 결정 건수 · 범례를 눌러 결정 종류를 끄고 켭니다"
+          error={monthly.error}
+          empty={monthly.rows.length === 0 ? '아직 내려진 결정이 없습니다' : null}
+        >
+          <DecisionMonthly stacks={pivotApprovalMonthly(monthly.rows)} href={null} />
+        </ChartFrame>
+        <ChartFrame
+          title="승인 조정량"
+          desc="승인 수량 − 추천 수량 · 절댓값 큰 순 20 · 누르면 그 결정의 근거"
+          empty={toAdjustmentBars(rows).length === 0 ? '수량을 조정한 승인이 없습니다' : null}
+        >
+          <DecisionAdjustment bars={toAdjustmentBars(rows)} hrefFor={(refId) => `/decision-history/${encodeURIComponent(refId)}`} />
+        </ChartFrame>
+      </div>
 
       <Panel
         title="결정 이력"
