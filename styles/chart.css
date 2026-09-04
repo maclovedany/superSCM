@@ -102,3 +102,48 @@
 .chart-clickable .recharts-scatter-symbol {
   cursor: pointer;
 }
+
+/* ── 히트맵 (components/chart/demand-heatmap.tsx) ── */
+.heatmap {
+  display: grid;
+  gap: 2px;
+  align-items: stretch;
+  font-size: 11px;
+  max-height: 240px;
+  overflow: auto;
+}
+.heatmap-corner {
+  position: sticky;
+  top: 0;
+  background: var(--surface-2);
+}
+.heatmap-head {
+  position: sticky;
+  top: 0;
+  text-align: center;
+  color: var(--text-3);
+  background: var(--surface-2);
+  padding-bottom: 2px;
+}
+.heatmap-label {
+  text-align: left;
+  color: var(--text-2);
+  background: none;
+  border: 0;
+  padding: 0 var(--s-2) 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  font: inherit;
+}
+.heatmap-label:hover,
+.heatmap-label.selected {
+  color: var(--text-1);
+  font-weight: 600;
+}
+.heatmap-cell {
+  height: 14px;
+  border-radius: 2px;
+  cursor: pointer;
+}

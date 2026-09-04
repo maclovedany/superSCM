@@ -24,6 +24,18 @@ import { getStockoutKpi, getStockoutRisks } from '@/lib/scm';
 import type { StockoutRisk } from '@/lib/scm-model';
 import { nullsLast } from '@/lib/status';
 import { applyFilter, labelOf, readFilter, type FilterSpec, type SearchParams } from '@/lib/filter';
+import ChartFrame from '@/components/chart/_base/chart-frame';
+import StockoutDaysBar from '@/components/chart/stockout-days-bar';
+import DashboardRiskMix from '@/components/chart/dashboard-risk-mix';
+import { riskMixFromKpi, toStockoutBars, type RiskMixKey } from '@/lib/chart-model';
+
+/** 판정 분포에서 누른 상태 → 이 화면의 카드 필터. FilterSpec 에 있는 키만 (안전 필터는 없습니다) */
+function riskFilterHref(key: RiskMixKey): string | null {
+  if (key === 'CRITICAL') return '?filter=critical';
+  if (key === 'WARNING') return '?filter=warning';
+  if (key === 'UNKNOWN') return '?filter=unknown';
+  return null;
+}
 
 export const dynamic = 'force-dynamic';
 
@@ -312,6 +324,27 @@ export default async function StockoutPage({
       {filterLabel && (
         <FilterNotice label={filterLabel} shown={visible.length} total={sorted.length} />
       )}
+
+      {/* ── 차트 띠 — spec §4.2 ── */}
+      <div className="grid-charts">
+        <ChartFrame
+          title="재고 유지 일수 vs 리드타임"
+          desc="소진 임박 순 상위 20 · 유지 일수가 리드타임보다 짧으면 지금 발주해도 늦습니다 · 누르면 발주 상세"
+          empty={toStockoutBars(rows).length === 0 ? '일수를 낸 품목이 없습니다' : null}
+        >
+          <StockoutDaysBar
+            bars={toStockoutBars(rows)}
+            hrefFor={(id) => `/purchase-recommendation/${encodeURIComponent(id)}`}
+          />
+        </ChartFrame>
+        <ChartFrame
+          title="판정 분포"
+          desc="위험 · 주의 · 안전 · 미판정 품목 수 · 누르면 그 판정만 봅니다"
+          empty={kpi === null ? '판정된 품목이 없습니다' : null}
+        >
+          {kpi !== null && <DashboardRiskMix slices={riskMixFromKpi(kpi)} hrefFor={riskFilterHref} />}
+        </ChartFrame>
+      </div>
 
       <Panel
         title="품목별 소진 위험"

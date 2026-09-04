@@ -20,6 +20,12 @@ import Forbidden from '@/components/ui/forbidden';
 import { getSessionUser, isSalesUser } from '@/lib/auth';
 import { applyFilter, labelOf, readFilter, type FilterSpec, type SearchParams } from '@/lib/filter';
 import BacktestForm from './backtest-form';
+import ChartFrame from '@/components/chart/_base/chart-frame';
+import EvaluationWapeBars from '@/components/chart/evaluation-wape-bars';
+import EvaluationChampionShare from '@/components/chart/evaluation-champion-share';
+import EvaluationImprovement from '@/components/chart/evaluation-improvement';
+import { getChampionShare } from '@/lib/charts';
+import { toImprovementBars, toWapeBars } from '@/lib/chart-model';
 
 export const dynamic = 'force-dynamic';
 
@@ -133,10 +139,11 @@ export default async function ModelEvaluationPage({
   searchParams: Promise<SearchParams>;
 }) {
   const activeFilter = readFilter(await searchParams);
-  const [{ rows, error }, { data: kpi }, user] = await Promise.all([
+  const [{ rows, error }, { data: kpi }, user, share] = await Promise.all([
     getChampions(),
     getBacktestKpi(),
     getSessionUser(),
+    getChampionShare(),
   ]);
 
   const isAdmin = user?.role === 'ADMIN';
@@ -241,6 +248,32 @@ export default async function ModelEvaluationPage({
       )}
 
       {filterLabel && <FilterNotice label={filterLabel} shown={visible.length} total={rows.length} />}
+
+      {/* ── 차트 띠 — spec §4.2 ── */}
+      <div className="grid-charts" data-cols="3">
+        <ChartFrame
+          title="품목별 Champion WAPE"
+          desc="부정확한 품목이 위 · 상위 20 · 옅은 막대는 수동 지정 · 누르면 모델 비교"
+          empty={rows.every((r) => r.wape === null) ? '채점된 품목이 없습니다' : null}
+        >
+          <EvaluationWapeBars bars={toWapeBars(rows)} hrefFor={(id) => `/model-comparison?item=${encodeURIComponent(id)}`} />
+        </ChartFrame>
+        <ChartFrame
+          title="모델별 Champion 점유"
+          desc="어느 모델이 몇 품목의 Champion 인가"
+          error={share.error}
+          empty={share.rows.length === 0 ? 'Champion 이 없습니다' : null}
+        >
+          <EvaluationChampionShare rows={share.rows} />
+        </ChartFrame>
+        <ChartFrame
+          title="베이스라인 대비 개선율"
+          desc="이동평균 3개월 대비 · 음수는 베이스라인이 더 맞은 품목 · 하위 20"
+          empty={toImprovementBars(rows).length === 0 ? '개선율을 낸 품목이 없습니다' : null}
+        >
+          <EvaluationImprovement bars={toImprovementBars(rows)} hrefFor={(id) => `/model-comparison?item=${encodeURIComponent(id)}`} />
+        </ChartFrame>
+      </div>
 
       <Panel
         title="품목별 Champion"

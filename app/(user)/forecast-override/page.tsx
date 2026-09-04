@@ -33,6 +33,10 @@ import {
 import { reasonLabel } from '@/lib/override-model';
 import type { OverrideRow, ValueAddByReason, ValueAddRow } from '@/lib/override-model';
 import { applyFilter, labelOf, readFilter, type FilterSpec, type SearchParams } from '@/lib/filter';
+import ChartFrame from '@/components/chart/_base/chart-frame';
+import OverrideReasonBars from '@/components/chart/override-reason-bars';
+import OverrideErrorScatter from '@/components/chart/override-error-scatter';
+import { toErrorPoints, toReasonBars } from '@/lib/chart-model';
 
 export const dynamic = 'force-dynamic';
 
@@ -488,6 +492,26 @@ export default async function ForecastOverridePage({
           />
         )}
       </Panel>
+
+      {/* ── 차트 띠 — spec §4.2 (Plan B: 기간별 선 대신 오차 산점도) ── */}
+      <div className="grid-charts">
+        <ChartFrame
+          title="사유별 AI vs Consensus WAPE"
+          desc="보정 사유마다 누가 더 맞았나 · 실적이 확정된 기간만"
+          error={byReason.error}
+          empty={byReason.rows.length === 0 ? '실적이 확정된 보정이 아직 없습니다' : null}
+        >
+          <OverrideReasonBars bars={toReasonBars(byReason.rows, (code) => reasonLabel(code) ?? code)} />
+        </ChartFrame>
+        <ChartFrame
+          title="오차 비교"
+          desc="점 하나가 품목 × 기간 · 대각선 아래는 보정이 AI 보다 맞은 것"
+          error={valueAdd.error}
+          empty={toErrorPoints(valueAdd.rows).length === 0 ? '두 오차를 낸 기간이 아직 없습니다' : null}
+        >
+          <OverrideErrorScatter points={toErrorPoints(valueAdd.rows)} />
+        </ChartFrame>
+      </div>
 
       <Panel
         title="Forecast Value Add"

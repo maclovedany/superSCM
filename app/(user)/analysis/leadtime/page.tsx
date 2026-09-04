@@ -19,6 +19,10 @@ import FilterNotice from '@/components/ui/filter-notice';
 import { getLeadtimeGap } from '@/lib/scm';
 import type { LeadtimeGap } from '@/lib/scm-model';
 import { applyFilter, labelOf, readFilter, type FilterSpec, type SearchParams } from '@/lib/filter';
+import ChartFrame from '@/components/chart/_base/chart-frame';
+import LeadtimeGapBars from '@/components/chart/leadtime-gap-bars';
+import LeadtimeGapRank from '@/components/chart/leadtime-gap-rank';
+import { toLeadtimeBars } from '@/lib/chart-model';
 
 export const dynamic = 'force-dynamic';
 
@@ -212,6 +216,20 @@ export default async function LeadtimePage({
       {filterLabel && (
         <FilterNotice label={filterLabel} shown={visible.length} total={rows.length} />
       )}
+
+      {/* ── 차트 띠 — spec §4.2. 같은 rows 를 그립니다 ── */}
+      <div className="grid-charts">
+        <ChartFrame title="마스터 vs 실측 리드타임" desc="공급처별 · 표본 30건 미만은 표본↓ 표시">
+          <LeadtimeGapBars bars={toLeadtimeBars(rows)} />
+        </ChartFrame>
+        <ChartFrame
+          title="격차 순위"
+          desc="P80 − 마스터 · 양수는 계획이 현실보다 짧은 공급처"
+          empty={rows.every((r) => r.gap === null) ? '격차를 낸 공급처가 없습니다' : null}
+        >
+          <LeadtimeGapRank bars={toLeadtimeBars(rows)} />
+        </ChartFrame>
+      </div>
 
       <Panel title="공급처별 리드타임" actions={<span className="t-label">격차 = P80 − 마스터</span>} flush>
         {visible.length === 0 ? (

@@ -23,6 +23,25 @@ import {
 import type { ReasonCode } from '@/lib/status';
 import FilterNotice from '@/components/ui/filter-notice';
 import { applyFilter, labelOf, readFilter, type FilterSpec, type SearchParams } from '@/lib/filter';
+import ChartFrame from '@/components/chart/_base/chart-frame';
+import DemandQuadrant from '@/components/chart/demand-quadrant';
+import DemandTypeMix from '@/components/chart/demand-type-mix';
+import DemandHeatmap from '@/components/chart/demand-heatmap';
+import { getUsageHeatmap } from '@/lib/charts';
+import {
+  demandTypeMixFromKpi,
+  pivotHeatmap,
+  toQuadrantPoints,
+  type DemandTypeKey,
+} from '@/lib/chart-model';
+
+/** 수요 유형 → 이 화면의 카드 필터. FilterSpec 에 있는 키만 씁니다 (smooth · croston · unclassified) */
+function demandTypeHref(key: DemandTypeKey): string | null {
+  if (key === 'SMOOTH') return '?filter=smooth';
+  if (key === 'INTERMITTENT' || key === 'LUMPY') return '?filter=croston';
+  if (key === 'UNCLASSIFIED') return '?filter=unclassified';
+  return null;
+}
 
 export const dynamic = 'force-dynamic';
 
@@ -153,10 +172,14 @@ export default async function DemandProfilePage({
 }: {
   searchParams: Promise<SearchParams>;
 }) {
-  const activeFilter = readFilter(await searchParams);
-  const [{ rows, error }, { data: kpi }] = await Promise.all([
+  const params = await searchParams;
+  const activeFilter = readFilter(params);
+  // 산점도 · 히트맵에서 누른 품목. 표의 그 행을 강조합니다.
+  const selectedItem = readFilter(params, 'item');
+  const [{ rows, error }, { data: kpi }, heatmap] = await Promise.all([
     getDemandProfiles(),
     getDemandProfileKpi(),
+    getUsageHeatmap(),
   ]);
 
   const header = (
@@ -258,6 +281,36 @@ export default async function DemandProfilePage({
         )}
       </InsightBanner>
 
+      {/* ── 차트 띠 — spec §4.2. 값은 전부 뷰가 냈습니다 ── */}
+      <div className="grid-charts" data-cols="3">
+        <ChartFrame
+          title="CV² × ADI 사분면"
+          desc="점 하나가 품목 하나 · 경계선은 Syntetos-Boylan 기준 · 누르면 표에서 강조"
+          empty={toQuadrantPoints(rows).length === 0 ? 'ADI 와 CV² 를 낸 품목이 없습니다' : null}
+        >
+          <DemandQuadrant points={toQuadrantPoints(rows)} hrefFor={(id) => `?item=${encodeURIComponent(id)}`} />
+        </ChartFrame>
+        <ChartFrame
+          title="수요 유형 분포"
+          desc="유형별 품목 수 · 누르면 그 유형만 봅니다"
+          empty={kpi === null ? '분류된 품목이 없습니다' : null}
+        >
+          {kpi !== null && <DemandTypeMix slices={demandTypeMixFromKpi(kpi)} hrefFor={demandTypeHref} />}
+        </ChartFrame>
+        <ChartFrame
+          title="품목 × 월 사용량"
+          desc="최근 12개월 · 총량 상위 40품목 · 진할수록 그 품목의 많은 달"
+          error={heatmap.error}
+          empty={heatmap.rows.length === 0 ? '사용량 실적이 없습니다' : null}
+        >
+          <DemandHeatmap
+            {...pivotHeatmap(heatmap.rows)}
+            selectedItemId={selectedItem}
+            hrefFor={(id) => `?item=${encodeURIComponent(id)}`}
+          />
+        </ChartFrame>
+      </div>
+
       <Panel title="분류 기준" >
         <p className="t-sm text-2" style={{ marginBottom: 'var(--s-4)' }}>
           Syntetos · Boylan · Croston (2005). <span className="t-code">ADI</span> 는 평균 수요 발생 간격,{' '}
@@ -298,6 +351,7 @@ export default async function DemandProfilePage({
             columns={columns}
             rows={visible}
             rowKey={(row) => row.itemId}
+            selectedKey={selectedItem ?? undefined}
             caption="analytics.v_sku_demand_profile — 학습 구간 기준 수요 패턴"
           />
         )}

@@ -25,6 +25,10 @@ import {
   type ForecastSummary,
 } from '@/lib/forecast';
 import type { SearchParams } from '@/lib/filter';
+import ChartFrame from '@/components/chart/_base/chart-frame';
+import ForecastModelTotals from '@/components/chart/forecast-model-totals';
+import ForecastOverlayChart, { type SeriesPoint } from '@/components/chart/forecast-overlay-chart';
+import { getItemSeries } from '@/lib/backtest';
 
 export const dynamic = 'force-dynamic';
 
@@ -121,9 +125,10 @@ export default async function ForecastPage({
 
   const activeItem = param(params, 'item');
 
-  const [{ rows: summary, error }, detail] = await Promise.all([
+  const [{ rows: summary, error }, detail, series] = await Promise.all([
     getForecastSummary(run.runId, activeModel),
     activeItem ? getForecastDetail(run.runId, activeItem) : Promise.resolve({ rows: [], error: null }),
+    activeItem ? getItemSeries(activeItem) : Promise.resolve({ rows: [], error: null }),
   ]);
 
   if (error) {
@@ -211,6 +216,42 @@ export default async function ForecastPage({
   const periodRows = toPeriodRows(detail.rows);
   const detailModels = Array.from(new Set(detail.rows.map((point) => point.modelId))).sort();
 
+  // ── 오버레이 차트 데이터 조립 — 계산이 아니라 병합입니다 (model-comparison 과 같은 방식) ──
+  const byPeriod = new Map<string, SeriesPoint>();
+  const ensure = (period: string): SeriesPoint => {
+    const key = period.slice(0, 7);
+    const found = byPeriod.get(key);
+    if (found) return found;
+    const created: SeriesPoint = { period: key, actual: null, forecast: {}, isTest: false };
+    byPeriod.set(key, created);
+    return created;
+  };
+  for (const row of series.rows) {
+    const point = ensure(row.period);
+    point.actual = row.quantity;
+    if (row.segment === 'TEST') point.isTest = true;
+  }
+  for (const row of detail.rows) {
+    const point = ensure(row.period);
+    point.forecast[row.modelId] = row.predictedQty;
+    if (row.modelId === activeModel) {
+      point.p80 = row.p80;
+      point.p90 = row.p90;
+    }
+  }
+  const chartData = Array.from(byPeriod.values()).sort((a, b) => a.period.localeCompare(b.period));
+  const chartModels = detailModels.map((modelId) => ({
+    modelId,
+    label: runModels.find((m) => m.modelId === modelId)?.modelName ?? modelId,
+  }));
+  const modelTotals = runModels.map((m) => ({
+    modelId: m.modelId,
+    label: m.modelName ?? m.modelId,
+    totalQty: m.totalQty,
+    rows: m.rows,
+    items: m.items,
+  }));
+
   return (
     <>
       {header}
@@ -266,6 +307,18 @@ export default async function ForecastPage({
         </div>
       </Panel>
 
+      <ChartFrame
+        title="모델별 예측 합계"
+        desc="이 실행에서 모델마다 낸 예측 수량의 합 · 누르면 그 모델로 바꿉니다 (재실행 없음)"
+        empty={modelTotals.length === 0 ? '모델이 없습니다' : null}
+      >
+        <ForecastModelTotals
+          models={modelTotals}
+          activeModelId={activeModel}
+          hrefFor={(modelId) => `?model=${encodeURIComponent(modelId)}${activeItem ? `&item=${encodeURIComponent(activeItem)}` : ''}`}
+        />
+      </ChartFrame>
+
       <InsightBanner eyebrow="FORECAST">
         <b>{selected?.modelName ?? activeModel}</b> 기준으로 {summary.length}개 품목의 향후 {periods}개월 수요를
         예측했습니다. 모델 칩을 눌러도 <b>다시 계산하지 않습니다</b> — 실행 시점에 모든 모델 결과를 저장해 두었기
@@ -285,6 +338,10 @@ export default async function ForecastPage({
           {periodRows.length === 0 ? (
             <EmptyState title="이 품목의 예측 결과가 없습니다" />
           ) : (
+            <>
+              <div style={{ padding: 'var(--s-4) var(--s-4) 0' }}>
+                <ForecastOverlayChart data={chartData} models={chartModels} bandModelId={activeModel} height={280} />
+              </div>
             <div className="table-wrap">
               <table className="table">
                 <caption className="t-label">모델별 예측을 나란히 놓았습니다</caption>
@@ -329,6 +386,7 @@ export default async function ForecastPage({
                 </tbody>
               </table>
             </div>
+            </>
           )}
         </Panel>
       )}

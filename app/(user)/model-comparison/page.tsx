@@ -22,6 +22,9 @@ import Forbidden from '@/components/ui/forbidden';
 import { getSessionUser, isSalesUser } from '@/lib/auth';
 import type { SearchParams } from '@/lib/filter';
 import ChampionForm from './champion-form';
+import ChartFrame from '@/components/chart/_base/chart-frame';
+import ComparisonMetricBars from '@/components/chart/comparison-metric-bars';
+import { toMetricBars } from '@/lib/chart-model';
 
 export const dynamic = 'force-dynamic';
 
@@ -321,6 +324,14 @@ export default async function ModelComparisonPage({
         저장해 두었기 때문입니다(<span className="t-code">renew.prd</span> 16.5). 학습·검증 기간을 바꾸려면 예측을
         다시 실행해야 하지만, 모델을 켜고 끄는 것은 조회만으로 처리됩니다.
       </InsightBanner>
+
+      <ChartFrame
+        title="모델별 WAPE · Bias"
+        desc="이 품목의 후보 전체 · WAPE 는 낮을수록, Bias 는 0 에 가까울수록 좋습니다 · 테두리는 Champion"
+        empty={performance.length === 0 ? '이 품목은 아직 채점되지 않았습니다' : null}
+      >
+        <ComparisonMetricBars bars={toMetricBars(performance)} />
+      </ChartFrame>
 
       <Panel
         title="성능 비교"
