@@ -59,6 +59,29 @@
   padding: 0 var(--s-3) var(--s-2);
 }
 
+/* 관리자 묶음 머리말 — 일반 사용자 구역과 관리자 구역의 경계 (design.md §6.1) */
+.nav-group {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin: var(--s-3) 0 var(--s-4);
+  padding: var(--s-3) var(--s-3) 0;
+  border-top: 1px solid var(--border-strong);
+  color: var(--text-1);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.nav-section-admin + .nav-section-admin {
+  margin-top: var(--s-4);
+}
+
+/* 관리자 구역의 소제목은 한 단 들여 써서 머리말 아래에 매달린 것으로 읽히게 합니다 */
+.nav-section-admin .nav-heading {
+  padding-left: var(--s-5);
+}
+
 .nav-list {
   display: flex;
   flex-direction: column;
@@ -375,8 +398,14 @@
   .nav-item-label,
   .nav-item-soon,
   .nav-heading,
+  .nav-group-label,
   .sidebar-foot-link span {
     display: none;
+  }
+  .nav-group {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
   }
   .brand {
     padding-bottom: var(--s-4);

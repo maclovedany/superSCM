@@ -48,6 +48,8 @@ export type MenuItem = {
 export type MenuSection = {
   heading?: string;
   items: MenuItem[];
+  /** 관리자 전용 구역. 사이드바가 이 구역들을 "관리자 메뉴" 머리말 아래에 한데 모아 그립니다 */
+  admin?: boolean;
 };
 
 /** renew.prd 30.2 — 일반 사용자 */
@@ -95,13 +97,15 @@ export const USER_MENU: MenuSection[] = [
   },
 ];
 
-/** renew.prd 30.1 — 관리자 */
+/** renew.prd 30.1 — 관리자. 모든 구역이 admin: true 라 사이드바에서 "관리자 메뉴" 아래에 몰립니다 */
 export const ADMIN_MENU: MenuSection[] = [
   {
+    admin: true,
     heading: '사용자',
     items: [{ href: '/admin/users', label: '사용자 관리', icon: Users, ready: true }],
   },
   {
+    admin: true,
     heading: '예측 설정',
     items: [
       { href: '/admin/models', label: '예측 모델', icon: LineChart, ready: true },
@@ -111,6 +115,7 @@ export const ADMIN_MENU: MenuSection[] = [
     ],
   },
   {
+    admin: true,
     heading: 'SCM 정책',
     items: [
       { href: '/admin/policies/leadtime', label: '리드타임', icon: Timer, ready: true },
@@ -120,6 +125,7 @@ export const ADMIN_MENU: MenuSection[] = [
     ],
   },
   {
+    admin: true,
     heading: '데이터',
     items: [
       { href: '/admin/data/upload', label: '파일 업로드', icon: Database, ready: true },
@@ -128,6 +134,7 @@ export const ADMIN_MENU: MenuSection[] = [
     ],
   },
   {
+    admin: true,
     heading: 'API · 로그',
     items: [
       { href: '/admin/api/keys', label: 'API Key', icon: KeyRound, ready: true },
@@ -159,6 +166,16 @@ const SALES_HIDDEN = new Set<string>([
  * renew.prd 4.2 — ADMIN 은 "모든 USER 기능" 을 포함합니다.
  * 따라서 관리자에게는 사용자 메뉴 뒤에 관리 메뉴를 이어 붙입니다.
  */
+/** 사이드바 구역 머리말 — 일반 사용자 화면 뒤에 관리자 화면이 이어지는 자리에 붙습니다 */
+export const ADMIN_GROUP_LABEL = '관리자 메뉴';
+
+/** 이 구역이 관리자 묶음의 첫 구역인지 — 사이드바가 여기 앞에 "관리자 메뉴" 머리말을 그립니다 */
+export function startsAdminGroup(sections: MenuSection[], index: number): boolean {
+  const section = sections[index];
+  if (!section?.admin) return false;
+  return index === 0 || !sections[index - 1].admin;
+}
+
 export function menuFor(role: Role, isSales = false): MenuSection[] {
   const sections = role === 'ADMIN' ? [...USER_MENU, ...ADMIN_MENU] : USER_MENU;
   if (!isSales) return sections;

@@ -7,8 +7,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LifeBuoy, RefreshCw } from 'lucide-react';
-import { menuFor, type Role } from '@/lib/menu';
+import { LifeBuoy, RefreshCw, ShieldCheck } from 'lucide-react';
+import { ADMIN_GROUP_LABEL, menuFor, startsAdminGroup, type Role } from '@/lib/menu';
 
 export default function Sidebar({ role, isSales = false }: { role: Role; isSales?: boolean }) {
   const pathname = usePathname();
@@ -26,7 +26,18 @@ export default function Sidebar({ role, isSales = false }: { role: Role; isSales
 
       <nav aria-label="주 메뉴">
         {sections.map((section, index) => (
-          <div className="nav-section" key={section.heading ?? `section-${index}`}>
+          <div
+            className={`nav-section${section.admin ? ' nav-section-admin' : ''}`}
+            key={section.heading ?? `section-${index}`}
+          >
+            {/* 관리자 화면은 일반 화면 뒤에 한 묶음으로 이어집니다. 어디부터가 관리자 몫인지
+                한눈에 보이도록 첫 관리자 구역 앞에 구분선과 머리말을 둡니다 */}
+            {startsAdminGroup(sections, index) && (
+              <div className="nav-group" role="separator" aria-label={ADMIN_GROUP_LABEL}>
+                <ShieldCheck size={14} aria-hidden />
+                <span className="nav-group-label">{ADMIN_GROUP_LABEL}</span>
+              </div>
+            )}
             {section.heading && <div className="nav-heading t-label">{section.heading}</div>}
             <div className="nav-list">
               {section.items.map((item) => {
