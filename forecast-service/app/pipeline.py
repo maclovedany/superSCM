@@ -171,7 +171,10 @@ def forecast_one_model(
             "service_version": __version__,
             "explanation": result.attrs.get("explanation") or {},
         }
-        basis_json = json.dumps(basis, ensure_ascii=False, default=str)
+        # ★ 행마다 basis 를 쓰지 않습니다 — 37만 행 × 260B 가 디스크를 채웠고 어느 화면도 읽지 않습니다 (error.md #35).
+        #   모델별 설명은 run 의 models jsonb 요약에만 남깁니다.
+        basis_json = None
+        del basis
 
         for record in result.itertuples(index=False):
             point = float(record.predicted_qty)
@@ -344,7 +347,7 @@ def write_results(conn, run_id: str, model_id: str, rows: list[tuple]) -> None:
             insert into core.forecast_result
               (run_id, model_id, model_version, item_id, period,
                predicted_qty, p50, p80, p90, sigma, basis)
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             [(run_id, *row) for row in rows],
         )
@@ -616,7 +619,7 @@ def run_full(job_id: str, mode: str, note: str | None, only: list[str] | None = 
         set_job(job_id, stage="MATERIALIZE", message="화면이 쓰는 예측 표를 갱신하는 중입니다")
         _mirror(job_id, run_id)
         with db.connect() as conn:
-            refreshed = db.call_refresh_materialized(conn)
+            refreshed = db.call_refresh_materialized(conn, run_id)
 
         backtest = None
         if mode == "VALIDATION":
@@ -625,7 +628,7 @@ def run_full(job_id: str, mode: str, note: str | None, only: list[str] | None = 
             with db.connect() as conn:
                 backtest = db.call_backtest(conn, run_id, note)
                 # Champion 이 바뀌었으니 표를 한 번 더 (run_backtest 안에서도 갱신하지만 실패에 대비)
-                refreshed = db.call_refresh_materialized(conn)
+                refreshed = db.call_refresh_materialized(conn, run_id)
 
         message = (
             f"{'운영' if mode == 'PRODUCTION' else '검증'} 실행 {run_id} · SQL {baseline['n_models']}종 "

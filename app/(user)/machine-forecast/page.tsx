@@ -26,7 +26,7 @@ import { EmptyState, ErrorState } from '@/components/ui/state';
 import ForecastOverlayChart, { type SeriesPoint } from '@/components/chart/forecast-overlay-chart';
 import { isSalesUser, requireUser } from '@/lib/auth';
 import { readFilter, type SearchParams } from '@/lib/filter';
-import { getForecastDetail, getLatestSuccessfulRun, getRunModels } from '@/lib/forecast';
+import { getForecastDetail, getLatestValidationRun, getRunModels } from '@/lib/forecast';
 import { getChampions } from '@/lib/backtest';
 import { getMachineBom, getMachinePlanActual, getMachines } from '@/lib/machines';
 import { ROLE_LABEL, SALES_OL_MODEL, SCM_OL_MODEL, type MachineBomRow } from '@/lib/machines-model';
@@ -75,7 +75,7 @@ export default async function MachineForecastPage({ searchParams }: { searchPara
 
   const [{ rows: machines, error: machineError }, run, search] = await Promise.all([
     getMachines(),
-    getLatestSuccessfulRun(),
+    getLatestValidationRun(),
     q.trim().length >= 2 ? searchItems(q, 30, { machinesOnly: true }) : Promise.resolve({ rows: [], error: null }),
   ]);
 

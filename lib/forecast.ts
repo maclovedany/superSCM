@@ -237,6 +237,15 @@ export async function getLatestSuccessfulRun(): Promise<ForecastRun | null> {
   return pickRun({});
 }
 
+/**
+ * 최근 성공한 **검증(VALIDATION)** 실행 — 모델 전부가 남아 있는 실행입니다.
+ * 운영 실행은 저장 다이어트로 Champion · 기본 모델 행만 남으므로(sql/35 §2b), 모델을 나란히
+ * 비교하는 화면(모델 비교 · 기종 예측)은 이 실행을 읽습니다.
+ */
+export async function getLatestValidationRun(): Promise<ForecastRun | null> {
+  return pickRun({ mode: 'VALIDATION' });
+}
+
 /** 성공한 실행 중 가장 최근 한 건. mode 를 주면 그 모드 안에서 고릅니다 */
 async function pickRun(filter: { mode?: RunMode }): Promise<ForecastRun | null> {
   try {

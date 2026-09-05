@@ -17,7 +17,7 @@ import InsightBanner from '@/components/ui/insight-banner';
 import { ErrorState, EmptyState } from '@/components/ui/state';
 import ForecastOverlayChart, { type SeriesPoint } from '@/components/chart/forecast-overlay-chart';
 import { getChampions, getItemPerformance, getItemSeries, type ModelPerformance } from '@/lib/backtest';
-import { getForecastDetail, getLatestSuccessfulRun, getRunModels } from '@/lib/forecast';
+import { getForecastDetail, getLatestValidationRun, getRunModels } from '@/lib/forecast';
 import Forbidden from '@/components/ui/forbidden';
 import { getSessionUser, isSalesUser } from '@/lib/auth';
 import type { SearchParams } from '@/lib/filter';
@@ -54,7 +54,7 @@ export default async function ModelComparisonPage({
   const params = await searchParams;
   const [{ rows: champions, error: championError }, run, user] = await Promise.all([
     getChampions(),
-    getLatestSuccessfulRun(),
+    getLatestValidationRun(),
     getSessionUser(),
   ]);
 

@@ -251,16 +251,18 @@ def call_baseline_forecast(conn, note: str | None, mode: str) -> dict:
     return {"run_id": row[0], "n_models": row[1], "n_items": row[2], "n_rows": row[3], "message": row[4]}
 
 
-def call_refresh_materialized(conn) -> dict:
-    """core.refresh_forecast_current() · core.build_dependent_demand() — 화면이 쓰는 표 갱신 (sql/35)."""
+def call_refresh_materialized(conn, run_id: str | None = None) -> dict:
+    """core.finalize_run_storage(run_id) — 실체화 → 운영 실행 다이어트 → 이력 보존 (sql/35 §2b)."""
     with conn.cursor() as cur:
         cur.execute("set statement_timeout = 0")
         cur.execute(
-            "select core.refresh_forecast_current() as forecast_current,"
-            "       core.build_dependent_demand()    as dependent_demand"
+            "select forecast_current, dependent_demand, pruned_rows, pruned_runs"
+            "  from core.finalize_run_storage(%s)",
+            (run_id,),
         )
         row = cur.fetchone()
-    return {"forecast_current": int(row[0] or 0), "dependent_demand": int(row[1] or 0)}
+    return {"forecast_current": int(row[0] or 0), "dependent_demand": int(row[1] or 0),
+            "pruned_rows": int(row[2] or 0), "pruned_runs": int(row[3] or 0)}
 
 
 def call_backtest(conn, forecast_run_id: str | None, note: str | None) -> dict:

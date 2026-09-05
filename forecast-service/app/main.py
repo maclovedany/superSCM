@@ -182,6 +182,14 @@ def pipeline_run(body: PipelineRunRequest, background: BackgroundTasks) -> dict:
     return {"pipeline_id": job_id, "status": "RUNNING", "mode": mode}
 
 
+@app.get("/pipeline/running", dependencies=[Depends(require_token)])
+def pipeline_running() -> dict:
+    """지금 돌고 있는 파이프라인. 관리자 화면이 새로 열려도 "실행 중" 을 이어서 보이게 합니다."""
+    job = pipeline.running_pipeline()
+    return {"running": job is not None, "pipeline_id": job.get("run_id") if job else None,
+            "stage": job.get("stage") if job else None, "message": job.get("message") if job else None}
+
+
 @app.get("/forecast/run/{run_id}", dependencies=[Depends(require_token)])
 def forecast_run_status(run_id: str) -> dict:
     return pipeline.run_status(run_id)

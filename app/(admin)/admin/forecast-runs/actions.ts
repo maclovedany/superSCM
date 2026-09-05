@@ -10,8 +10,8 @@ import { requireAdminOrThrow } from '@/lib/auth';
 import { writeAuditLog } from '@/lib/audit';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { getModelConfigs } from '@/lib/forecast';
-import { getServiceHealth, isServiceConfigured, runPipeline, runPythonForecast } from '@/lib/forecast-service';
-import { isRunModeValue, type RunActionState } from './state';
+import { getServiceHealth, getServiceRun, isServiceConfigured, runPipeline, runPythonForecast } from '@/lib/forecast-service';
+import { isRunModeValue, type PipelinePoll, type RunActionState } from './state';
 
 export async function runForecast(
   _prev: RunActionState,
@@ -62,10 +62,11 @@ export async function runForecast(
           const modeText = mode === 'PRODUCTION' ? '운영 실행' : '검증 실행';
           return {
             error: null,
+            pipelineId: started.pipelineId,
             message:
-              `${modeText}을 예측 서비스에 맡겼습니다 (${started.pipelineId ?? '-'}). ` +
-              `SQL 모델 → Python 모델 → 화면 예측 표 갱신${mode === 'VALIDATION' ? ' → 백테스트' : ''} 순서로 ` +
-              `돌아가며, 품목 11,000개 기준 몇 분이 걸립니다. 아래 실행 이력을 새로고침해 상태를 보세요.`,
+              `${modeText}을 예측 서비스가 시작했습니다. ` +
+              `SQL 모델 → Python 모델 → 화면 예측 표 갱신${mode === 'VALIDATION' ? ' → 백테스트' : ''} 순서로 돌아가며, ` +
+              `품목 11,000개 기준 10분 안팎입니다. 끝나면 아래 실행 이력에 나타납니다.`,
           };
         }
         // 서비스가 요청을 받지 못했습니다. 예전 길로 내려갑니다.
@@ -176,4 +177,16 @@ async function appendPythonModels(
 
   const names = result.models.length > 0 ? result.models.join(' · ') : `${enabledPython.length}종`;
   return ` Python 모델(${names})을 이어 붙이는 중입니다. 잠시 뒤 목록을 새로고침하세요.`;
+}
+
+/** 폼이 5초마다 부릅니다 — 서비스의 진행 상황을 그대로 전달합니다 (판정은 서비스가 합니다) */
+export async function pollPipeline(pipelineId: string): Promise<PipelinePoll> {
+  try {
+    await requireAdminOrThrow();
+  } catch {
+    return { status: 'FORBIDDEN', stage: null, message: '관리자 권한이 필요합니다.', progress: null };
+  }
+  const run = await getServiceRun(pipelineId);
+  if (!run.ok) return { status: 'UNKNOWN', stage: null, message: run.error, progress: null };
+  return { status: run.status, stage: run.stage ?? null, message: run.message, progress: run.progress ?? null };
 }

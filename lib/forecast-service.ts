@@ -241,6 +241,20 @@ export async function runPipeline(
   };
 }
 
+/** GET /pipeline/running — 지금 돌고 있는 파이프라인 (없으면 running:false) */
+export async function getRunningPipeline(): Promise<{ running: boolean; pipelineId: string | null; stage: string | null; message: string | null }> {
+  const none = { running: false, pipelineId: null, stage: null, message: null };
+  if (!isServiceConfigured()) return none;
+  const { data, error } = await call('/pipeline/running', { timeoutMs: HEALTH_TIMEOUT_MS });
+  if (error || !data || data.running !== true) return none;
+  return {
+    running: true,
+    pipelineId: typeof data.pipeline_id === 'string' ? data.pipeline_id : null,
+    stage: typeof data.stage === 'string' ? data.stage : null,
+    message: typeof data.message === 'string' ? data.message : null,
+  };
+}
+
 /** GET /forecast/run/{run_id} — 진행 상황 */
 export async function getServiceRun(runId: string): Promise<ServiceRunStatus> {
   const empty: ServiceRunStatus = {

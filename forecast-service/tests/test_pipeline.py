@@ -92,10 +92,7 @@ def test_forecast_one_model_builds_insert_rows():
     assert point >= 0 and p50 == pytest.approx(point)
     if sigma is not None:
         assert p80 >= p50 and p90 >= p80
-    parsed = json.loads(basis)
-    assert parsed["method"] == "CROSTON"          # sql/11 의 basis 와 같은 키
-    assert parsed["engine"] == "PYTHON"
-    assert parsed["explanation"]["method"] == "croston"
+    assert basis is None                          # 행마다 basis 를 쓰지 않습니다 (error.md #35)
 
 
 def test_forecast_one_model_reports_unregistered_model():

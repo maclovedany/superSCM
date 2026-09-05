@@ -1332,3 +1332,7 @@
   font-size: 11px;
   color: var(--text-1);
 }
+
+/* 진행 중 아이콘 회전 (예측 실행 폼) */
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }

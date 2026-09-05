@@ -18,6 +18,7 @@ import { ErrorState, EmptyState } from '@/components/ui/state';
 import { getForecastRunKpi, getForecastRuns, getModelConfigs, type ForecastRun } from '@/lib/forecast';
 import {
   getServiceHealth,
+  getRunningPipeline,
   SERVICE_STATE_LABEL,
   type ServiceHealth,
 } from '@/lib/forecast-service';
@@ -142,7 +143,7 @@ export default async function ForecastRunsPage({
   searchParams: Promise<SearchParams>;
 }) {
   const activeFilter = readFilter(await searchParams);
-  const [{ rows, error }, { data: kpi }, { rows: models }, service, { data: stale }] =
+  const [{ rows, error }, { data: kpi }, { rows: models }, service, { data: stale }, running] =
     await Promise.all([
       getForecastRuns(),
       getForecastRunKpi(),
@@ -150,6 +151,7 @@ export default async function ForecastRunsPage({
       // 서비스가 없어도 화면은 그대로 돕니다. 이 호출은 throw 하지 않습니다 (renew.prd 31.4)
       getServiceHealth(),
       getStaleSummary(),
+      getRunningPipeline(),
     ]);
 
   const enabledModels = kpi?.enabledModels ?? models.filter((m) => m.enabled).length;
@@ -240,6 +242,7 @@ export default async function ForecastRunsPage({
         <RunForm
           enabledModels={enabledModels}
           productionTrainEnd={stale?.productionTrainEnd ?? null}
+          runningPipelineId={running.pipelineId}
         />
         <ServiceNote service={service} enabledPython={enabledPython} />
       </Panel>

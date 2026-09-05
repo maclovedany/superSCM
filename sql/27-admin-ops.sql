@@ -494,7 +494,9 @@ begin
     case when p.sigma is not null then round(p.qty + 0.8416 * p.sigma, 2) end,
     case when p.sigma is not null then round(p.qty + 1.2816 * p.sigma, 2) end,
     round(p.sigma, 3),
-    jsonb_build_object('method', p.model_id, 'interval', 'normal-approx', 'mode', v_mode)
+    -- ★ basis 는 행마다 쓰지 않습니다. 96만 행 × 80B 가 디스크를 채웠고 어느 화면도 읽지 않습니다 (error.md #35).
+    --   모델 · 방법 · 모드는 core.forecast_run.models 에 있습니다.
+    null::jsonb
   from points p
   where p.qty is not null;      -- ★ 값을 못 내면 행을 만들지 않습니다
 
@@ -528,6 +530,8 @@ begin
   --   만들므로 실행 시점에만 있으면 됩니다 (plpgsql 은 호출 때 이름을 찾습니다).
   perform core.refresh_forecast_current();
   perform core.build_dependent_demand();
+  -- ★ 저장 다이어트 (error.md #35). 서비스가 Python 모델을 붙인 뒤 다시 부릅니다.
+  perform core.finalize_run_storage(v_run_id);
 
   exception
     when others then

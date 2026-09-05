@@ -35,7 +35,7 @@ def _wire(monkeypatch, calls: list, baseline_rows=100, python_status="SUCCESS"):
     )
     monkeypatch.setattr(
         pipeline.db, "call_refresh_materialized",
-        lambda conn: (calls.append(("refresh",)) or {"forecast_current": 40, "dependent_demand": 7}),
+        lambda conn, run_id=None: (calls.append(("refresh",)) or {"forecast_current": 40, "dependent_demand": 7, "pruned_rows": 0, "pruned_runs": 0}),
     )
     monkeypatch.setattr(
         pipeline.db, "call_backtest",

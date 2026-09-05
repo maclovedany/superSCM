@@ -389,7 +389,7 @@ begin
     case when p.sigma is not null then round(p.qty + 0.8416 * p.sigma, 2) end,
     case when p.sigma is not null then round(p.qty + 1.2816 * p.sigma, 2) end,
     round(p.sigma, 3),
-    jsonb_build_object('method', p.model_id, 'interval', 'normal-approx')
+    null::jsonb  -- basis 는 행마다 쓰지 않습니다 (error.md #35)
   from points p
   where p.qty is not null;      -- ★ 값을 못 내면 행을 만들지 않습니다
 

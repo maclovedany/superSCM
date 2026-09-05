@@ -179,6 +179,109 @@ grant execute on function core.refresh_forecast_current(text) to authenticated;
 grant execute on function core.build_dependent_demand()      to authenticated;
 
 
+-- ══ 2b. 저장 다이어트 — 디스크를 채우지 않기 위해 (error.md #35) ═══════
+--
+-- 실행 한 번이 96만 행(모델 12 × 품목 1만 × 12기간)입니다. Supabase 무료 플랜(500 MB)은
+-- 한 번도 다 담지 못했습니다. 규칙 셋으로 줄입니다.
+--   ① basis 를 행마다 쓰지 않습니다 (sql/27 · 서비스).
+--   ② 운영(PRODUCTION) 실행은 화면이 쓰는 행만 남깁니다 — 품목마다 Champion 모델 + 기본 모델.
+--      모델 비교 · 기종 화면은 검증(VALIDATION) 실행을 읽으므로 잃는 것이 없습니다.
+--   ③ 실행 이력은 검증 최근 1 · 운영 최근 1 만 보존합니다 (Champion 을 뽑은 백테스트가 가리키는 실행은 지키고).
+
+-- ② 운영 실행 다이어트
+create or replace function core.prune_production_models(p_run_id text)
+returns int
+language plpgsql
+security definer
+set search_path = core, public
+set enable_nestloop = off
+as $$
+declare v_n int := 0; v_mode text;
+begin
+  select r.mode into v_mode from core.forecast_run r where r.run_id = p_run_id;
+  if v_mode is distinct from 'PRODUCTION' then
+    return 0;   -- 검증 실행은 전부 남깁니다 (모델 비교 · 백테스트의 재료)
+  end if;
+  analyze core.forecast_result;
+  with keep as (
+    select fc.item_id, fc.model_id from core.forecast_current fc where fc.run_id = p_run_id
+    union
+    select distinct f.item_id, d.model_id
+      from core.forecast_result f
+      cross join (select m.model_id from core.model_config m where m.is_default order by m.model_id limit 1) d
+     where f.run_id = p_run_id
+  )
+  delete from core.forecast_result f
+   where f.run_id = p_run_id
+     and not exists (select 1 from keep k where k.item_id = f.item_id and k.model_id = f.model_id);
+  get diagnostics v_n = row_count;
+  return v_n;
+end;
+$$;
+
+-- ③ 실행 이력 보존
+create or replace function core.prune_forecast_runs(p_keep_validation int default 1, p_keep_production int default 1)
+returns int
+language plpgsql
+security definer
+set search_path = core, public
+as $$
+declare v_n int := 0;
+begin
+  with ranked as (
+    select r.run_id, r.mode,
+           row_number() over (partition by r.mode order by r.started_at desc) as rn
+      from core.forecast_run r
+     where r.status = 'SUCCESS'
+  ),
+  protected as (
+    -- Champion 을 뽑은 백테스트의 예측 실행은 지킵니다
+    select distinct b.forecast_run_id as run_id
+      from core.champion_model c join core.backtest_run b on b.backtest_run_id = c.backtest_run_id
+  ),
+  victims as (
+    select r.run_id from core.forecast_run r
+     where r.status in ('FAILED', 'RUNNING') and r.started_at < now() - interval '1 day'
+    union
+    select k.run_id from ranked k
+     where (k.mode = 'PRODUCTION' and k.rn > p_keep_production)
+        or (k.mode is distinct from 'PRODUCTION' and k.rn > p_keep_validation)
+  )
+  delete from core.forecast_run r
+   where r.run_id in (select v.run_id from victims v)
+     and r.run_id not in (select p.run_id from protected p where p.run_id is not null);
+  get diagnostics v_n = row_count;   -- forecast_result · backtest_run 은 on delete cascade
+  return v_n;
+end;
+$$;
+
+-- 실행이 끝났을 때 한 번 부르는 마무리 — 실체화 → 다이어트 → 보존. 서비스와 SQL 실행 함수가 부릅니다.
+create or replace function core.finalize_run_storage(p_run_id text default null)
+returns table (forecast_current int, dependent_demand int, pruned_rows int, pruned_runs int)
+language plpgsql
+security definer
+set search_path = core, public
+as $$
+declare v_fc int; v_dd int; v_pr int := 0; v_runs int;
+begin
+  v_fc := core.refresh_forecast_current();
+  v_dd := core.build_dependent_demand();
+  if p_run_id is not null then
+    v_pr := core.prune_production_models(p_run_id);
+  end if;
+  v_runs := core.prune_forecast_runs();
+  return query select v_fc, v_dd, v_pr, v_runs;
+end;
+$$;
+
+revoke all on function core.prune_production_models(text) from public, anon;
+revoke all on function core.prune_forecast_runs(int, int)  from public, anon;
+revoke all on function core.finalize_run_storage(text)     from public, anon;
+grant execute on function core.prune_production_models(text) to authenticated;
+grant execute on function core.prune_forecast_runs(int, int)  to authenticated;
+grant execute on function core.finalize_run_storage(text)     to authenticated;
+
+
 -- ══ 3. core.v_ai_forecast — 실체화 표를 읽습니다 ═══════════════
 --
 -- 컬럼 이름 · 순서 · 타입은 sql/27 §4 의 정의와 같습니다 (create or replace 조건).
