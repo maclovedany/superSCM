@@ -37,7 +37,8 @@ Supabase → SQL Editor 에 **파일 하나를 통째로** 붙여넣고 실행�
 | 28 | `35-dependent-demand.sql` | ★ 실체화 — `forecast_current` · `dependent_demand`(기종 예측 × BOM) · `v_ai_forecast` 재정의 · `v_demand_compare` · `v_machine_bom_forecast` · `v_machine_plan_actual` · **저장 다이어트**(`make_room_for_run` · `prune_production_models` · `prune_forecast_runs` · `finalize_run_storage`, error.md #35) |
 | 29 | `31-chart-views.sql` | 차트 집계 뷰 10개 — 기간 · 공급처 · 유형별 합계와 건수. 새 계산 없음. 앞 파일(15 · 16 · 19 · 20 · 21 · 23)을 다시 실행했으면 이 파일도 다시 |
 | 30 | `29-sales-column-guard.sql` | ★ 영업 정보 접근 범위를 DB 에서 닫습니다 — 조달 단가 · 발주 금액 · 공급처 상세 · 리드타임 통계 · 예측 정확도를 `core.is_sales()` 로 null 처리 (renew.prd 4.4 · 4.5) |
-| 31 | `28-anon-lockdown.sql` | ★ 항상 마지막 — anon(로그인 전) 권한 회수. 함수를 추가하는 파일을 적용했으면 이 파일을 다시 실행하세요 |
+| 31 | `37-planning-cache.sql` | ★ 계획 뷰 캐시 — 안전재고 · 발주 추천 · 재고 전개 · 실행 통계를 materialized view 로 (화면 15~20초 → 1초 안, error.md #36). `core.refresh_planning_cache()` 를 실행 끝 · 저장 뒤 · pg_cron 매시간에 |
+| 32 | `28-anon-lockdown.sql` | ★ 항상 마지막 — anon(로그인 전) 권한 회수. 함수를 추가하는 파일을 적용했으면 이 파일을 다시 실행하세요 |
 | (선택) | `30-indexes.sql` | 조인·필터 키 인덱스. **지금은 안 돌려도 됩니다** — 품목 20개 기준 효과가 측정되지 않았습니다. 실데이터를 대량 적재한 뒤에 한 번 돌리세요. 권한·뷰를 건드리지 않으므로 `28` 뒤에 실행해도 안전합니다 |
 
 ### `28-anon-lockdown.sql` 은 선택이 아닙니다

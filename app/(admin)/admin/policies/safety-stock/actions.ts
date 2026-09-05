@@ -12,6 +12,7 @@ import { requireAdminOrThrow } from '@/lib/auth';
 import { writeAuditLog } from '@/lib/audit';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { isEditablePolicyKey, type PolicyConfigActionState } from './state';
+import { refreshPlanningCacheAfterResponse } from '@/lib/planning-cache';
 
 export async function savePolicyConfig(
   _prev: PolicyConfigActionState,
@@ -69,7 +70,8 @@ export async function savePolicyConfig(
       after: { key, value_num: valueNum },
     });
 
-    // 정책값은 결품 판정 · 안전재고 · 발주 추천에 함께 들어갑니다.
+    // 정책값은 결품 판정 · 안전재고 · 발주 추천에 함께 들어갑니다. 캐시를 새로 계산합니다 (sql/37).
+    refreshPlanningCacheAfterResponse();
     revalidatePath('/admin/policies/safety-stock');
     revalidatePath('/admin/policies/service-level');
     revalidatePath('/purchase-recommendation');

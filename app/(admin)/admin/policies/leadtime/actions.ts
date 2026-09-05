@@ -13,6 +13,7 @@ import { requireAdminOrThrow } from '@/lib/auth';
 import { writeAuditLog } from '@/lib/audit';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import type { LeadtimeActionState } from './state';
+import { refreshPlanningCacheAfterResponse } from '@/lib/planning-cache';
 
 export async function saveLeadtimePlan(
   _prev: LeadtimeActionState,
@@ -67,7 +68,8 @@ export async function saveLeadtimePlan(
       after: { planned_lead_time: plannedLeadTime, reason },
     });
 
-    // 리드타임을 바꾸면 결품 판정이 즉시 달라집니다. 관련 화면을 함께 갱신합니다.
+    // 리드타임을 바꾸면 결품 판정이 즉시 달라집니다. 캐시를 새로 계산하고 관련 화면을 함께 갱신합니다 (sql/37).
+    refreshPlanningCacheAfterResponse();
     revalidatePath('/admin/policies/leadtime');
     revalidatePath('/analysis/stockout');
     revalidatePath('/inventory-projection');

@@ -13,9 +13,11 @@ import { requireAdminOrThrow } from '@/lib/auth';
 import { writeAuditLog } from '@/lib/audit';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import type { PolicyActionState } from './state';
+import { refreshPlanningCacheAfterResponse } from '@/lib/planning-cache';
 
 /** 정책값이 달라지면 판정도 달라집니다. 관련 화면을 함께 갱신합니다 */
-function revalidateAll() {
+async function revalidateAll() {
+  refreshPlanningCacheAfterResponse();   // 서비스 수준 · Z 가 안전재고 캐시에 들어갑니다 (sql/37)
   revalidatePath('/admin/policies/service-level');
   revalidatePath('/admin/policies/safety-stock');
   revalidatePath('/purchase-recommendation');
@@ -137,7 +139,7 @@ export async function saveServiceLevel(
       after: { item_grade: itemGrade, service_level: serviceLevel, z_value: zValue, effective_from: effectiveFrom },
     });
 
-    revalidateAll();
+    await revalidateAll();
 
     return {
       error: null,
@@ -226,7 +228,7 @@ export async function saveItemPolicy(
       after,
     });
 
-    revalidateAll();
+    await revalidateAll();
 
     return { error: null, message: `${itemId} 의 정책을 저장했습니다.` };
   } catch (error) {

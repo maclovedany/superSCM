@@ -298,6 +298,10 @@ begin
     v_pr := core.prune_production_models(p_run_id);
   end if;
   v_runs := core.prune_forecast_runs();
+  -- ★ 계획 뷰 캐시 (sql/37 · error.md #36). 37 을 아직 안 돌렸으면 건너뜁니다.
+  if to_regproc('core.refresh_planning_cache') is not null then
+    perform core.refresh_planning_cache();
+  end if;
   return query select v_fc, v_dd, v_pr, v_runs;
 end;
 $$;

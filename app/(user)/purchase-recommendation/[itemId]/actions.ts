@@ -25,6 +25,7 @@ import {
   requiresApprovalReasonText,
 } from '@/lib/approval-model';
 import type { ApprovalActionState, OverrideActionState } from './state';
+import { refreshPlanningCacheAfterResponse } from '@/lib/planning-cache';
 
 /** 보정을 저장한 뒤 다시 그려야 하는 화면들. Consensus 가 이 화면들의 재료입니다 */
 function revalidateOverridePaths(): void {
@@ -115,6 +116,7 @@ export async function setOverride(
       },
     });
 
+    refreshPlanningCacheAfterResponse();   // Consensus 가 바뀌면 안전재고 · 추천 · 전개 캐시도 다시 (sql/37)
     revalidateOverridePaths();
     return { error: null, message: row?.message ?? '저장했습니다.' };
   } catch (error) {
@@ -158,6 +160,7 @@ export async function clearOverride(
       targetId: `${itemId} ${period}`,
     });
 
+    refreshPlanningCacheAfterResponse();   // Consensus 가 바뀌면 안전재고 · 추천 · 전개 캐시도 다시 (sql/37)
     revalidateOverridePaths();
     return { error: null, message: row?.message ?? '해제했습니다.' };
   } catch (error) {
@@ -268,6 +271,7 @@ export async function approveRecommendation(
       },
     });
 
+    refreshPlanningCacheAfterResponse();   // 승인 수량이 추천 · 대시보드 KPI 캐시에 들어갑니다 (sql/37)
     revalidateApprovalPaths();
     return { error: null, message: row?.message ?? '저장했습니다.' };
   } catch (error) {

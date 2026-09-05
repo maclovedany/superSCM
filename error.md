@@ -42,6 +42,7 @@
 | `Functions cannot be passed directly to Client Components` — 화면 500 | 서버 page.tsx 가 `'use client'` 차트에 함수 props(`hrefFor`)를 넘김 | [#33](#33-functions-cannot-be-passed-directly-to-client-components--서버가-차트에-함수를-넘겼습니다) |
 | 예측 실행이 11,000 품목에서 10분+ · `statement timeout` | 상관 서브쿼리 · CTE 인라인 · 방금 넣은 run 의 통계 없음 | [#34](#34-품목-11000개에서-실행-함수가-10분을-넘긴다--세-가지-원인) |
 | `cannot execute INSERT in a read-only transaction` · Supabase 디스크 723 MB / 500 MB | 실행마다 96만 행 × basis jsonb · 보조 인덱스 · 실행 3개가 동시에 | [#35](#35-cannot-execute-insert-in-a-read-only-transaction--예측-결과가-디스크를-채웠습니다) |
+| 모든 메뉴가 5초+ · 대시보드 `statement timeout` (실데이터 이후) | 계획 뷰가 요청마다 품목 6만 개 위에서 서로를 다시 계산 · work_mem 2 MB | [#36](#36-모든-메뉴가-5초-넘게-걸린다--계획-뷰를-요청마다-다시-계산했습니다) |
 
 > **Supabase 3층 구조를 먼저 기억하면 #3·#4·#5 를 헷갈리지 않습니다.**
 >
@@ -1052,3 +1053,66 @@ alter role postgres      set default_transaction_read_only = off;
 - 인덱스는 조회 패턴으로 정당화합니다. 기본키 앞 컬럼으로 시작하는 조회만 있으면 보조 인덱스는 비용입니다.
 - 오래 도는 실행 버튼은 서버가 409 로 거절하고, 화면은 서버 상태를 폴링해 "실행 중" 을 보여야 합니다. "완료" 는 실행 이력에 행이 생겼을 때만 씁니다.
 - Supabase 무료 플랜은 Database size 를 매주 한 번은 봅니다 (Settings → Usage). 400 MB 를 넘으면 다이어트나 플랜을 먼저 결정합니다.
+
+---
+
+## #36 모든 메뉴가 5초 넘게 걸린다 — 계획 뷰를 요청마다 다시 계산했습니다
+
+**증상** 실데이터(품목 62,592 · 예측 결과 110만 행) 전환 뒤, 어느 메뉴를 눌러도 5초 이상. 대시보드는
+`canceling statement due to statement timeout`(30초). 인증 왕복을 줄이고(요청당 5회 → 1회) 로딩 뼈대를 넣어도
+그대로였습니다 — 병은 화면이 아니라 **뷰**에 있었습니다.
+
+**재기** (운영 DB · `psql` · 1000행 표본 · postgres 롤)
+
+| 뷰 | 시간 | 이유 |
+|---|---|---|
+| `v_forecast_run_model` | 14~24초 | `forecast_result` 110만 행을 `group by` — 관리 실행 화면이 매번 |
+| `v_forecast_run_detail` | 8초 | 같은 표를 두 번 훑음 |
+| `v_dashboard_kpi` | 1.7~20초 | 안전재고 · 추천 · 결품을 **한 뷰 안에서 여러 번** 인라인 |
+| `v_sku_detail` | 5~40초 | 추천 + 안전재고 + 전개 + 승인 — 품목 1개를 보려고 6만 개를 계산 |
+| `v_purchase_recommendation` | 1.8~15초 | `v_stockout_risk` + `v_safety_stock` + `v_demand_window` 조인 |
+| 전체 116 뷰 합계 | 77초 | |
+
+같은 뷰가 혼자서는 0.5~2초인데 조합하면 15~20초가 되는 이유는 둘입니다.
+① PostgreSQL 은 뷰를 인라인하므로, 대시보드 KPI 가 추천 · 안전재고 · 결품을 각각 참조하면 그 아래
+`v_stockout_risk`(6만 행) 가 세 번 계산됩니다. ② Supabase 무료 인스턴스는 `work_mem = 2 MB` 라 6만 행 해시 조인이
+디스크로 넘칩니다(`temp read=264524`). 그리고 대시보드는 그런 뷰 6개를 **동시에** 부릅니다.
+
+**해결 — `sql/37-planning-cache.sql`** (계획 뷰 캐시)
+
+1. 무거운 층을 **materialized view 로 실체화**하되, 뷰 정의를 `pg_get_viewdef` 로 그대로 복사하고 원래 뷰는
+   `select * from mv` 로 바꿉니다(`core.__cache_view`). 컬럼이 같아 그 위의 뷰 29개와 화면 코드는 그대로입니다.
+   sql/29 가 영업 가림 뷰(`_src`)를 만든 것은 `_src` 를 실체화합니다.
+   대상: `v_inventory_projection` · `v_stockout_risk` · `v_demand_window` · `v_safety_stock(_src)` · `v_purchase_recommendation`
+   · `v_chart_demand_trend` · `v_chart_projection_total` · `v_dashboard_sparkline` · `v_item_demand_profile`
+   · `v_champion_model(_src)` · `v_shipment_trend` · `v_chart_usage_heatmap`.
+2. 실행 × 모델 통계는 `core.mv_forecast_run_stat` 하나로 두고 `v_forecast_run_model` · `v_forecast_run` · `v_forecast_run_detail`
+   이 그것을 읽습니다.
+3. `core.refresh_planning_cache(scope)` — `'ALL'` 은 실행이 끝날 때(`finalize_run_storage`) · pg_cron 매시간,
+   `'PLANNING'` 은 보정 · 승인 · 정책 저장 뒤 앱이 **응답을 보낸 뒤** `after()` 로 부릅니다(`lib/planning-cache.ts`).
+   이 인스턴스에서 PLANNING 은 15~20초, ALL 은 50초라 저장 버튼이 기다리게 할 수 없습니다.
+4. `alter role authenticated set work_mem = '16MB'` — 남은 실시간 뷰(SKU 상세 등)의 디스크 넘침을 막습니다.
+
+**결과** (운영 DB · `set role authenticated` · 1000행 표본)
+
+| 뷰 | 전 | 후 |
+|---|---|---|
+| `v_dashboard_kpi` | 1.7~20초 · 시간 초과 | 0.32초 |
+| `v_forecast_run_model` / `v_forecast_run_detail` | 24초 / 8초 | 0.01초 / 0.02초 |
+| `v_purchase_recommendation` | 1.8~15초 | 0.02초 |
+| `v_sku_detail` | 5~40초 | 1.0초 |
+| 화면 뷰 32개 중 1초 넘는 것 | 17개 | 1개 (`v_machine_bom_forecast` 1.0초) |
+| 전체 116 뷰 합계 | 77초 | 20초 |
+
+**대가** — 캐시는 새로 계산한 시각의 값입니다. 보정을 저장하면 Consensus 표(원본을 읽음)는 바로 바뀌고 안전재고 · 추천 ·
+대시보드는 수십 초 뒤에 바뀝니다. `analytics.v_planning_cache.refreshed_at` 이 기준 시각입니다. `current_date` 를 쓰는
+결품일 · 발주 창 계산은 날짜가 넘어가면 어긋나므로 **pg_cron** 을 켜 매시간 돌리는 것을 권합니다
+(Supabase → Database → Extensions → pg_cron, 그 뒤 37 을 다시 실행).
+
+**예방**
+- 품목 수 × 뷰 깊이가 커지면 "뷰 위의 뷰" 는 계산 비용이 **곱**으로 붙습니다. 두 곳 이상에서 참조되는 6만 행 뷰는
+  실체화합니다. #30 · #34 와 같은 뿌리입니다.
+- 원본 뷰(15 · 16 · 12 · 27 · 21 · 31 · 33)를 다시 돌리면 캐시 위에 올린 뷰가 원본으로 되돌아가 다시 느려집니다.
+  **그 뒤에는 37 을 다시 돌립니다** (`__cache_view` 는 이미 캐시를 읽는 뷰는 건너뜁니다).
+- 느리다는 말을 들으면 인증 · 프론트보다 먼저 `explain (analyze, buffers)` 를 봅니다. `temp read/written` 이 크면
+  work_mem, `loops` 가 크면 인라인된 뷰입니다.
