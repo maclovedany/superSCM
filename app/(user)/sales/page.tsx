@@ -12,6 +12,7 @@
 //   막아야 하는 것은 반대 방향(영업이 단가를 보는 것)이고, 그것은 뷰 정의로 막혀 있습니다.
 
 import Link from 'next/link';
+import { kstStamp } from '@/lib/time';
 import DataWaitBanner from '@/components/ui/data-wait-banner';
 import {
   CalendarClock,
@@ -84,7 +85,7 @@ const FILTERS: FilterSpec<SalesSupplyStatus>[] = [
 
 function dateText(value: string | null): string {
   if (value === null) return '—';
-  return new Date(value).toLocaleString('ko-KR');
+  return kstStamp(value) ?? '—';
 }
 
 /** 수량 칸. 값이 없으면 숫자를 지어내지 않습니다 (design.md §8.2) */

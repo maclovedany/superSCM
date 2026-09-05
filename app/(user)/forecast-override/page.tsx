@@ -12,6 +12,7 @@
 //   카드와 목록이 어긋날 수 없습니다. 보정이 200건을 넘으면 양쪽이 함께 잘립니다.
 
 import Link from 'next/link';
+import { kstMinute } from '@/lib/time';
 import { CalendarPlus, PencilLine, RotateCcw, Sparkles } from 'lucide-react';
 import PageHeader, { MetaChip } from '@/components/shell/page-header';
 import KpiCard from '@/components/ui/kpi-card';
@@ -51,7 +52,7 @@ function monthOf(period: string): string {
 /** 'YYYY-MM-DD HH:MM' — 초까지는 필요 없습니다 */
 function stamp(value: string | null): string | null {
   if (value === null) return null;
-  return value.slice(0, 16).replace('T', ' ');
+  return kstMinute(value);
 }
 
 /**

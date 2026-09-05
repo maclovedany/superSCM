@@ -169,6 +169,13 @@ def pipeline_run(body: PipelineRunRequest, background: BackgroundTasks) -> dict:
         raise HTTPException(status_code=400, detail="mode 는 VALIDATION 또는 PRODUCTION 이어야 합니다")
     if not db.is_configured():
         raise HTTPException(status_code=400, detail="DATABASE_URL 이 설정되지 않았습니다")
+    # ★ 한 번에 하나. 버튼을 여러 번 누르면 같은 DB 에서 실행 여러 개가 겹쳐 전부 느려지고 결과도 여럿 생깁니다.
+    running = pipeline.running_pipeline()
+    if running is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"이미 실행 중인 파이프라인이 있습니다 ({running['run_id']} · {running.get('stage')}). 끝난 뒤 다시 누르세요.",
+        )
     job_id = pipeline.new_pipeline_id()
     pipeline.set_job(job_id, status="RUNNING", mode=mode, stage="QUEUED", message="대기 중입니다")
     background.add_task(pipeline.run_full, job_id, mode, body.note, body.models)

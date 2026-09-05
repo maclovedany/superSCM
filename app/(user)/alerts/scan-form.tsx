@@ -5,6 +5,7 @@
 // 스케줄러가 6시간마다 돌지만, 데이터를 방금 올린 뒤 바로 보고 싶을 때가 있습니다.
 
 import { useActionState } from 'react';
+import { kstStamp } from '@/lib/time';
 import { RadarIcon, TriangleAlert } from 'lucide-react';
 import { scanAlertsNow } from './actions';
 import { EMPTY_ALERT_ACTION } from './state';
@@ -21,7 +22,7 @@ export default function ScanForm({ lastScanAt }: { lastScanAt: string | null }) 
         </button>
         <span className="t-sm text-3">
           {lastScanAt
-            ? `마지막 스캔 ${new Date(lastScanAt).toLocaleString('ko-KR')}`
+            ? `마지막 스캔 ${kstStamp(lastScanAt)}`
             : '아직 스캔한 적이 없습니다'}
           {' · 스케줄러는 6시간마다 돕니다'}
         </span>

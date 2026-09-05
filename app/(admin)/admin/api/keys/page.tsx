@@ -6,6 +6,7 @@
 // 어느 키인지는 앞 8자(key_prefix)로 대조합니다.
 
 import { KeyRound, ShieldCheck, Clock, Ban } from 'lucide-react';
+import { kstMinute } from '@/lib/time';
 import PageHeader, { MetaChip } from '@/components/shell/page-header';
 import KpiCard from '@/components/ui/kpi-card';
 import Panel from '@/components/ui/panel';
@@ -58,7 +59,7 @@ function day(value: string | null) {
 }
 
 function minute(value: string | null) {
-  return value ? value.slice(0, 16).replace('T', ' ') : null;
+  return value ? kstMinute(value) : null;
 }
 
 const COLUMNS: Column<ApiKeyRow>[] = [

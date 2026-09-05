@@ -16,6 +16,7 @@
 // 지표입니다. 좁힐 목록 자체가 없습니다 (design.md §6.4 · AGENTS.md 규칙 9).
 
 import Link from 'next/link';
+import { kstMinute } from '@/lib/time';
 import DataWaitBanner from '@/components/ui/data-wait-banner';
 import { notFound } from 'next/navigation';
 import {
@@ -750,7 +751,7 @@ function OrderSection({
 
 /** 'YYYY-MM-DDTHH:MM:SS…' 을 분 단위까지만 보여줍니다 */
 function stamp(value: string | null): string | null {
-  return value === null ? null : value.slice(0, 16).replace('T', ' ');
+  return value === null ? null : kstMinute(value);
 }
 
 function ApprovalSection({

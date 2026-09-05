@@ -6,6 +6,7 @@
 // 계산은 전부 core.scan_alerts() 가 끝냈습니다. 이 화면은 조회와 표시만 합니다.
 
 import Link from 'next/link';
+import { kstStamp } from '@/lib/time';
 import { Bell, BellRing, CircleAlert, Info, TriangleAlert } from 'lucide-react';
 import PageHeader, { MetaChip } from '@/components/shell/page-header';
 import KpiCard from '@/components/ui/kpi-card';
@@ -68,7 +69,7 @@ const FILTERS: FilterSpec<AlertItem>[] = [
 
 function dateText(value: string | null): string {
   if (value === null) return '—';
-  return new Date(value).toLocaleString('ko-KR');
+  return kstStamp(value) ?? '—';
 }
 
 const historyColumns: Column<AlertHistoryItem>[] = [

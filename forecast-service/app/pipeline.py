@@ -566,6 +566,15 @@ def execute(run_id: str, created: bool, only: list[str] | None = None) -> dict:
 #   돌려줍니다.
 
 
+def running_pipeline() -> dict | None:
+    """지금 돌고 있는 파이프라인 job. 없으면 None. 같은 DB 에 두 실행이 겹치면 서로 느려지고 결과도 둘 생깁니다."""
+    with _JOBS_LOCK:
+        for job in _JOBS.values():
+            if str(job.get("run_id", "")).startswith("pipe_") and job.get("status") == "RUNNING":
+                return dict(job)
+    return None
+
+
 def new_pipeline_id() -> str:
     now = _now()
     return f"pipe_{now.strftime('%Y%m%d%H%M%S')}_{now.microsecond // 1000:03d}"

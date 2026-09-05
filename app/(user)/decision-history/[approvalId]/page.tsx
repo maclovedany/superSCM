@@ -11,6 +11,7 @@
 // (design.md §6.4 · AGENTS.md 규칙 9).
 
 import Link from 'next/link';
+import { kstMinute } from '@/lib/time';
 import { notFound } from 'next/navigation';
 import PageHeader, { MetaChip } from '@/components/shell/page-header';
 import Panel from '@/components/ui/panel';
@@ -49,7 +50,7 @@ function monthOf(period: string): string {
 
 /** 'YYYY-MM-DDTHH:MM:SS…' 을 분 단위까지만 보여줍니다 */
 function stamp(value: string | null): string | null {
-  return value === null ? null : value.slice(0, 16).replace('T', ' ');
+  return value === null ? null : kstMinute(value);
 }
 
 export default async function ApprovalSnapshotPage({

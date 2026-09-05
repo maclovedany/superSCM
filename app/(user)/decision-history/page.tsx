@@ -12,6 +12,7 @@
 // 화면 · CSV · AI Agent 가 같은 문장을 써야 근거가 흔들리지 않습니다 (AGENTS.md 규칙 2).
 
 import Link from 'next/link';
+import { kstMinute } from '@/lib/time';
 import { CheckCircle2, Clock, ListChecks, PencilLine, XCircle } from 'lucide-react';
 import PageHeader, { MetaChip } from '@/components/shell/page-header';
 import KpiCard from '@/components/ui/kpi-card';
@@ -36,7 +37,7 @@ export const dynamic = 'force-dynamic';
 
 /** 'YYYY-MM-DDTHH:MM:SS…' 을 분 단위까지만 보여줍니다 */
 function stamp(value: string | null): string | null {
-  return value === null ? null : value.slice(0, 16).replace('T', ' ');
+  return value === null ? null : kstMinute(value);
 }
 
 export default async function DecisionHistoryPage({

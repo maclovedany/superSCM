@@ -26,6 +26,7 @@
 //     합계 카드(총 추천 수량 · 금액)는 좁힐 대상이 없어 필터 없이 목록으로 보냅니다.
 
 import Link from 'next/link';
+import { kstStamp } from '@/lib/time';
 import StaleBanner from '@/components/ui/stale-banner';
 import {
   Activity,
@@ -105,7 +106,7 @@ function dateText(value: string | null): string | null {
 
 function stampText(value: string | null): string | null {
   if (value === null) return null;
-  return new Date(value).toLocaleString('ko-KR');
+  return kstStamp(value) ?? '—';
 }
 
 /** 지연 일수 문구. 양수면 지났고 음수면 남았습니다 */

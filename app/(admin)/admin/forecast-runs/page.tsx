@@ -4,6 +4,7 @@
 //  같은 스냅샷과 같은 버전으로 재실행하면 동일한 결과가 나와야 한다."
 
 import Link from 'next/link';
+import { kstMinute } from '@/lib/time';
 import { AlertTriangle, CheckCircle2, ChevronRight, PlayCircle, Timer } from 'lucide-react';
 import PageHeader, { MetaChip } from '@/components/shell/page-header';
 import KpiCard from '@/components/ui/kpi-card';
@@ -112,7 +113,7 @@ const columns: Column<ForecastRun>[] = [
     label: '실행 시각',
     align: 'right',
     variant: 'num',
-    render: (row) => (row.startedAt ? row.startedAt.slice(0, 16).replace('T', ' ') : '—'),
+    render: (row) => (row.startedAt ? kstMinute(row.startedAt) : '—'),
   },
   {
     key: 'triggeredEmail',

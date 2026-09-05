@@ -1,6 +1,7 @@
 // 적재 이력 — renew.prd 8.5
 
 import { Database, FileCheck2, RotateCcw } from 'lucide-react';
+import { kstMinute } from '@/lib/time';
 import PageHeader, { MetaChip } from '@/components/shell/page-header';
 import KpiCard from '@/components/ui/kpi-card';
 import Panel from '@/components/ui/panel';
@@ -92,7 +93,7 @@ function columnsFor(dataSnapshotAt: string | null, isStale: boolean): Column<Imp
     label: '올린 시각',
     align: 'right',
     variant: 'num',
-    render: (row) => (row.uploadedAt ? row.uploadedAt.slice(0, 16).replace('T', ' ') : '—'),
+    render: (row) => (row.uploadedAt ? kstMinute(row.uploadedAt) : '—'),
   },
   {
     key: 'rollback',

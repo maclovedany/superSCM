@@ -155,3 +155,12 @@ def test_time_budget_skips_small_items_first(monkeypatch):
     assert summary["n_time_budget"] > 0
     assert "TIME_BUDGET" in summary["skipped"]["_budget"]
     assert summary["n_items"] + summary["n_time_budget"] == 30
+
+
+def test_running_pipeline_is_detected_and_cleared():
+    with pipeline._JOBS_LOCK:
+        pipeline._JOBS.clear()          # 앞 테스트가 남긴 RUNNING job 과 섞이지 않게
+    pipeline.set_job("pipe_busy", status="RUNNING", stage="PYTHON")
+    assert pipeline.running_pipeline()["run_id"] == "pipe_busy"
+    pipeline.set_job("pipe_busy", status="SUCCESS", stage="DONE")
+    assert pipeline.running_pipeline() is None

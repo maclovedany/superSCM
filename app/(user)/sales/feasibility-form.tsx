@@ -11,6 +11,7 @@
 // 이 컴포넌트는 그 결과를 그리기만 합니다 (AGENTS.md 규칙 2).
 
 import { useActionState } from 'react';
+import { kstStamp } from '@/lib/time';
 import { CalendarCheck, Lock, TriangleAlert } from 'lucide-react';
 import Badge from '@/components/ui/badge';
 import EmptyValue from '@/components/ui/empty-value';
@@ -123,7 +124,7 @@ function ResultCard({ result }: { result: Feasibility }) {
 
         {result.dataSnapshotAt && (
           <p className="t-label text-3">
-            데이터 기준 {new Date(result.dataSnapshotAt).toLocaleString('ko-KR')}
+            데이터 기준 {kstStamp(result.dataSnapshotAt)}
           </p>
         )}
       </div>

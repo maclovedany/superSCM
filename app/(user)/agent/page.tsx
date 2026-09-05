@@ -7,6 +7,7 @@
 //   아무 영향도 받지 않습니다 (renew.prd 31.4).
 
 import Link from 'next/link';
+import { kstMinute } from '@/lib/time';
 import { Clock, MessageSquare, Sparkles, Wrench } from 'lucide-react';
 import PageHeader, { MetaChip } from '@/components/shell/page-header';
 import Panel from '@/components/ui/panel';
@@ -267,7 +268,7 @@ export default async function AgentPage({
                     {item.title ?? '제목 없음'}
                   </span>
                   <span className="t-label text-3">
-                    <Clock size={11} aria-hidden /> {item.lastAt?.slice(0, 16).replace('T', ' ') ?? '—'}
+                    <Clock size={11} aria-hidden /> {kstMinute(item.lastAt) ?? '—'}
                   </span>
                 </Link>
               ))}

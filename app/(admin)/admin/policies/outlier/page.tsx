@@ -11,6 +11,7 @@
 // 표(제외 목록)의 지표라 첫 표를 좁힐 수 없어 filter 를 주지 않습니다 (design.md §6.4).
 
 import { Ban, ListFilter, Scissors, ShieldCheck } from 'lucide-react';
+import { kstMinute } from '@/lib/time';
 import PageHeader, { MetaChip } from '@/components/shell/page-header';
 import KpiCard from '@/components/ui/kpi-card';
 import Panel from '@/components/ui/panel';
@@ -153,7 +154,7 @@ function exclusionColumns(canEdit: boolean): Column<OutlierExclusionRow>[] {
       label: '뺀 시각',
       align: 'right',
       variant: 'num',
-      render: (row) => (row.excludedAt ? row.excludedAt.slice(0, 16).replace('T', ' ') : '—'),
+      render: (row) => (row.excludedAt ? kstMinute(row.excludedAt) : '—'),
     },
     ...(canEdit
       ? [

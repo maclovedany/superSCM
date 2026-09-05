@@ -9,6 +9,7 @@
 // (analytics.v_model_version).
 
 import { Boxes, History, Layers, PowerOff } from 'lucide-react';
+import { kstMinute } from '@/lib/time';
 import PageHeader, { MetaChip } from '@/components/shell/page-header';
 import KpiCard from '@/components/ui/kpi-card';
 import Panel from '@/components/ui/panel';
@@ -86,7 +87,7 @@ const columns: Column<ModelVersionRow>[] = [
       row.lastUsedAt === null ? (
         <span className="text-3">—</span>
       ) : (
-        row.lastUsedAt.slice(0, 16).replace('T', ' ')
+        kstMinute(row.lastUsedAt)
       ),
   },
   {
