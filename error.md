@@ -955,6 +955,8 @@ Uncaught Error: Functions cannot be passed directly to Client Components unless 
 | `run_baseline_forecast` VALIDATION | 10분+ (시간 초과) | 11초 |
 | `run_baseline_forecast` PRODUCTION | 10분+ (시간 초과) | 12초 |
 | `refresh_forecast_current` (실행 직후) | 5분+ | 1초 |
+| `run_backtest` (모델 12종 · 결과 표 350만 행) | 9분 26초 | 7초 |
+| Python 서비스 전체 파이프라인 (SQL 5 + Python 7 + 실체화 + 백테스트) | — | 6분 44초 (LightGBM 예산 240초) |
 
 **예방**
 - 함수 안의 CTE 는 **기본으로 `materialized`** 를 씁니다. 인라인이 이득인 경우는 드물고, 손해는 10분 단위입니다.

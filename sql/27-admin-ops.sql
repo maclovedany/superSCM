@@ -644,6 +644,8 @@ create or replace function core.run_backtest(
 returns table (backtest_run_id text, n_models int, n_items int, n_rows int, message text)
 language plpgsql
 security definer
+-- ★ enable_nestloop off — 방금 쌓인 run 의 통계가 없을 때 계획기가 Nested Loop 를 골라 10분을 넘깁니다 (error.md #34)
+set enable_nestloop = off
 set search_path = core, public
 as $$
 declare
@@ -708,7 +710,10 @@ begin
   -- 예측과 실적이 같은 기간에 둘 다 있을 때만 채점합니다.
   -- 겹치는 기간이 없으면 행을 만들지 않습니다.
 
-  with matched as (
+  -- 방금 쌓인 결과의 통계를 먼저 갱신합니다 (error.md #34).
+  analyze core.forecast_result;
+
+  with matched as materialized (
     select f.model_id, f.model_version, f.item_id, f.period,
            f.predicted_qty as fcst,
            a.quantity      as actual
@@ -718,7 +723,7 @@ begin
      where f.run_id = fr.run_id
        and f.predicted_qty is not null
   ),
-  agg as (
+  agg as materialized (
     select
       model_id, model_version, item_id,
       count(*)                                   as n_periods,
