@@ -8,10 +8,10 @@ import { Bar, BarChart, CartesianGrid, Cell, ReferenceLine, ResponsiveContainer,
 import { CHART_TOKENS, SERIES_COLORS, STATUS_COLORS } from '@/lib/chart-colors';
 import { formatValue, qtyTick } from '@/lib/chart-format';
 import type { AdjustmentBar } from '@/lib/chart-model';
-import { clickedPayload } from './_base/click';
+import { clickedPayload, fillHref } from './_base/click';
 import ChartTooltip from './_base/tooltip';
 
-export default function DecisionAdjustment({ bars, hrefFor, height = 240 }: { bars: AdjustmentBar[]; hrefFor: (refId: string) => string; height?: number }) {
+export default function DecisionAdjustment({ bars, hrefTemplate, height = 240 }: { bars: AdjustmentBar[]; hrefTemplate: string; height?: number }) {
   const router = useRouter();
   const data = bars.map((b) => ({ ...b, key: `${b.refId}` }));
   return (
@@ -22,7 +22,7 @@ export default function DecisionAdjustment({ bars, hrefFor, height = 240 }: { ba
           <XAxis type="number" tickFormatter={qtyTick} tick={{ fill: CHART_TOKENS.axis, fontSize: 11 }} tickLine={false} axisLine={false} />
           <YAxis type="category" dataKey="label" width={96} tick={{ fill: CHART_TOKENS.axis, fontSize: 11 }} tickLine={false} axisLine={false} />
           <ReferenceLine x={0} stroke={CHART_TOKENS.markerLine} />
-          <Bar dataKey="adjustment" name="조정량" isAnimationActive={false} radius={2} onClick={(entry) => { const b = clickedPayload<AdjustmentBar>(entry); if (b) router.push(hrefFor(b.refId)); }}>
+          <Bar dataKey="adjustment" name="조정량" isAnimationActive={false} radius={2} onClick={(entry) => { const b = clickedPayload<AdjustmentBar>(entry); if (b) router.push(fillHref(hrefTemplate, b.refId)); }}>
             {data.map((b) => (<Cell key={b.key} fill={b.adjustment > 0 ? SERIES_COLORS[0] : STATUS_COLORS.WARNING} />))}
           </Bar>
           <Tooltip

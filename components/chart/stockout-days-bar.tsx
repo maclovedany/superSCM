@@ -8,7 +8,7 @@ import { useRouter } from 'next/navigation';
 import { Bar, BarChart, CartesianGrid, Cell, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { CHART_TOKENS, STATUS_COLORS } from '@/lib/chart-colors';
 import type { StockoutBar } from '@/lib/chart-model';
-import { clickedPayload } from './_base/click';
+import { clickedPayload, fillHref } from './_base/click';
 import ChartTooltip from './_base/tooltip';
 
 const STATUS_LABEL: Record<string, string> = {
@@ -24,15 +24,16 @@ function statusColor(status: string): string {
 
 export default function StockoutDaysBar({
   bars,
-  hrefFor,
+  hrefTemplate,
   height = 240,
 }: {
   bars: StockoutBar[];
-  hrefFor: (itemId: string) => string;
+  /** 이동 주소 템플릿. {id} 가 품목·공급처·모델 ID 로 치환됩니다 (서버는 함수를 넘길 수 없습니다) */
+  hrefTemplate: string;
   height?: number;
 }) {
   const router = useRouter();
-  const go = (entry: unknown) => { const b = clickedPayload<StockoutBar>(entry); if (b) router.push(hrefFor(b.itemId)); };
+  const go = (entry: unknown) => { const b = clickedPayload<StockoutBar>(entry); if (b) router.push(fillHref(hrefTemplate, b.itemId)); };
   return (
     <>
       <div className="chart-legend" style={{ marginBottom: 'var(--s-3)' }}>

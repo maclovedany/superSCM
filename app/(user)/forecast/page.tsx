@@ -315,7 +315,7 @@ export default async function ForecastPage({
         <ForecastModelTotals
           models={modelTotals}
           activeModelId={activeModel}
-          hrefFor={(modelId) => `?model=${encodeURIComponent(modelId)}${activeItem ? `&item=${encodeURIComponent(activeItem)}` : ''}`}
+          hrefTemplate={`?model={id}${activeItem ? `&item=${encodeURIComponent(activeItem)}` : ''}`}
         />
       </ChartFrame>
 

@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 import { Bar, BarChart, CartesianGrid, Cell, LabelList, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { CHART_TOKENS, colorMap } from '@/lib/chart-colors';
 import { formatValue, qtyTick } from '@/lib/chart-format';
-import { clickedPayload } from './_base/click';
+import { clickedPayload, fillHref } from './_base/click';
 import ChartTooltip from './_base/tooltip';
 
 export type ModelTotal = { modelId: string; label: string; totalQty: number | null; rows: number; items: number };
@@ -15,12 +15,13 @@ export type ModelTotal = { modelId: string; label: string; totalQty: number | nu
 export default function ForecastModelTotals({
   models,
   activeModelId,
-  hrefFor,
+  hrefTemplate,
   height = 240,
 }: {
   models: ModelTotal[];
   activeModelId: string | null;
-  hrefFor: (modelId: string) => string;
+  /** 이동 주소 템플릿. {id} 가 품목·공급처·모델 ID 로 치환됩니다 (서버는 함수를 넘길 수 없습니다) */
+  hrefTemplate: string;
   height?: number;
 }) {
   const router = useRouter();
@@ -33,7 +34,7 @@ export default function ForecastModelTotals({
           <CartesianGrid stroke={CHART_TOKENS.grid} strokeDasharray="4 4" vertical={false} />
           <XAxis dataKey="label" tick={{ fill: CHART_TOKENS.axis, fontSize: 11 }} tickLine={false} axisLine={{ stroke: CHART_TOKENS.grid }} interval={0} />
           <YAxis tickFormatter={qtyTick} tick={{ fill: CHART_TOKENS.axis, fontSize: 11 }} tickLine={false} axisLine={false} width={48} />
-          <Bar dataKey="totalQty" name="예측 합계" isAnimationActive={false} radius={[4, 4, 0, 0]} onClick={(entry) => { const m = clickedPayload<ModelTotal>(entry); if (m) router.push(hrefFor(m.modelId)); }}>
+          <Bar dataKey="totalQty" name="예측 합계" isAnimationActive={false} radius={[4, 4, 0, 0]} onClick={(entry) => { const m = clickedPayload<ModelTotal>(entry); if (m) router.push(fillHref(hrefTemplate, m.modelId)); }}>
             {data.map((m) => (
               <Cell key={m.modelId} fill={colors[m.modelId]} fillOpacity={activeModelId === null || m.modelId === activeModelId ? 1 : 0.35} stroke={m.modelId === activeModelId ? CHART_TOKENS.markerLine : 'none'} />
             ))}

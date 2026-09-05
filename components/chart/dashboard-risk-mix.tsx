@@ -13,12 +13,12 @@ import ChartTooltip from './_base/tooltip';
 
 export default function DashboardRiskMix({
   slices,
-  hrefFor,
+  hrefs = {},
   height = 240,
 }: {
   slices: RiskMixSlice[];
-  /** 상태를 눌렀을 때 갈 곳. null 이면 누를 수 없습니다 */
-  hrefFor: (key: RiskMixKey) => string | null;
+  /** 키 → 이동 주소. 없는 키는 누를 수 없습니다 (서버는 함수를 넘길 수 없어 맵으로 받습니다) */
+  hrefs?: Partial<Record<RiskMixKey, string>>;
   height?: number;
 }) {
   const router = useRouter();
@@ -28,7 +28,7 @@ export default function DashboardRiskMix({
   const total = slices.reduce((sum, s) => sum + s.n, 0);
 
   const go = (key: RiskMixKey) => {
-    const href = hrefFor(key);
+    const href = hrefs[key];
     if (href) router.push(href);
   };
 
@@ -73,7 +73,7 @@ export default function DashboardRiskMix({
       {/* 색만으로 읽지 않도록 상태 글자와 건수를 아래 칩으로 둡니다 */}
       <div className="chart-legend">
         {slices.map((slice) => {
-          const href = hrefFor(slice.key);
+          const href = hrefs[slice.key];
           const inner = (
             <>
               <span className="chart-legend-swatch" style={{ background: STATUS_COLORS[slice.key] }} />

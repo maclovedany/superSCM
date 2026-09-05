@@ -37,9 +37,7 @@ import { getAlertDaily, getAlertTypeMix } from '@/lib/charts';
 import { pivotAlertTypeMix } from '@/lib/chart-model';
 
 /** 유형 막대 → 이 화면의 카드 필터. FilterSpec 에 있는 유형 키는 excess 하나입니다 */
-function alertTypeFilterHref(type: string): string | null {
-  return type === 'EXCESS_INVENTORY' ? '?filter=excess' : null;
-}
+const ALERT_TYPE_HREFS: Record<string, string> = { EXCESS_INVENTORY: '?filter=excess' };
 import AcknowledgeForm from './acknowledge-form';
 
 export const dynamic = 'force-dynamic';
@@ -244,7 +242,7 @@ export default async function AlertsPage({
           error={typeMix.error}
           empty={typeMix.rows.length === 0 ? '열린 알림이 없습니다' : null}
         >
-          <AlertsTypeMix stacks={pivotAlertTypeMix(typeMix.rows)} hrefFor={alertTypeFilterHref} />
+          <AlertsTypeMix stacks={pivotAlertTypeMix(typeMix.rows)} hrefs={ALERT_TYPE_HREFS} />
         </ChartFrame>
         <ChartFrame
           title="최근 30일 발생 · 해결"

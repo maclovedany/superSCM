@@ -8,17 +8,18 @@ import { Bar, BarChart, CartesianGrid, Cell, ReferenceLine, ResponsiveContainer,
 import { CHART_TOKENS, STATUS_COLORS } from '@/lib/chart-colors';
 import { pctTick } from '@/lib/chart-format';
 import type { ImprovementBar } from '@/lib/chart-model';
-import { clickedPayload } from './_base/click';
+import { clickedPayload, fillHref } from './_base/click';
 import ChartTooltip from './_base/tooltip';
 
 export default function EvaluationImprovement({
   bars,
-  hrefFor,
+  hrefTemplate,
   limit = 20,
   height = 240,
 }: {
   bars: ImprovementBar[];
-  hrefFor: (itemId: string) => string;
+  /** 이동 주소 템플릿. {id} 가 품목·공급처·모델 ID 로 치환됩니다 (서버는 함수를 넘길 수 없습니다) */
+  hrefTemplate: string;
   limit?: number;
   height?: number;
 }) {
@@ -32,7 +33,7 @@ export default function EvaluationImprovement({
           <XAxis type="number" tickFormatter={pctTick} tick={{ fill: CHART_TOKENS.axis, fontSize: 11 }} tickLine={false} axisLine={false} />
           <YAxis type="category" dataKey="label" width={96} tick={{ fill: CHART_TOKENS.axis, fontSize: 11 }} tickLine={false} axisLine={false} />
           <ReferenceLine x={0} stroke={CHART_TOKENS.markerLine} />
-          <Bar dataKey="improvement" name="개선율" isAnimationActive={false} radius={2} onClick={(entry) => { const b = clickedPayload<ImprovementBar>(entry); if (b) router.push(hrefFor(b.itemId)); }}>
+          <Bar dataKey="improvement" name="개선율" isAnimationActive={false} radius={2} onClick={(entry) => { const b = clickedPayload<ImprovementBar>(entry); if (b) router.push(fillHref(hrefTemplate, b.itemId)); }}>
             {data.map((b) => (<Cell key={b.itemId} fill={b.improvement >= 0 ? STATUS_COLORS.SAFE : STATUS_COLORS.CRITICAL} />))}
           </Bar>
           <Tooltip

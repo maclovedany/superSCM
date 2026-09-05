@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 import { CartesianGrid, Cell, Label, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from 'recharts';
 import { CHART_TOKENS, SERIES_COLORS, STATUS_COLORS } from '@/lib/chart-colors';
 import { QUADRANT_ADI, QUADRANT_CV2, type QuadrantPoint } from '@/lib/chart-model';
-import { clickedPayload } from './_base/click';
+import { clickedPayload, fillHref } from './_base/click';
 import ChartTooltip from './_base/tooltip';
 
 export const DEMAND_TYPE_COLOR: Record<string, string> = {
@@ -24,11 +24,12 @@ const TYPE_LABEL: Record<string, string> = {
 
 export default function DemandQuadrant({
   points,
-  hrefFor,
+  hrefTemplate,
   height = 240,
 }: {
   points: QuadrantPoint[];
-  hrefFor: (itemId: string) => string;
+  /** 이동 주소 템플릿. {id} 가 품목·공급처·모델 ID 로 치환됩니다 (서버는 함수를 넘길 수 없습니다) */
+  hrefTemplate: string;
   height?: number;
 }) {
   const router = useRouter();
@@ -58,7 +59,7 @@ export default function DemandQuadrant({
             <ReferenceLine y={QUADRANT_CV2} stroke={CHART_TOKENS.markerLine} strokeDasharray="3 3">
               <Label value="CV² 0.49" position="insideBottomRight" fill={CHART_TOKENS.axis} fontSize={10} />
             </ReferenceLine>
-            <Scatter data={points} isAnimationActive={false} onClick={(entry) => { const p = clickedPayload<QuadrantPoint>(entry); if (p) router.push(hrefFor(p.itemId)); }}>
+            <Scatter data={points} isAnimationActive={false} onClick={(entry) => { const p = clickedPayload<QuadrantPoint>(entry); if (p) router.push(fillHref(hrefTemplate, p.itemId)); }}>
               {points.map((p) => (
                 <Cell key={p.itemId} fill={DEMAND_TYPE_COLOR[p.demandType ?? ''] ?? STATUS_COLORS.UNKNOWN} fillOpacity={0.85} />
               ))}

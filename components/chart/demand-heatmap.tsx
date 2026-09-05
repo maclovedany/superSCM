@@ -8,6 +8,7 @@ import { useRouter } from 'next/navigation';
 import { SERIES_COLORS } from '@/lib/chart-colors';
 import { formatValue, monthTick } from '@/lib/chart-format';
 import type { HeatmapRow } from '@/lib/chart-model';
+import { fillHref } from './_base/click';
 
 const BASE = SERIES_COLORS[0];
 
@@ -21,13 +22,14 @@ function shade(qty: number | null, max: number | null): string {
 export default function DemandHeatmap({
   periods,
   rows,
-  hrefFor,
+  hrefTemplate,
   selectedItemId = null,
   maxRows = 40,
 }: {
   periods: string[];
   rows: HeatmapRow[];
-  hrefFor: (itemId: string) => string;
+  /** 이동 주소 템플릿. {id} 가 품목·공급처·모델 ID 로 치환됩니다 (서버는 함수를 넘길 수 없습니다) */
+  hrefTemplate: string;
   selectedItemId?: string | null;
   maxRows?: number;
 }) {
@@ -45,7 +47,7 @@ export default function DemandHeatmap({
             type="button"
             className={`heatmap-label${selectedItemId === row.itemId ? ' selected' : ''}`}
             title={row.label}
-            onClick={() => router.push(hrefFor(row.itemId))}
+            onClick={() => router.push(fillHref(hrefTemplate, row.itemId))}
           >
             {row.label}
           </button>
@@ -55,7 +57,7 @@ export default function DemandHeatmap({
               className="heatmap-cell"
               style={{ background: shade(cell.qty, row.max) }}
               title={`${row.label} · ${monthTick(cell.period)} · ${formatValue(cell.qty, 'qty')}`}
-              onClick={() => router.push(hrefFor(row.itemId))}
+              onClick={() => router.push(fillHref(hrefTemplate, row.itemId))}
             />
           ))}
         </div>

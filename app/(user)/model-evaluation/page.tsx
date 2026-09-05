@@ -256,7 +256,7 @@ export default async function ModelEvaluationPage({
           desc="부정확한 품목이 위 · 상위 20 · 옅은 막대는 수동 지정 · 누르면 모델 비교"
           empty={rows.every((r) => r.wape === null) ? '채점된 품목이 없습니다' : null}
         >
-          <EvaluationWapeBars bars={toWapeBars(rows)} hrefFor={(id) => `/model-comparison?item=${encodeURIComponent(id)}`} />
+          <EvaluationWapeBars bars={toWapeBars(rows)} hrefTemplate="/model-comparison?item={id}" />
         </ChartFrame>
         <ChartFrame
           title="모델별 Champion 점유"
@@ -271,7 +271,7 @@ export default async function ModelEvaluationPage({
           desc="이동평균 3개월 대비 · 음수는 베이스라인이 더 맞은 품목 · 하위 20"
           empty={toImprovementBars(rows).length === 0 ? '개선율을 낸 품목이 없습니다' : null}
         >
-          <EvaluationImprovement bars={toImprovementBars(rows)} hrefFor={(id) => `/model-comparison?item=${encodeURIComponent(id)}`} />
+          <EvaluationImprovement bars={toImprovementBars(rows)} hrefTemplate="/model-comparison?item={id}" />
         </ChartFrame>
       </div>
 

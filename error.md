@@ -39,6 +39,7 @@
 | `'temperature' does not support 0 with this model` | 모델이 기본값 외 temperature 를 거절 | [#29](#29-temperature-does-not-support-0-with-this-model--모델이-기본값만-받습니다) |
 | `Encountered two children with the same key, 'SEASONAL_NAIVE'` — 모델 비교 표에 같은 모델이 여러 줄 | `v_model_performance` 가 백테스트 run 을 거르지 않음 | [#31](#31-encountered-two-children-with-the-same-key--모델-비교-표에-같은-모델이-run-수만큼-반복됩니다) |
 | `… 에 없는 컬럼을 가리려 했습니다: …` (P0001, sql/29) | 앞 파일의 뷰가 `16` 의 cascade 로 지워진 채 `29` 를 돌림 | [#32](#32-에-없는-컬럼을-가리려-했습니다--앞-파일의-뷰가-cascade-로-지워진-채-29-를-돌렸습니다) |
+| `Functions cannot be passed directly to Client Components` — 화면 500 | 서버 page.tsx 가 `'use client'` 차트에 함수 props(`hrefFor`)를 넘김 | [#33](#33-functions-cannot-be-passed-directly-to-client-components--서버가-차트에-함수를-넘겼습니다) |
 
 > **Supabase 3층 구조를 먼저 기억하면 #3·#4·#5 를 헷갈리지 않습니다.**
 >
@@ -907,4 +908,28 @@ done
 **예방**
 - `29` 와 `28` 은 **항상 맨 끝**입니다. 앞 파일을 하나라도 다시 돌렸으면 그 뒤 번호를 전부 거쳐 `29 → 28` 로 끝내세요.
 - 재적용 안내를 쓸 때는 "어디까지 적용된 상태에서" 시작하는지 **전제를 함께** 적습니다.
+
+---
+
+## #33 `Functions cannot be passed directly to Client Components` — 서버가 차트에 함수를 넘겼습니다
+
+**증상** `/dashboard` 가 500 이고 브라우저 콘솔에
+
+```
+Uncaught Error: Functions cannot be passed directly to Client Components unless you explicitly expose it by marking it with "use server".
+  <... slices={[...]} hrefFor={function riskHref}>
+```
+
+`npx tsc --noEmit` 도 `npm run build` 도 통과했습니다. 동적 페이지는 요청이 와야 렌더되기 때문입니다.
+
+**원인** 서버 컴포넌트(page.tsx)가 `'use client'` 차트에 `hrefFor={(id) => …}` 같은 **함수**를 props 로 넘겼습니다. React Server Components 는 서버 → 클라이언트 props 를 직렬화해 보내므로 함수는 갈 수 없습니다. 스펙(§5)에는 "서버가 문자열을 만들어 넘긴다" 고 적어 두고 구현에서 어겼습니다.
+
+**해결** 함수 props 를 전부 문자열로 바꿨습니다.
+- 행마다 주소가 다른 차트 — `hrefTemplate="/model-comparison?item={id}"` 처럼 `{id}` 자리표시자 템플릿. 클라이언트가 `fillHref()`(`components/chart/_base/click.ts`) 로 채웁니다.
+- 키 몇 개만 눌리는 차트 — `hrefs={{ CRITICAL: '?filter=critical', … }}` 문자열 맵. 없는 키는 누를 수 없습니다.
+
+**예방** `lib/chart-props.test.ts` 가 두 가지를 정적으로 검사합니다 — `components/chart/` 의 클라이언트 파일 default export props 에 `=>` 가 있으면 실패, `app/**/page.tsx` 에 `hrefFor={` 가 있으면 실패. `npm test` 에 포함됩니다.
+
+- 클라이언트 컴포넌트에 넘기는 props 는 JSON 으로 적을 수 있는 값만. 함수 · 클래스 인스턴스 · Date 는 안 됩니다(Date 는 문자열로).
+- 화면을 열어 봐야 잡히는 오류입니다. 서버 컴포넌트에서 클라이언트 컴포넌트를 새로 부르면 dev 서버에서 그 화면을 한 번 열어 보세요.
 

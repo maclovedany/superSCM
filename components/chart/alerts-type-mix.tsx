@@ -20,11 +20,12 @@ const SEVERITIES: { key: AlertSeverity; label: string; color: string }[] = [
 
 export default function AlertsTypeMix({
   stacks,
-  hrefFor,
+  hrefs = {},
   height = 240,
 }: {
   stacks: AlertTypeStack[];
-  hrefFor: (type: string) => string | null;
+  /** 키 → 이동 주소. 없는 키는 누를 수 없습니다 (서버는 함수를 넘길 수 없어 맵으로 받습니다) */
+  hrefs?: Partial<Record<string, string>>;
   height?: number;
 }) {
   const router = useRouter();
@@ -56,7 +57,7 @@ export default function AlertsTypeMix({
                 isAnimationActive={false}
                 onClick={(entry) => {
                   const stack = clickedPayload<AlertTypeStack>(entry);
-                  const href = stack ? hrefFor(stack.type) : null;
+                  const href = stack ? hrefs[stack.type] : null;
                   if (href) router.push(href);
                 }}
               />

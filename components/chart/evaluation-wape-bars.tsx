@@ -8,17 +8,18 @@ import { Bar, BarChart, CartesianGrid, Cell, LabelList, ResponsiveContainer, Too
 import { CHART_TOKENS, SERIES_COLORS } from '@/lib/chart-colors';
 import { formatValue, pctTick } from '@/lib/chart-format';
 import type { WapeBar } from '@/lib/chart-model';
-import { clickedPayload } from './_base/click';
+import { clickedPayload, fillHref } from './_base/click';
 import ChartTooltip from './_base/tooltip';
 
 export default function EvaluationWapeBars({
   bars,
-  hrefFor,
+  hrefTemplate,
   limit = 20,
   height = 240,
 }: {
   bars: WapeBar[];
-  hrefFor: (itemId: string) => string;
+  /** 이동 주소 템플릿. {id} 가 품목·공급처·모델 ID 로 치환됩니다 (서버는 함수를 넘길 수 없습니다) */
+  hrefTemplate: string;
   limit?: number;
   height?: number;
 }) {
@@ -31,7 +32,7 @@ export default function EvaluationWapeBars({
           <CartesianGrid stroke={CHART_TOKENS.grid} strokeDasharray="4 4" horizontal={false} />
           <XAxis type="number" tickFormatter={pctTick} tick={{ fill: CHART_TOKENS.axis, fontSize: 11 }} tickLine={false} axisLine={false} />
           <YAxis type="category" dataKey="label" width={96} tick={{ fill: CHART_TOKENS.axis, fontSize: 11 }} tickLine={false} axisLine={false} />
-          <Bar dataKey="wape" name="WAPE" isAnimationActive={false} radius={[0, 3, 3, 0]} onClick={(entry) => { const b = clickedPayload<WapeBar>(entry); if (b) router.push(hrefFor(b.itemId)); }}>
+          <Bar dataKey="wape" name="WAPE" isAnimationActive={false} radius={[0, 3, 3, 0]} onClick={(entry) => { const b = clickedPayload<WapeBar>(entry); if (b) router.push(fillHref(hrefTemplate, b.itemId)); }}>
             {data.map((b) => (<Cell key={b.itemId} fill={SERIES_COLORS[0]} fillOpacity={b.manual ? 0.45 : 1} />))}
             <LabelList dataKey="tag" position="right" fill={CHART_TOKENS.axis} fontSize={10} />
           </Bar>

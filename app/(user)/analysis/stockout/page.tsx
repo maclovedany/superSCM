@@ -30,12 +30,11 @@ import DashboardRiskMix from '@/components/chart/dashboard-risk-mix';
 import { riskMixFromKpi, toStockoutBars, type RiskMixKey } from '@/lib/chart-model';
 
 /** 판정 분포에서 누른 상태 → 이 화면의 카드 필터. FilterSpec 에 있는 키만 (안전 필터는 없습니다) */
-function riskFilterHref(key: RiskMixKey): string | null {
-  if (key === 'CRITICAL') return '?filter=critical';
-  if (key === 'WARNING') return '?filter=warning';
-  if (key === 'UNKNOWN') return '?filter=unknown';
-  return null;
-}
+const RISK_FILTER_HREFS: Partial<Record<RiskMixKey, string>> = {
+  CRITICAL: '?filter=critical',
+  WARNING: '?filter=warning',
+  UNKNOWN: '?filter=unknown',
+};
 
 export const dynamic = 'force-dynamic';
 
@@ -334,7 +333,7 @@ export default async function StockoutPage({
         >
           <StockoutDaysBar
             bars={toStockoutBars(rows)}
-            hrefFor={(id) => `/purchase-recommendation/${encodeURIComponent(id)}`}
+            hrefTemplate="/purchase-recommendation/{id}"
           />
         </ChartFrame>
         <ChartFrame
@@ -342,7 +341,7 @@ export default async function StockoutPage({
           desc="위험 · 주의 · 안전 · 미판정 품목 수 · 누르면 그 판정만 봅니다"
           empty={kpi === null ? '판정된 품목이 없습니다' : null}
         >
-          {kpi !== null && <DashboardRiskMix slices={riskMixFromKpi(kpi)} hrefFor={riskFilterHref} />}
+          {kpi !== null && <DashboardRiskMix slices={riskMixFromKpi(kpi)} hrefs={RISK_FILTER_HREFS} />}
         </ChartFrame>
       </div>
 

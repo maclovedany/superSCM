@@ -120,14 +120,13 @@ function delayText(days: number | null): string | null {
  * 결품 위험 분포에서 누른 판정 → /analysis/stockout 의 필터.
  * ★ 그 화면 FilterSpec 에 있는 키만 씁니다 (위 ?filter= 규칙). 없는 판정은 이동하지 않습니다.
  */
-function riskHref(key: RiskMixKey): string | null {
-  if (key === 'CRITICAL') return '/analysis/stockout?filter=critical';
-  if (key === 'WARNING') return '/analysis/stockout?filter=risk';
-  return null;
-}
+const RISK_HREFS: Partial<Record<RiskMixKey, string>> = {
+  CRITICAL: '/analysis/stockout?filter=critical',
+  WARNING: '/analysis/stockout?filter=risk',
+};
 
 /** 알림 유형 → /alerts 의 필터. 그 화면 FilterSpec 에 있는 유형 키만 씁니다 (지금은 excess 하나) */
-function alertTypeHref(type: string): string | null {
+function alertTypeHref(type: string): string {
   return type === 'EXCESS_INVENTORY' ? '/alerts?filter=excess' : '/alerts';
 }
 
@@ -494,7 +493,7 @@ export default async function DashboardPage() {
           empty={stockoutKpi.data === null ? '판정된 품목이 없습니다' : null}
         >
           {stockoutKpi.data !== null && (
-            <DashboardRiskMix slices={riskMixFromKpi(stockoutKpi.data)} hrefFor={riskHref} />
+            <DashboardRiskMix slices={riskMixFromKpi(stockoutKpi.data)} hrefs={RISK_HREFS} />
           )}
         </ChartFrame>
 
@@ -507,7 +506,7 @@ export default async function DashboardPage() {
         >
           <DashboardSupplierAmount
             rows={supplierAmount.rows}
-            hrefFor={(supplierId) => `/purchase-recommendation?supplier=${encodeURIComponent(supplierId)}`}
+            hrefTemplate="/purchase-recommendation?supplier={id}"
           />
         </ChartFrame>
 
@@ -522,7 +521,7 @@ export default async function DashboardPage() {
         >
           <DashboardAccuracyRanking
             bars={toAccuracyBars(ranking.rows)}
-            hrefFor={(itemId) => `/model-comparison?item=${encodeURIComponent(itemId)}`}
+            hrefTemplate="/model-comparison?item={id}"
           />
         </ChartFrame>
 
@@ -532,7 +531,12 @@ export default async function DashboardPage() {
           error={alertMix.error}
           empty={alertMix.rows.length === 0 ? '열린 알림이 없습니다' : null}
         >
-          <AlertsTypeMix stacks={pivotAlertTypeMix(alertMix.rows)} hrefFor={alertTypeHref} />
+          <AlertsTypeMix
+            stacks={pivotAlertTypeMix(alertMix.rows)}
+            hrefs={Object.fromEntries(
+              pivotAlertTypeMix(alertMix.rows).map((stack) => [stack.type, alertTypeHref(stack.type)]),
+            )}
+          />
         </ChartFrame>
 
         <ChartFrame

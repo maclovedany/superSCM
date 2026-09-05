@@ -7,12 +7,12 @@ import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxi
 import { ACTUAL_COLOR, CHART_TOKENS, SERIES_COLORS } from '@/lib/chart-colors';
 import { formatValue } from '@/lib/chart-format';
 import type { SimulationItemBar } from '@/lib/chart-model';
-import { clickedPayload } from './_base/click';
+import { clickedPayload, fillHref } from './_base/click';
 import ChartTooltip from './_base/tooltip';
 
-export default function SimulationItemBars({ bars, hrefFor, height = 240 }: { bars: SimulationItemBar[]; hrefFor: (itemId: string) => string; height?: number }) {
+export default function SimulationItemBars({ bars, hrefTemplate, height = 240 }: { bars: SimulationItemBar[]; hrefTemplate: string; height?: number }) {
   const router = useRouter();
-  const go = (entry: unknown) => { const b = clickedPayload<SimulationItemBar>(entry); if (b) router.push(hrefFor(b.itemId)); };
+  const go = (entry: unknown) => { const b = clickedPayload<SimulationItemBar>(entry); if (b) router.push(fillHref(hrefTemplate, b.itemId)); };
   return (
     <>
       <div className="chart-legend" style={{ marginBottom: 'var(--s-3)' }}>

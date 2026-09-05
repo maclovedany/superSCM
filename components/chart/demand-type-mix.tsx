@@ -22,18 +22,19 @@ const COLOR: Record<DemandTypeKey, string> = {
 
 export default function DemandTypeMix({
   slices,
-  hrefFor,
+  hrefs = {},
   height = 240,
 }: {
   slices: DemandTypeSlice[];
-  hrefFor: (key: DemandTypeKey) => string | null;
+  /** 키 → 이동 주소. 없는 키는 누를 수 없습니다 (서버는 함수를 넘길 수 없어 맵으로 받습니다) */
+  hrefs?: Partial<Record<DemandTypeKey, string>>;
   height?: number;
 }) {
   const router = useRouter();
   const row: Record<string, number | string> = { name: '품목' };
   for (const s of slices) row[s.key] = s.n;
   const total = slices.reduce((sum, s) => sum + s.n, 0);
-  const go = (key: DemandTypeKey) => { const href = hrefFor(key); if (href) router.push(href); };
+  const go = (key: DemandTypeKey) => { const href = hrefs[key]; if (href) router.push(href); };
 
   return (
     <div style={{ height, display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
@@ -62,7 +63,7 @@ export default function DemandTypeMix({
       </div>
       <div className="chart-legend">
         {slices.map((s) => {
-          const href = hrefFor(s.key);
+          const href = hrefs[s.key];
           const inner = (<><span className="chart-legend-swatch" style={{ background: COLOR[s.key] }} />{s.label} <b>{s.n}</b></>);
           return href ? (
             <button key={s.key} type="button" className="chart-legend-item" onClick={() => go(s.key)}>{inner}</button>

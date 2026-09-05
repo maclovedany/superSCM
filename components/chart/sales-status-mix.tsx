@@ -16,12 +16,13 @@ function statusColor(status: string): string {
   return STATUS_COLORS.UNKNOWN;
 }
 
-export default function SalesStatusMix({ slices, hrefFor, height = 240 }: { slices: SalesStatusSlice[]; hrefFor: (status: string) => string | null; height?: number }) {
+export default function SalesStatusMix({ slices, hrefs = {}, height = 240 }: { slices: SalesStatusSlice[]; /** 키 → 이동 주소. 없는 키는 누를 수 없습니다 (서버는 함수를 넘길 수 없어 맵으로 받습니다) */
+  hrefs?: Partial<Record<string, string>>; height?: number }) {
   const router = useRouter();
   const row: Record<string, number | string> = { name: '품목' };
   for (const s of slices) row[s.status] = s.nItems;
   const total = slices.reduce((sum, s) => sum + s.nItems, 0);
-  const go = (status: string) => { const href = hrefFor(status); if (href) router.push(href); };
+  const go = (status: string) => { const href = hrefs[status]; if (href) router.push(href); };
   return (
     <div style={{ height, display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
       <div className="chart-wrap chart-clickable" style={{ flex: 1, minHeight: 0 }}>
@@ -39,7 +40,7 @@ export default function SalesStatusMix({ slices, hrefFor, height = 240 }: { slic
       </div>
       <div className="chart-legend">
         {slices.map((s) => {
-          const href = hrefFor(s.status);
+          const href = hrefs[s.status];
           const inner = (<><span className="chart-legend-swatch" style={{ background: statusColor(s.status) }} />{s.status} <b>{formatValue(s.nItems, 'count').replace('건', '개')}</b></>);
           return href ? <button key={s.status} type="button" className="chart-legend-item" onClick={() => go(s.status)}>{inner}</button> : <span key={s.status} className="chart-legend-item">{inner}</span>;
         })}

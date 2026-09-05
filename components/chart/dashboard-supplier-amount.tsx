@@ -9,16 +9,17 @@ import { Bar, BarChart, CartesianGrid, Cell, LabelList, ResponsiveContainer, Too
 import { CHART_TOKENS, SERIES_COLORS, STATUS_COLORS } from '@/lib/chart-colors';
 import { formatValue, moneyTick } from '@/lib/chart-format';
 import type { SupplierAmountRow } from '@/lib/chart-model';
-import { clickedPayload } from './_base/click';
+import { clickedPayload, fillHref } from './_base/click';
 import ChartTooltip from './_base/tooltip';
 
 export default function DashboardSupplierAmount({
   rows,
-  hrefFor,
+  hrefTemplate,
   height = 240,
 }: {
   rows: SupplierAmountRow[];
-  hrefFor: (supplierId: string) => string;
+  /** 이동 주소 템플릿. {id} 가 품목·공급처·모델 ID 로 치환됩니다 (서버는 함수를 넘길 수 없습니다) */
+  hrefTemplate: string;
   height?: number;
 }) {
   const router = useRouter();
@@ -37,7 +38,7 @@ export default function DashboardSupplierAmount({
           <CartesianGrid stroke={CHART_TOKENS.grid} strokeDasharray="4 4" horizontal={false} />
           <XAxis type="number" tickFormatter={moneyTick} tick={{ fill: CHART_TOKENS.axis, fontSize: 11 }} tickLine={false} axisLine={false} />
           <YAxis type="category" dataKey="label" width={96} tick={{ fill: CHART_TOKENS.axis, fontSize: 11 }} tickLine={false} axisLine={false} />
-          <Bar dataKey="amount" name="추천 금액" isAnimationActive={false} radius={[0, 4, 4, 0]} onClick={(entry) => { const row = clickedPayload<SupplierAmountRow>(entry); if (row) router.push(hrefFor(row.supplierId)); }}>
+          <Bar dataKey="amount" name="추천 금액" isAnimationActive={false} radius={[0, 4, 4, 0]} onClick={(entry) => { const row = clickedPayload<SupplierAmountRow>(entry); if (row) router.push(fillHref(hrefTemplate, row.supplierId)); }}>
             {data.map((row) => (
               <Cell key={row.supplierId} fill={row.nUrgent > 0 ? STATUS_COLORS.CRITICAL : SERIES_COLORS[0]} />
             ))}

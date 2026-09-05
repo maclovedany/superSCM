@@ -36,12 +36,12 @@ import {
 } from '@/lib/chart-model';
 
 /** 수요 유형 → 이 화면의 카드 필터. FilterSpec 에 있는 키만 씁니다 (smooth · croston · unclassified) */
-function demandTypeHref(key: DemandTypeKey): string | null {
-  if (key === 'SMOOTH') return '?filter=smooth';
-  if (key === 'INTERMITTENT' || key === 'LUMPY') return '?filter=croston';
-  if (key === 'UNCLASSIFIED') return '?filter=unclassified';
-  return null;
-}
+const DEMAND_TYPE_HREFS: Partial<Record<DemandTypeKey, string>> = {
+  SMOOTH: '?filter=smooth',
+  INTERMITTENT: '?filter=croston',
+  LUMPY: '?filter=croston',
+  UNCLASSIFIED: '?filter=unclassified',
+};
 
 export const dynamic = 'force-dynamic';
 
@@ -288,14 +288,14 @@ export default async function DemandProfilePage({
           desc="점 하나가 품목 하나 · 경계선은 Syntetos-Boylan 기준 · 누르면 표에서 강조"
           empty={toQuadrantPoints(rows).length === 0 ? 'ADI 와 CV² 를 낸 품목이 없습니다' : null}
         >
-          <DemandQuadrant points={toQuadrantPoints(rows)} hrefFor={(id) => `?item=${encodeURIComponent(id)}`} />
+          <DemandQuadrant points={toQuadrantPoints(rows)} hrefTemplate="?item={id}" />
         </ChartFrame>
         <ChartFrame
           title="수요 유형 분포"
           desc="유형별 품목 수 · 누르면 그 유형만 봅니다"
           empty={kpi === null ? '분류된 품목이 없습니다' : null}
         >
-          {kpi !== null && <DemandTypeMix slices={demandTypeMixFromKpi(kpi)} hrefFor={demandTypeHref} />}
+          {kpi !== null && <DemandTypeMix slices={demandTypeMixFromKpi(kpi)} hrefs={DEMAND_TYPE_HREFS} />}
         </ChartFrame>
         <ChartFrame
           title="품목 × 월 사용량"
@@ -306,7 +306,7 @@ export default async function DemandProfilePage({
           <DemandHeatmap
             {...pivotHeatmap(heatmap.rows)}
             selectedItemId={selectedItem}
-            hrefFor={(id) => `?item=${encodeURIComponent(id)}`}
+            hrefTemplate="?item={id}"
           />
         </ChartFrame>
       </div>

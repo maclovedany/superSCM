@@ -57,11 +57,10 @@ import { getSalesStatus } from '@/lib/charts';
 import { toShortfallBars } from '@/lib/chart-model';
 
 /** 공급 상태 → 이 화면의 카드 필터. FilterSpec 에 있는 키만 (blocked · watch) */
-function salesStatusHref(status: string): string | null {
-  if (status === '불가') return '?filter=blocked';
-  if (status === '주의') return '?filter=watch';
-  return null;
-}
+const SALES_STATUS_HREFS: Record<string, string> = {
+  불가: '?filter=blocked',
+  주의: '?filter=watch',
+};
 
 export const dynamic = 'force-dynamic';
 
@@ -411,7 +410,7 @@ export default async function SalesPage({
           error={statusMix.error}
           empty={statusMix.rows.length === 0 ? '판정된 품목이 없습니다' : null}
         >
-          <SalesStatusMix slices={statusMix.rows} hrefFor={salesStatusHref} />
+          <SalesStatusMix slices={statusMix.rows} hrefs={SALES_STATUS_HREFS} />
         </ChartFrame>
         <ChartFrame
           title="납기별 부족 수량"

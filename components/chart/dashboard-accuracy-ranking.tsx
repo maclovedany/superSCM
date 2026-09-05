@@ -9,16 +9,17 @@ import { Bar, BarChart, CartesianGrid, Cell, ReferenceLine, ResponsiveContainer,
 import { CHART_TOKENS, STATUS_COLORS } from '@/lib/chart-colors';
 import { formatValue, pctTick } from '@/lib/chart-format';
 import type { AccuracyBar } from '@/lib/chart-model';
-import { clickedPayload } from './_base/click';
+import { clickedPayload, fillHref } from './_base/click';
 import ChartTooltip from './_base/tooltip';
 
 export default function DashboardAccuracyRanking({
   bars,
-  hrefFor,
+  hrefTemplate,
   height = 240,
 }: {
   bars: AccuracyBar[];
-  hrefFor: (itemId: string) => string;
+  /** 이동 주소 템플릿. {id} 가 품목·공급처·모델 ID 로 치환됩니다 (서버는 함수를 넘길 수 없습니다) */
+  hrefTemplate: string;
   height?: number;
 }) {
   const router = useRouter();
@@ -34,7 +35,7 @@ export default function DashboardAccuracyRanking({
           <XAxis type="number" tickFormatter={pctTick} tick={{ fill: CHART_TOKENS.axis, fontSize: 11 }} tickLine={false} axisLine={false} />
           <YAxis type="category" dataKey="label" width={96} tick={{ fill: CHART_TOKENS.axis, fontSize: 11 }} tickLine={false} axisLine={false} />
           {lastBest && <ReferenceLine y={lastBest} stroke={CHART_TOKENS.markerLine} strokeDasharray="3 3" position="end" />}
-          <Bar dataKey="wape" name="WAPE" isAnimationActive={false} radius={[0, 4, 4, 0]} onClick={(entry) => { const bar = clickedPayload<AccuracyBar>(entry); if (bar) router.push(hrefFor(bar.itemId)); }}>
+          <Bar dataKey="wape" name="WAPE" isAnimationActive={false} radius={[0, 4, 4, 0]} onClick={(entry) => { const bar = clickedPayload<AccuracyBar>(entry); if (bar) router.push(fillHref(hrefTemplate, bar.itemId)); }}>
             {data.map((bar) => (
               <Cell key={bar.key} fill={bar.side === 'best' ? STATUS_COLORS.SAFE : STATUS_COLORS.CRITICAL} />
             ))}

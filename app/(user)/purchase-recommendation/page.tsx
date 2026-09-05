@@ -437,7 +437,7 @@ export default async function PurchaseRecommendationPage({
           empty={bySupplier.rows.length === 0 ? '추천 수량이 있는 품목이 없습니다' : null}
           masked={sales}
         >
-          <DashboardSupplierAmount rows={bySupplier.rows} hrefFor={(id) => `?supplier=${encodeURIComponent(id)}`} />
+          <DashboardSupplierAmount rows={bySupplier.rows} hrefTemplate="?supplier={id}" />
         </ChartFrame>
       </div>
 

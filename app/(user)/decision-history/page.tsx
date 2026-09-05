@@ -281,7 +281,7 @@ export default async function DecisionHistoryPage({
           desc="승인 수량 − 추천 수량 · 절댓값 큰 순 20 · 누르면 그 결정의 근거"
           empty={toAdjustmentBars(rows).length === 0 ? '수량을 조정한 승인이 없습니다' : null}
         >
-          <DecisionAdjustment bars={toAdjustmentBars(rows)} hrefFor={(refId) => `/decision-history/${encodeURIComponent(refId)}`} />
+          <DecisionAdjustment bars={toAdjustmentBars(rows)} hrefTemplate="/decision-history/{id}" />
         </ChartFrame>
       </div>
 

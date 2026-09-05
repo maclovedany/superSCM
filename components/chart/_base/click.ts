@@ -5,3 +5,12 @@ export function clickedPayload<T>(entry: unknown): T | null {
   const wrapped = entry as { payload?: T };
   return wrapped.payload ?? (entry as T);
 }
+
+/**
+ * 서버 컴포넌트는 클라이언트 차트에 함수를 넘길 수 없습니다 (React Server Components 직렬화 규칙).
+ * 그래서 이동 주소는 `{id}` 자리표시자를 둔 문자열 템플릿으로 받고, 여기서 채웁니다.
+ *   fillHref('/model-comparison?item={id}', 'ITEM 01') → '/model-comparison?item=ITEM%2001'
+ */
+export function fillHref(template: string, id: string): string {
+  return template.replace('{id}', encodeURIComponent(id));
+}

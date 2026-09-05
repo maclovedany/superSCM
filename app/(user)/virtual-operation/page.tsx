@@ -552,7 +552,7 @@ export default async function VirtualOperationPage({
           desc="결품 월이 많은 품목부터 15 · 누르면 그 품목의 추이"
           empty={items.length === 0 ? '비교할 품목이 없습니다' : null}
         >
-          <SimulationItemBars bars={toSimulationItemBars(items)} hrefFor={(id) => `?item=${encodeURIComponent(id)}`} />
+          <SimulationItemBars bars={toSimulationItemBars(items)} hrefTemplate="?item={id}" />
         </ChartFrame>
       </div>
 
