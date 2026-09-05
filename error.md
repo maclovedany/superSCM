@@ -40,6 +40,7 @@
 | `Encountered two children with the same key, 'SEASONAL_NAIVE'` — 모델 비교 표에 같은 모델이 여러 줄 | `v_model_performance` 가 백테스트 run 을 거르지 않음 | [#31](#31-encountered-two-children-with-the-same-key--모델-비교-표에-같은-모델이-run-수만큼-반복됩니다) |
 | `… 에 없는 컬럼을 가리려 했습니다: …` (P0001, sql/29) | 앞 파일의 뷰가 `16` 의 cascade 로 지워진 채 `29` 를 돌림 | [#32](#32-에-없는-컬럼을-가리려-했습니다--앞-파일의-뷰가-cascade-로-지워진-채-29-를-돌렸습니다) |
 | `Functions cannot be passed directly to Client Components` — 화면 500 | 서버 page.tsx 가 `'use client'` 차트에 함수 props(`hrefFor`)를 넘김 | [#33](#33-functions-cannot-be-passed-directly-to-client-components--서버가-차트에-함수를-넘겼습니다) |
+| 예측 실행이 11,000 품목에서 10분+ · `statement timeout` | 상관 서브쿼리 · CTE 인라인 · 방금 넣은 run 의 통계 없음 | [#34](#34-품목-11000개에서-실행-함수가-10분을-넘긴다--세-가지-원인) |
 
 > **Supabase 3층 구조를 먼저 기억하면 #3·#4·#5 를 헷갈리지 않습니다.**
 >
@@ -932,4 +933,33 @@ Uncaught Error: Functions cannot be passed directly to Client Components unless 
 
 - 클라이언트 컴포넌트에 넘기는 props 는 JSON 으로 적을 수 있는 값만. 함수 · 클래스 인스턴스 · Date 는 안 됩니다(Date 는 문자열로).
 - 화면을 열어 봐야 잡히는 오류입니다. 서버 컴포넌트에서 클라이언트 컴포넌트를 새로 부르면 dev 서버에서 그 화면을 한 번 열어 보세요.
+
+---
+
+## #34 품목 11,000개에서 실행 함수가 10분을 넘긴다 — 세 가지 원인
+
+**증상** 더미 20품목에서 1초였던 `core.run_baseline_forecast` 가 실데이터 9,772품목에서 10분을 넘겨 `canceling statement due to statement timeout` 으로 죽었습니다. 격자 뷰(`v_demand_grid`) 자체는 0.25초입니다.
+
+**원인 셋** — 전부 "데이터가 커지면 계획기가 다른 계획을 고른다" 는 한 가지 뿌리입니다.
+
+1. **상관 서브쿼리.** 전년 동월을 `(select d.quantity from grid d where d.item_id = g.item_id and d.period = …)` 로 찍었습니다. (품목 × 지평) 칸마다 격자 CTE 를 통째로 다시 훑어 10만 × 45만 번 비교입니다. **→ `left join grid d on …` 으로.** 해시 조인이면 1초입니다.
+2. **CTE 인라인.** PostgreSQL 12+ 는 한 번만 쓰인 CTE 를 서브쿼리로 풀어 넣습니다. `grid` · `tail` · `py` 가 풀리면 계획기가 그중 하나를 Nested Loop 안쪽에 두고 바깥 행마다 다시 계산합니다 — error.md #30 과 같은 병입니다. 운영(PRODUCTION) 모드에서만 걸린 것이 단서였습니다(격자 크기가 달라 계획이 갈렸습니다). **→ `as materialized`.**
+3. **방금 넣은 run 의 통계.** 실행이 60만 행을 넣은 직후 `refresh_forecast_current()` 가 `where run_id = 새 run` 으로 읽습니다. 통계에 그 run_id 가 없어 계획기는 1행으로 보고 Nested Loop 를 고릅니다. 같은 함수가 나중에 따로 부르면 1초, 실행 안에서는 5분이었습니다. **→ 함수 첫 줄에 `analyze core.forecast_result;`, 함수 정의에 `set enable_nestloop = off`.**
+
+같은 이유로 `core.v_item_master`(93,868행 정규식 정규화 + distinct on)처럼 **무거운 뷰를 조인마다 다시 계산하게 두면 안 됩니다.** `mv_item_master` · `mv_demand_monthly` · `mv_item_alias` 로 실체화하고 인덱스를 두었습니다 (`sql/34 §6b`).
+
+**결과** (하네스 · 실데이터)
+
+| | 전 | 후 |
+|---|---|---|
+| `run_baseline_forecast` VALIDATION | 10분+ (시간 초과) | 11초 |
+| `run_baseline_forecast` PRODUCTION | 10분+ (시간 초과) | 12초 |
+| `refresh_forecast_current` (실행 직후) | 5분+ | 1초 |
+
+**예방**
+- 함수 안의 CTE 는 **기본으로 `materialized`** 를 씁니다. 인라인이 이득인 경우는 드물고, 손해는 10분 단위입니다.
+- 서브쿼리 안에서 바깥 행을 참조하는 `(select … where x = outer.x)` 는 조인으로 씁니다.
+- 대량 insert 직후 같은 트랜잭션에서 그 행을 읽는 함수는 `analyze` 를 먼저 합니다.
+- 뷰 위에 뷰를 쌓을 때 아래 뷰가 정규식 · distinct on · 집계를 품고 있으면 materialized view 로 바꾸고 인덱스를 둡니다.
+- 성능은 **품목 수를 실제 규모로 놓고** 재야 합니다. 20품목에서 1초는 아무것도 증명하지 않습니다.
 

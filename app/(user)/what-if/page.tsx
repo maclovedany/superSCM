@@ -46,6 +46,9 @@ import {
   type WhatIfSide,
 } from '@/lib/what-if';
 import type { SearchParams } from '@/lib/filter';
+import ItemSearchPanel from '@/components/ui/item-search-panel';
+import DataWaitBanner from '@/components/ui/data-wait-banner';
+import { searchItems } from '@/lib/items';
 import WhatIfForm from './what-if-form';
 import WhatIfNlForm from './what-if-nl-form';
 import ChartFrame from '@/components/chart/_base/chart-frame';
@@ -230,7 +233,11 @@ export default async function WhatIfPage({
   }
 
   const params = await searchParams;
-  const { rows: items, error: itemError } = await getProjectionItems();
+  const q = param(params, 'q') ?? '';
+  const [{ rows: items, error: itemError }, search] = await Promise.all([
+    getProjectionItems(),
+    q.trim().length >= 2 ? searchItems(q) : Promise.resolve({ rows: [], error: null }),
+  ]);
 
   const requested = param(params, 'item');
   const activeItem = requested && requested.trim() !== '' ? requested.trim() : items[0]?.itemId ?? null;
@@ -245,7 +252,8 @@ export default async function WhatIfPage({
     activeItem && encoded ? await runWhatIf(activeItem, fromUrl.params) : null;
 
   const itemChips = (
-    <Panel title="품목 선택" actions={<span className="t-label">결품 임박 순 · 산출 불가는 맨 뒤</span>}>
+    <ItemSearchPanel q={q} results={search.rows} selectedItemId={activeItem} title="품목 선택"
+      hint="대표코드 · 품목명 · 구코드로 검색 · 아래 칩은 결품 임박 순">
       <div className="chart-legend">
         {items.slice(0, 24).map((item) => {
           const active = item.itemId === activeItem;
@@ -268,7 +276,7 @@ export default async function WhatIfPage({
           );
         })}
       </div>
-    </Panel>
+    </ItemSearchPanel>
   );
 
   if (itemError) {
@@ -322,6 +330,8 @@ export default async function WhatIfPage({
   return (
     <>
       {header}
+
+      <DataWaitBanner kinds={['INVENTORY']} />
 
       {itemChips}
 

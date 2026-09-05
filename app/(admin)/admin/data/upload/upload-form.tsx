@@ -11,14 +11,14 @@ import Panel from '@/components/ui/panel';
 import Badge from '@/components/ui/badge';
 import { analyzeUpload, cancelImport, confirmImport } from './actions';
 import { EMPTY_COMMIT, EMPTY_PREVIEW } from './state';
-import { DATA_TYPES, TABLE_SPECS } from '@/lib/import/schema';
+import { AVAILABLE_DATA_TYPES, DATA_TYPES, DATA_TYPE_AVAILABILITY, TABLE_SPECS, availabilityNote } from '@/lib/import/schema';
 import type { DataType } from '@/lib/import/types';
 
 export default function UploadForm({ targetColumnsByType }: { targetColumnsByType: Record<string, string[]> }) {
   const [preview, analyze, analyzing] = useActionState(analyzeUpload, EMPTY_PREVIEW);
   const [commit, doCommit, committing] = useActionState(confirmImport, EMPTY_COMMIT);
   const [cancel, doCancel, cancelling] = useActionState(cancelImport, EMPTY_COMMIT);
-  const [dataType, setDataType] = useState<DataType>('DEMAND');
+  const [dataType, setDataType] = useState<DataType>(AVAILABLE_DATA_TYPES[0] ?? 'EVENT');
   const [mode, setMode] = useState('append');
   const [filename, setFilename] = useState('');
 
@@ -43,12 +43,17 @@ export default function UploadForm({ targetColumnsByType }: { targetColumnsByTyp
                 onChange={(event) => setDataType(event.target.value as DataType)}
               >
                 {DATA_TYPES.map((type) => (
-                  <option key={type} value={type}>
+                  <option key={type} value={type} disabled={DATA_TYPE_AVAILABILITY[type] !== 'active'}>
                     {TABLE_SPECS[type].label}
+                    {DATA_TYPE_AVAILABILITY[type] === 'retired' ? ' — 실데이터 경로로 대체' : DATA_TYPE_AVAILABILITY[type] === 'pending' ? ' — 형식 확정 대기' : ''}
                   </option>
                 ))}
               </select>
             </div>
+
+            {availabilityNote(dataType) && (
+              <p className="t-sm text-2" style={{ gridColumn: '1 / -1', margin: 0 }}>{availabilityNote(dataType)}</p>
+            )}
 
             <div className="field">
               <label className="t-label" htmlFor="mode">

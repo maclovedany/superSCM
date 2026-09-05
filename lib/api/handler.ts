@@ -12,6 +12,7 @@
 
 import { NextResponse } from 'next/server';
 import type { DataType } from '../import/types';
+import { DATA_TYPE_AVAILABILITY } from '../import/schema';
 import { authenticate, clientIp, requireScope, writeApiLog } from './auth';
 import { apiError, type ApiIdentity } from './auth-model.ts';
 import { ingest } from './inbound';
@@ -89,6 +90,18 @@ export async function handleInbound(
   request: Request,
   route: { path: string; dataType: DataType; scope: string; maxBodyBytes: number },
 ): Promise<NextResponse> {
+  // ★ 실데이터 전환 — 수요 · 품목 마스터는 6회차 적재 경로로만, 재고 계열은 형식 확정 뒤 (lib/import/schema.ts).
+  if (DATA_TYPE_AVAILABILITY[route.dataType] !== 'active') {
+    return NextResponse.json(
+      apiError(
+        'NOT_IMPLEMENTED',
+        DATA_TYPE_AVAILABILITY[route.dataType] === 'retired'
+          ? '이 데이터 종류는 파일 · API 로 받지 않습니다. 6회차 실데이터 적재 경로(raw.dim_item · fact_shipment)를 사용하세요.'
+          : '이 데이터 종류는 실제 파일 형식이 확정된 뒤 열립니다.',
+      ),
+      { status: 501 },
+    );
+  }
   const started = Date.now();
   const path = `/api/v1${route.path}`;
   const ip = clientIp(request);

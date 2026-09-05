@@ -14,6 +14,7 @@
 //   CSV 라우트와 다른 단계가 읽는 이름은 바뀌지 않습니다 (renew.prd 32 — 추천과 승인 분리).
 
 import Link from 'next/link';
+import DataWaitBanner from '@/components/ui/data-wait-banner';
 import StaleBanner from '@/components/ui/stale-banner';
 import {
   CalendarClock,
@@ -333,6 +334,8 @@ export default async function PurchaseRecommendationPage({
   return (
     <>
       {header}
+
+      <DataWaitBanner kinds={['INVENTORY', 'LEADTIME', 'PRICE']} />
 
       <StaleBanner />
 

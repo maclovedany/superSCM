@@ -29,6 +29,8 @@ import ChartFrame from '@/components/chart/_base/chart-frame';
 import ForecastModelTotals from '@/components/chart/forecast-model-totals';
 import ForecastOverlayChart, { type SeriesPoint } from '@/components/chart/forecast-overlay-chart';
 import { getItemSeries } from '@/lib/backtest';
+import ItemSearchPanel from '@/components/ui/item-search-panel';
+import { searchItems } from '@/lib/items';
 
 export const dynamic = 'force-dynamic';
 
@@ -124,11 +126,13 @@ export default async function ForecastPage({
       : runModels.slice().sort((a, b) => b.rows - a.rows)[0].modelId;
 
   const activeItem = param(params, 'item');
+  const q = param(params, 'q') ?? '';
 
-  const [{ rows: summary, error }, detail, series] = await Promise.all([
-    getForecastSummary(run.runId, activeModel),
+  const [{ rows: summary, error }, detail, series, search] = await Promise.all([
+    getForecastSummary(run.runId, activeModel, { q, limit: 200 }),
     activeItem ? getForecastDetail(run.runId, activeItem) : Promise.resolve({ rows: [], error: null }),
     activeItem ? getItemSeries(activeItem) : Promise.resolve({ rows: [], error: null }),
+    q.trim().length >= 2 ? searchItems(q) : Promise.resolve({ rows: [], error: null }),
   ]);
 
   if (error) {
@@ -306,6 +310,15 @@ export default async function ForecastPage({
           })}
         </div>
       </Panel>
+
+      <ItemSearchPanel
+        q={q}
+        results={search.rows}
+        selectedItemId={activeItem}
+        keep={{ model: activeModel }}
+        title="품목 검색"
+        hint="품목 11,000개 중 찾기 · 아래 표도 검색어로 좁혀집니다 (상위 200)"
+      />
 
       <ChartFrame
         title="모델별 예측 합계"

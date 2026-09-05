@@ -119,3 +119,39 @@ def test_progress_callback_fires_every_500_items(monkeypatch):
     pipeline.forecast_one_model({"model_id": "X", "version": "v1", "parameters": {}}, grid, 2, {},
                                 progress=lambda s, t: seen.append((s, t)))
     assert seen == [(500, 1200), (1000, 1200)]
+
+
+def test_status_by_pipeline_id_shows_python_progress(monkeypatch):
+    """pipeline id 로 물어도 run_id 쪽 job 에 쌓인 모델 진행률이 보여야 합니다."""
+    monkeypatch.setattr(pipeline.db, "connect", fake_conn)
+    monkeypatch.setattr(pipeline.db, "fetch_run", lambda conn, run_id: None)
+    pipeline.set_job("pipe_t6", status="RUNNING", stage="PYTHON", target_run_id="run_p6", message="Python 모델 실행 중")
+    pipeline.set_job("run_p6", progress={"model": "ETS", "model_index": 2, "model_total": 7, "items_seen": 500, "items_total": 9772})
+    status = pipeline.run_status("pipe_t6")
+    assert status["run_id"] == "run_p6"
+    assert status["stage"] == "PYTHON"
+    assert status["progress"]["items_seen"] == 500
+
+
+def test_time_budget_skips_small_items_first(monkeypatch):
+    """예산을 넘기면 총량이 작은 품목부터 건너뛰고, 건너뛴 수와 사유를 남깁니다."""
+    import time as _time
+    import numpy as np
+    import pandas as pd
+    from app.models import future_periods, make_result
+
+    def slow(train_df, horizon, params):
+        _time.sleep(0.02)
+        return make_result(future_periods(train_df, horizon), np.full(horizon, 1.0))
+
+    monkeypatch.setattr(pipeline.registry, "get", lambda model_id: slow)
+    frames = [pd.DataFrame({"item_id": f"I{i:02d}", "period": pd.date_range("2025-01-01", periods=6, freq="MS"),
+                            "quantity": [float(100 - i)] * 6}) for i in range(30)]
+    grid = pd.concat(frames, ignore_index=True)
+    rows, summary = pipeline.forecast_one_model({"model_id": "SLOW", "version": "v1", "parameters": {}}, grid, 1, {},
+                                                budget_seconds=0.1)
+    done = {r[2] for r in rows}
+    assert "I00" in done                       # 총량이 가장 큰 품목은 먼저 끝났습니다
+    assert summary["n_time_budget"] > 0
+    assert "TIME_BUDGET" in summary["skipped"]["_budget"]
+    assert summary["n_items"] + summary["n_time_budget"] == 30

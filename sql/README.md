@@ -11,29 +11,33 @@ Supabase → SQL Editor 에 **파일 하나를 통째로** 붙여넣고 실행�
 | 2 | `03-auth.sql` | 인증 (1/2) — `core.app_user` · `core.audit_log` · `core.is_admin()` · 가입 트리거 |
 | 3 | `04-rls.sql` | 인증 (2/2) — `02-policies.sql` 의 위험한 정책을 지우고 RLS 를 다시 깝니다 |
 | 4 | `06-core-extend.sql` | 데이터 모델 확장 (1/2) — 정책값 · 품목 정책 · 이상치 · 가예약 · `forecast_setting` |
-| 5 | `07-train-isolation.sql` | 데이터 모델 확장 (2/2) — 학습/검증 구간 격리 |
-| 6 | `08-import.sql` | 적재 파이프라인 — 업로드 배치 · 스테이징 · 검증 |
-| 7 | `09-import-commit.sql` | 적재 확정을 SQL 함수로 (`core.import_commit` · `core.rollback_batch`) |
-| 8 | `10-demand-profile.sql` | 수요 패턴 분석 (SKU Demand Profile) |
-| 9 | `11-forecast-engine.sql` | Forecast Engine — SQL Baseline 모델. `analytics.v_forecast_run` 을 **drop 후 create** 하므로 다시 실행하면 뒤 파일을 전부 이어서 실행해야 합니다 |
-| 10 | `12-forecast-summary.sql` | 예측 결과 조회 뷰 |
-| 11 | `13-backtest.sql` | Backtest Engine + Champion Model |
-| 12 | `25-python-models.sql` | ★ Python 예측 서비스 등록 + `core.is_admin()` 확장 — **번호보다 여기서 실행하세요** |
-| 13 | `15-inventory-projection.sql` | 리드타임 정책화 + Inventory Projection + Stockout Risk |
-| 14 | `16-safety-stock-recommendation.sql` | Safety Stock + Purchase Recommendation + SKU Detail |
-| 15 | `17-virtual-operation.sql` | 가상 운영 시뮬레이션 |
-| 16 | `18-forecast-override.sql` | Forecast Override · Consensus · Forecast Value Add |
-| 17 | `19-approval.sql` | 승인 워크플로 + 근거 Snapshot + Decision History |
-| 18 | `20-alert.sql` | Alert Center + 백그라운드 스캔 |
-| 19 | `21-dashboard.sql` | Dashboard |
-| 20 | `22-agent.sql` | AI Agent 대화 기록 |
-| 21 | `23-atp-sales.sql` | 판매 가능 수량(ATP) · 수주 · 가예약 |
-| 22 | `24-what-if.sql` | What-If 시뮬레이션 — 읽기 전용. `15` · `16` 의 계산식을 그대로 비추고 `23` 의 `core.is_sales()` 로 영업을 막습니다 |
-| 23 | `26-api.sql` | 외부 연동 API — API 키 · 호출 로그 · 멱등성. 조회(GET) 라우트가 쓰는 `service_role` 권한(뷰 9 · 함수 1)도 여기서 줍니다 |
-| 24 | `27-admin-ops.sql` | ★ Admin 강화 · 운영 모니터링 — 실행 모드(검증/운영) · stale 요약 · 통합 로그 |
-| 25 | `31-chart-views.sql` | 차트 집계 뷰 10개 — 기간 · 공급처 · 유형별 합계와 건수. 새 계산 없음. 앞 파일(15 · 16 · 19 · 20 · 21 · 23)을 다시 실행했으면 이 파일도 다시 |
-| 26 | `29-sales-column-guard.sql` | ★ 영업 정보 접근 범위를 DB 에서 닫습니다 — 조달 단가 · 발주 금액 · 공급처 상세 · 리드타임 통계 · 예측 정확도를 `core.is_sales()` 로 null 처리 (renew.prd 4.4 · 4.5) |
-| 27 | `28-anon-lockdown.sql` | ★ 항상 마지막 — anon(로그인 전) 권한 회수. 함수를 추가하는 파일을 적용했으면 이 파일을 다시 실행하세요 |
+| 5 | `32-realdata-schema.sql` | ★ 실데이터 raw 테이블 10개 (6회차 `01-schema.sql` 사본 · drop 없음). 데이터는 6회차 `02-data-*.sql` 로 |
+| 6 | `33-realdata-views.sql` | ★ 실데이터 core · analytics 뷰 (6회차 `04` + `05` 사본) — XCN 합산 · 기종 · BOM 전개 |
+| 7 | `34-realdata-input.sql` | ★ 더미 raw 8개 **삭제** · 표준 입력(mv_item_master · mv_demand_monthly · mv_item_alias · v_item_hierarchy) · 재고 계열 0행 스텁 · `v_data_availability`. **다시 돌리면 뒤 파일 전부 다시** |
+| 8 | `07-train-isolation.sql` | 데이터 모델 확장 (2/2) — 학습/검증 구간 격리 |
+| 9 | `08-import.sql` | 적재 파이프라인 — 업로드 배치 · 스테이징 · 검증 |
+| 10 | `09-import-commit.sql` | 적재 확정을 SQL 함수로 (`core.import_commit` · `core.rollback_batch`) |
+| 11 | `10-demand-profile.sql` | 수요 패턴 분석 (SKU Demand Profile) |
+| 12 | `11-forecast-engine.sql` | Forecast Engine — SQL Baseline 모델. `analytics.v_forecast_run` 을 **drop 후 create** 하므로 다시 실행하면 뒤 파일을 전부 이어서 실행해야 합니다 |
+| 13 | `12-forecast-summary.sql` | 예측 결과 조회 뷰 |
+| 14 | `13-backtest.sql` | Backtest Engine + Champion Model |
+| 15 | `25-python-models.sql` | ★ Python 예측 서비스 등록 + `core.is_admin()` 확장 — **번호보다 여기서 실행하세요** |
+| 16 | `15-inventory-projection.sql` | 리드타임 정책화 + Inventory Projection + Stockout Risk |
+| 17 | `16-safety-stock-recommendation.sql` | Safety Stock + Purchase Recommendation + SKU Detail |
+| 18 | `17-virtual-operation.sql` | 가상 운영 시뮬레이션 |
+| 19 | `18-forecast-override.sql` | Forecast Override · Consensus · Forecast Value Add |
+| 20 | `19-approval.sql` | 승인 워크플로 + 근거 Snapshot + Decision History |
+| 21 | `20-alert.sql` | Alert Center + 백그라운드 스캔 |
+| 22 | `21-dashboard.sql` | Dashboard |
+| 23 | `22-agent.sql` | AI Agent 대화 기록 |
+| 24 | `23-atp-sales.sql` | 판매 가능 수량(ATP) · 수주 · 가예약 |
+| 25 | `24-what-if.sql` | What-If 시뮬레이션 — 읽기 전용. `15` · `16` 의 계산식을 그대로 비추고 `23` 의 `core.is_sales()` 로 영업을 막습니다 |
+| 26 | `26-api.sql` | 외부 연동 API — API 키 · 호출 로그 · 멱등성. 조회(GET) 라우트가 쓰는 `service_role` 권한(뷰 9 · 함수 1)도 여기서 줍니다 |
+| 27 | `27-admin-ops.sql` | ★ Admin 강화 · 운영 모니터링 — 실행 모드(검증/운영) · stale 요약 · 통합 로그 |
+| 28 | `35-dependent-demand.sql` | ★ 실체화 — `forecast_current` · `dependent_demand`(기종 예측 × BOM) · `v_ai_forecast` 재정의 · `v_demand_compare` · `v_machine_bom_forecast` · `v_machine_plan_actual` |
+| 29 | `31-chart-views.sql` | 차트 집계 뷰 10개 — 기간 · 공급처 · 유형별 합계와 건수. 새 계산 없음. 앞 파일(15 · 16 · 19 · 20 · 21 · 23)을 다시 실행했으면 이 파일도 다시 |
+| 30 | `29-sales-column-guard.sql` | ★ 영업 정보 접근 범위를 DB 에서 닫습니다 — 조달 단가 · 발주 금액 · 공급처 상세 · 리드타임 통계 · 예측 정확도를 `core.is_sales()` 로 null 처리 (renew.prd 4.4 · 4.5) |
+| 31 | `28-anon-lockdown.sql` | ★ 항상 마지막 — anon(로그인 전) 권한 회수. 함수를 추가하는 파일을 적용했으면 이 파일을 다시 실행하세요 |
 | (선택) | `30-indexes.sql` | 조인·필터 키 인덱스. **지금은 안 돌려도 됩니다** — 품목 20개 기준 효과가 측정되지 않았습니다. 실데이터를 대량 적재한 뒤에 한 번 돌리세요. 권한·뷰를 건드리지 않으므로 `28` 뒤에 실행해도 안전합니다 |
 
 ### `28-anon-lockdown.sql` 은 선택이 아닙니다
@@ -182,3 +186,20 @@ alter database postgres set app.cron_secret = '충분히-긴-무작위-문자열
 `scripts/sql-verify/run.sh` 가 임시 PostgreSQL 클러스터를 띄워 이 파일들을(`27` · `29` · `28` 포함) 순서대로
 두 번(처음 · 재실행) 실행해 봅니다. 운영 DB 에 붙지 않습니다. 자세한 내용은
 `scripts/sql-verify/README.md`.
+
+### 실데이터 전환 (sql/32 ~ 35 · 36)
+
+`docs/superpowers/specs/2026-09-05-realdata-cutover-design.md` 가 기준입니다.
+
+- **`34` 는 더미 raw 테이블 8개를 `drop … cascade` 합니다.** 그 위 뷰 사슬이 함께 지워지므로 `34` 를 돌렸으면
+  `07` 부터 `28` 까지 전부 순서대로 다시 돌립니다. 운영 DB 에 6회차 데이터가 이미 있으면 `32` 는 아무것도 바꾸지 않습니다.
+- 수요 · 품목의 문은 넷뿐입니다 — `core.v_demand_monthly` · `v_item_master` · `v_item_alias` · `v_item_hierarchy`.
+  앞 셋은 materialized view 위의 얇은 뷰입니다. **6회차 데이터를 다시 적재했으면**
+  `select * from core.refresh_realdata_inputs('재적재 메모');` 를 돌려 갱신하세요.
+- 재고 · 리드타임 · 발주 · 입고 · 단가는 실데이터에 없습니다. `34 §8` 의 0행 스텁이 그 자리를 지키고, 화면은 "데이터 대기" 배너를
+  띄웁니다. 파일이 오면 그 형식으로 raw 표를 만들고 스텁을 그 위로 다시 정의합니다.
+- `35` 의 `core.forecast_current` · `dependent_demand` 는 실행 함수가 끝에서 다시 씁니다. 손으로 갱신하려면
+  `select core.refresh_forecast_current(), core.build_dependent_demand();`.
+- `36` 은 **전환 검증 뒤 한 번** 더미 시절 파생 결과(ITEM0… 예측 · Champion · 승인 · 알림)를 비우는 스크립트입니다. 주석을 풀어야 실행됩니다.
+- 예측 실행은 **Python 예측 서비스**의 `POST /pipeline/run` 이 맡습니다 (SQL 모델 → Python 모델 → 실체화 → 백테스트).
+  PostgREST RPC 는 문장 시간 제한(30초)에 걸리므로 11,000 품목에는 서비스 경로가 기본입니다 (`forecast-service/README.md`).

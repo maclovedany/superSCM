@@ -9,6 +9,7 @@
 // 판정도 3상태에서 4상태로 늘었습니다. 임계값은 core.policy_config 에서 옵니다.
 
 import Link from 'next/link';
+import DataWaitBanner from '@/components/ui/data-wait-banner';
 import { Boxes, CalendarClock, HelpCircle, ShieldAlert, TriangleAlert } from 'lucide-react';
 import PageHeader, { MetaChip } from '@/components/shell/page-header';
 import KpiCard from '@/components/ui/kpi-card';
@@ -251,6 +252,8 @@ export default async function StockoutPage({
   return (
     <>
       {header}
+
+      <DataWaitBanner kinds={['INVENTORY', 'LEADTIME']} />
 
       {/* 카드 5장이라 grid-kpi 에서 두 줄이 됩니다. 30일 이내와 60일 이내를 합치지 않습니다 */}
       <div className="grid grid-kpi">

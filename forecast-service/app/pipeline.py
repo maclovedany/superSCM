@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
+import time
 import traceback
 from datetime import date, datetime, timezone
 
@@ -77,6 +79,18 @@ def item_matches(demand_type: str | None, applicable: list[str] | None) -> bool:
 
 PROGRESS_EVERY = 500
 
+# ★ 모델당 시간 예산 (초). 11,000 품목에서 LightGBM 은 품목당 2초 → 5시간이 걸립니다 (실측).
+#   예산을 넘기면 남은 품목은 건너뛰고 사유(TIME_BUDGET)를 남깁니다 — 값을 지어내지 않습니다.
+#   품목은 학습 구간 총량이 큰 순으로 돌리므로 예산 안에서 중요한 품목이 먼저 끝납니다.
+#   모델별로 parameters.time_budget_s 로 바꿀 수 있습니다. 0 이면 무제한.
+DEFAULT_MODEL_BUDGET_SECONDS = float(os.getenv("PIPELINE_MODEL_BUDGET_SECONDS", "300"))
+
+
+def item_order(grid: pd.DataFrame) -> list[str]:
+    """학습 구간 총량 내림차순 품목 순서. 예산이 잘려도 큰 품목이 먼저 끝납니다."""
+    totals = grid.groupby("item_id")["quantity"].sum().sort_values(ascending=False, kind="mergesort")
+    return [str(i) for i in totals.index]
+
 
 def forecast_one_model(
     model: dict,
@@ -84,10 +98,12 @@ def forecast_one_model(
     horizon: int,
     demand_types: dict[str, str],
     progress=None,
+    budget_seconds: float | None = None,
 ) -> tuple[list[tuple], dict]:
     """한 모델을 전 품목에 돌립니다. (insert 할 행, 요약) 을 돌려줍니다.
 
     progress(items_seen, items_total) 를 PROGRESS_EVERY 품목마다 부릅니다 (있으면).
+    budget_seconds 를 넘기면 남은 품목은 TIME_BUDGET 사유로 건너뜁니다.
     """
     model_id = str(model["model_id"])
     version = str(model.get("version") or "v1")
@@ -113,16 +129,23 @@ def forecast_one_model(
     items_done = 0
     filtered = 0
     seen = 0
-    groups = grid.groupby("item_id", sort=True)
-    total = groups.ngroups
+    budget = float(params.get("time_budget_s", DEFAULT_MODEL_BUDGET_SECONDS) or 0) if budget_seconds is None else budget_seconds
+    started = time.monotonic()
+    over_budget = 0
+    groups = dict(tuple(grid.groupby("item_id", sort=False)))
+    order = item_order(grid)
+    total = len(order)
 
-    for item_id, item_df in groups:
-        item_id = str(item_id)
+    for item_id in order:
+        item_df = groups[item_id]
         seen += 1
         if progress is not None and seen % PROGRESS_EVERY == 0:
             progress(seen, total)
         if not item_matches(demand_types.get(item_id), applicable):
             filtered += 1
+            continue
+        if budget and (time.monotonic() - started) > budget:
+            over_budget += 1
             continue
         try:
             result = fn(item_df[["item_id", "period", "quantity"]], horizon, params)
@@ -182,6 +205,12 @@ def forecast_one_model(
         # 전부 나열하면 jsonb 가 커집니다. 앞 20건만 남깁니다.
         summary["skipped"] = dict(list(skipped.items())[:20])
         summary["n_skipped"] = len(skipped)
+    if over_budget:
+        summary["n_time_budget"] = over_budget
+        summary["time_budget_s"] = budget
+        summary.setdefault("skipped", {})["_budget"] = (
+            f"시간 예산 {budget:.0f}초를 넘겨 총량이 작은 품목 {over_budget}개를 건너뛰었습니다 (TIME_BUDGET)"
+        )
     return rows, summary
 
 
@@ -547,7 +576,11 @@ def _mirror(job_id: str, run_id: str | None) -> None:
     if not run_id:
         return
     job = get_job(job_id) or {}
-    set_job(run_id, **{k: v for k, v in job.items() if k != "run_id"}, pipeline_id=job_id)
+    inner = get_job(run_id) or {}
+    merged = {k: v for k, v in job.items() if k not in ("run_id", "progress")}
+    if inner.get("progress") is not None:
+        merged["progress"] = inner["progress"]
+    set_job(run_id, **merged, pipeline_id=job_id)
 
 
 def run_full(job_id: str, mode: str, note: str | None, only: list[str] | None = None) -> dict:
@@ -562,7 +595,7 @@ def run_full(job_id: str, mode: str, note: str | None, only: list[str] | None = 
         run_id = baseline["run_id"]
         if not baseline.get("n_rows"):
             raise ValueError(baseline.get("message") or "SQL 기준 모델이 결과를 내지 못했습니다")
-        set_job(job_id, run_id=run_id, stage="PYTHON", baseline=baseline,
+        set_job(job_id, target_run_id=run_id, stage="PYTHON", baseline=baseline,
                 message=f"SQL 모델 {baseline['n_models']}종 {baseline['n_rows']}행 · Python 모델 실행 중")
         _mirror(job_id, run_id)
 
@@ -591,7 +624,7 @@ def run_full(job_id: str, mode: str, note: str | None, only: list[str] | None = 
             + (f" · 백테스트 {backtest.get('n_rows')}행" if backtest and backtest.get('ok') else "")
         )
         result = {
-            "status": "SUCCESS", "stage": "DONE", "run_id": run_id, "mode": mode,
+            "status": "SUCCESS", "stage": "DONE", "target_run_id": run_id, "mode": mode,
             "baseline": baseline, "python": {k: python.get(k) for k in ("n_models", "n_rows", "message", "status")},
             "materialized": refreshed, "backtest": backtest,
             "message": message, "finished_at": _now().isoformat(),
@@ -602,7 +635,7 @@ def run_full(job_id: str, mode: str, note: str | None, only: list[str] | None = 
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}"
         log.error("파이프라인 %s 실패: %s\n%s", job_id, detail, traceback.format_exc())
-        result = {"status": "FAILED", "stage": "FAILED", "run_id": run_id,
+        result = {"status": "FAILED", "stage": "FAILED", "target_run_id": run_id,
                   "message": f"파이프라인 실행에 실패했습니다: {detail}", "finished_at": _now().isoformat()}
         set_job(job_id, **result)
         _mirror(job_id, run_id)
@@ -642,8 +675,11 @@ def run_status(run_id: str) -> dict:
     pipeline id(pipe_…)로 물어도 됩니다. 그 job 이 만든 run_id 로 DB 를 봅니다.
     """
     job = get_job(run_id) or {}
-    if job.get("run_id") and job["run_id"] != run_id:
-        run_id = str(job["run_id"])
+    if job.get("target_run_id") and job["target_run_id"] != run_id:
+        # pipeline id 로 물었습니다. 모델 진행률은 run_id 쪽 job 에 쌓이므로 그것을 겹칩니다.
+        run_id = str(job["target_run_id"])
+        inner = get_job(run_id) or {}
+        job = {**inner, **{k: v for k, v in job.items() if v is not None}, "progress": inner.get("progress") or job.get("progress")}
     payload: dict = {
         "run_id": run_id,
         "status": job.get("status"),

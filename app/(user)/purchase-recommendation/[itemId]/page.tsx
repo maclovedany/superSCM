@@ -16,6 +16,7 @@
 // 지표입니다. 좁힐 목록 자체가 없습니다 (design.md §6.4 · AGENTS.md 규칙 9).
 
 import Link from 'next/link';
+import DataWaitBanner from '@/components/ui/data-wait-banner';
 import { notFound } from 'next/navigation';
 import {
   Award,
@@ -1015,6 +1016,8 @@ export default async function SkuDetailPage({
           </>
         }
       />
+
+      <DataWaitBanner kinds={['INVENTORY', 'LEADTIME', 'PRICE']} />
 
       {stale && (
         <div className="stale-banner">

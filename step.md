@@ -73,6 +73,31 @@ alter role authenticated set statement_timeout = '30s';
 31 → 29 → 28
 ```
 
+### 0.1-e 실데이터 전환 ★★ — 더미 삭제 · 표준 입력 · Python 서비스
+
+`docs/superpowers/specs/2026-09-05-realdata-cutover-design.md` 대로 갑니다. 6회차 `01`~`07` 스크립트를 이미 돌려
+`raw.dim_item` · `fact_shipment` 등이 있는 DB 기준입니다.
+
+**① SQL Editor — 이 순서로 (34 가 더미 raw 를 지우므로 07 부터 전부 다시)**
+
+```
+32 → 33 → 34 → 07 → 08 → 09 → 10 → 11 → 12 → 13 → 25 → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 26 → 27 → 35 → 31 → 29 → 28
+```
+
+`34` 끝의 확인 쿼리에서 `dummy ITEM0%` 가 0, `602K02693` 의 `avg_12m` 이 772.3 이면 맞게 들어간 것입니다.
+
+**② Python 예측 서비스** — `forecast-service/README.md` 의 "로컬 실행" 또는 Docker. 환경변수:
+- 서비스: `DATABASE_URL`(Supabase → Settings → Database → Connection string, **postgres 사용자**) · `SERVICE_TOKEN`(임의 긴 문자열)
+- 앱 `.env.local`: `FORECAST_SERVICE_URL=http://localhost:8000` · `FORECAST_SERVICE_TOKEN=<같은 값>`
+
+**③ 예측 실행** — `/admin/forecast-runs` 에서 **검증 실행** 1회(백테스트까지 자동) → **운영 실행** 1회 → `/alerts` 스캔.
+서비스가 SQL 모델 → Python 모델 → 실체화 → 백테스트를 순서대로 돌립니다(11,000 품목 기준 10~15분).
+
+**④ 확인** — `/machine-forecast` · `/model-comparison` · `/forecast` · `/analysis/demand-profile` · `/dashboard` 에 `ITEM0` 이 없고
+기종 차트에 영업 OL · SCM OL 두 선이 보이면 전환이 끝난 것입니다.
+
+**⑤ 더미 파생 결과 비우기** — `sql/36-cleanup-dummy-results.sql` 의 ① 로 확인한 뒤 ② 주석을 풀어 한 번 실행.
+
 ### 0.2 한 번만 해 둘 설정
 
 ```sql

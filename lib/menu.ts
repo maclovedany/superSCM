@@ -32,6 +32,7 @@ import {
   TrendingUp,
   Users,
   Waves,
+  Factory,
 } from 'lucide-react';
 
 export type Role = 'ADMIN' | 'USER';
@@ -62,6 +63,7 @@ export const USER_MENU: MenuSection[] = [
       { href: '/analysis/demand-profile', label: '수요 패턴', icon: Waves, ready: true },
       { href: '/forecast', label: '수요 예측', icon: TrendingUp, ready: true },
       { href: '/model-comparison', label: '모델 비교', icon: GitCompare, ready: true },
+      { href: '/machine-forecast', label: '기종 예측', icon: Factory, ready: true },
       { href: '/model-evaluation', label: '모델 평가', icon: FlaskConical, ready: true },
       { href: '/forecast-override', label: '예측 보정', icon: PencilLine, ready: true },
       { href: '/virtual-operation', label: '가상 운영 결과', icon: FlaskConical, ready: true },

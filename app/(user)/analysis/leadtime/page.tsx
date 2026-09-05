@@ -7,6 +7,7 @@
 // 색·간격을 직접 쓰지 않습니다. design.md 의 토큰과 컴포넌트만 씁니다.
 
 import { Timer, TriangleAlert, Building2 } from 'lucide-react';
+import DataWaitBanner from '@/components/ui/data-wait-banner';
 import PageHeader, { MetaChip } from '@/components/shell/page-header';
 import KpiCard from '@/components/ui/kpi-card';
 import Panel from '@/components/ui/panel';
@@ -176,6 +177,8 @@ export default async function LeadtimePage({
   return (
     <>
       {header}
+
+      <DataWaitBanner kinds={['LEADTIME']} />
 
       <div className="grid grid-3">
         <KpiCard

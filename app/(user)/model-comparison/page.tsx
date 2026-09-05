@@ -22,6 +22,10 @@ import Forbidden from '@/components/ui/forbidden';
 import { getSessionUser, isSalesUser } from '@/lib/auth';
 import type { SearchParams } from '@/lib/filter';
 import ChampionForm from './champion-form';
+import ItemSearchPanel from '@/components/ui/item-search-panel';
+import { getItem, searchItems } from '@/lib/items';
+import { getDemandCompare } from '@/lib/machines';
+import { DEPENDENT_MODEL } from '@/lib/machines-model';
 import ChartFrame from '@/components/chart/_base/chart-frame';
 import ComparisonMetricBars from '@/components/chart/comparison-metric-bars';
 import { toMetricBars } from '@/lib/chart-model';
@@ -112,17 +116,23 @@ export default async function ModelComparisonPage({
     );
   }
 
-  const activeItem =
-    param(params, 'item') && champions.some((c) => c.itemId === param(params, 'item'))
-      ? (param(params, 'item') as string)
-      : champions[0].itemId;
+  // ★ 품목 11,000개 — champions 목록(상한 1,000)에 없어도 마스터에 있으면 그 품목을 봅니다.
+  //   구코드로 들어와도 getItem 이 대표코드로 바꿔 줍니다.
+  const requestedItem = param(params, 'item');
+  const q = param(params, 'q') ?? '';
+  const [resolved, search] = await Promise.all([
+    requestedItem ? getItem(requestedItem) : Promise.resolve({ data: null, error: null }),
+    q.trim().length >= 2 ? searchItems(q) : Promise.resolve({ rows: [], error: null }),
+  ]);
+  const activeItem = resolved.data?.itemId ?? champions[0].itemId;
 
-  const [{ rows: performance }, { rows: series }, { rows: forecast }, { rows: runModels }] =
+  const [{ rows: performance }, { rows: series }, { rows: forecast }, { rows: runModels }, { rows: compare }] =
     await Promise.all([
       getItemPerformance(activeItem),
       getItemSeries(activeItem),
       getForecastDetail(run.runId, activeItem),
       getRunModels(run.runId),
+      getDemandCompare(activeItem),
     ]);
 
   const champion = champions.find((c) => c.itemId === activeItem) ?? null;
@@ -156,12 +166,22 @@ export default async function ModelComparisonPage({
     // 예측 구간이 검증 구간과 겹치면 음영도 여기까지입니다
   }
 
+  // 종속수요(기종 예측 × BOM) — 있을 때만 시리즈로 얹습니다 (sql/35 analytics.v_demand_compare).
+  const hasDependent = compare.some((row) => row.dependentQty !== null);
+  for (const row of compare) {
+    if (row.dependentQty === null) continue;
+    ensure(row.period).forecast[DEPENDENT_MODEL] = row.dependentQty;
+  }
+
   const chartData = Array.from(byPeriod.values()).sort((a, b) => a.period.localeCompare(b.period));
-  const chartModels = runModels.map((m) => ({
-    modelId: m.modelId,
-    label: m.modelName ?? m.modelId,
-    isChampion: m.modelId === champion?.championModelId,
-  }));
+  const chartModels = [
+    ...runModels.map((m) => ({
+      modelId: m.modelId,
+      label: m.modelName ?? m.modelId,
+      isChampion: m.modelId === champion?.championModelId,
+    })),
+    ...(hasDependent ? [{ modelId: DEPENDENT_MODEL, label: '종속수요 (기종 × BOM)' }] : []),
+  ];
 
   const columns: Column<ModelPerformance>[] = [
     {
@@ -251,7 +271,13 @@ export default async function ModelComparisonPage({
 
       <StaleBanner />
 
-      <Panel title="품목 선택" actions={<span className="t-label">Champion 기준 WAPE 낮은 순</span>}>
+      <ItemSearchPanel
+        q={q}
+        results={search.rows}
+        selectedItemId={activeItem}
+        title="품목 선택"
+        hint="대표코드 · 품목명 · 구코드로 검색 · 아래 칩은 Champion 기준 WAPE 낮은 순"
+      >
         <div className="chart-legend">
           {champions.slice(0, 24).map((item) => {
             const active = item.itemId === activeItem;
@@ -271,7 +297,7 @@ export default async function ModelComparisonPage({
             );
           })}
         </div>
-      </Panel>
+      </ItemSearchPanel>
 
       <div className="grid grid-kpi">
         <KpiCard

@@ -10,6 +10,7 @@
 // (AGENTS.md 규칙 2). 문장도 SQL 이 만들어 simulation_run.sentence 에 저장한 것을 그대로 씁니다.
 
 import Link from 'next/link';
+import DataWaitBanner from '@/components/ui/data-wait-banner';
 import {
   ArrowLeftRight,
   Boxes,
@@ -391,6 +392,8 @@ export default async function VirtualOperationPage({
   return (
     <>
       {header}
+
+      <DataWaitBanner kinds={['INVENTORY']} />
 
       {/* ★ 이 화면의 주인공. SQL 이 만든 문장을 그대로 씁니다 (renew.prd 13.2) */}
       <InsightBanner eyebrow="가상 운영 결과">

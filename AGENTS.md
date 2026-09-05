@@ -38,6 +38,9 @@
 ## 데이터 규칙
 
 - Supabase 원본 데이터는 `raw` 스키마에서 직접 수정하지 않습니다.
+- **실데이터 전환(2026-09-05)** — `raw` 는 6회차 실데이터 표 10개(`dim_item` · `fact_shipment` · `bridge_*` …)뿐입니다.
+  수요 · 품목을 읽는 문은 `core.v_demand_monthly` · `v_item_master` · `v_item_alias` · `v_item_hierarchy` 넷뿐이며,
+  다른 곳에서 `raw.*` 를 직접 읽지 않습니다. 재고 · 리드타임 · 단가는 아직 없어 그 뷰들은 0행이고 화면은 "데이터 대기" 를 띄웁니다.
 - 회사 기준과 매핑은 `core`, 화면용 계산 결과는 `analytics` 를 사용합니다.
 - 화면은 원칙적으로 `analytics` 만 조회합니다.
 - 계산식은 화면 컴포넌트에 넣지 말고 `lib/scm.ts` 또는 순수 모델 함수에 둡니다.

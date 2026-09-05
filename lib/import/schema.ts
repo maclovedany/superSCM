@@ -248,6 +248,38 @@ export const TABLE_SPECS: Record<DataType, TableSpec> = {
 
 export const DATA_TYPES = Object.keys(TABLE_SPECS) as DataType[];
 
+/**
+ * 실데이터 전환(sql/34) 뒤의 적재 가능 여부 — spec §3.1 · §3.3.
+ *   retired  수요 · 품목 마스터는 6회차 실데이터 경로(raw.dim_item · fact_shipment)로 옵니다. 파일 업로드로 받지 않습니다.
+ *   pending  재고 · 공급처 · 발주 · 입고는 실제 파일 형식이 오면 그 형식으로 raw 표를 설계한 뒤 엽니다.
+ *   active   이벤트 · 확정 수주는 프로젝트 표(raw.business_event · sales_order)가 있어 그대로 받습니다.
+ */
+export type DataTypeAvailability = 'active' | 'retired' | 'pending';
+
+export const DATA_TYPE_AVAILABILITY: Record<DataType, DataTypeAvailability> = {
+  DEMAND: 'retired',
+  ITEM_MASTER: 'retired',
+  SUPPLIER_MASTER: 'pending',
+  INVENTORY: 'pending',
+  PURCHASE_ORDER: 'pending',
+  RECEIPT: 'pending',
+  EVENT: 'active',
+  SALES_ORDER: 'active',
+};
+
+export const AVAILABLE_DATA_TYPES = DATA_TYPES.filter((t) => DATA_TYPE_AVAILABILITY[t] === 'active');
+
+export function availabilityNote(type: DataType): string | null {
+  switch (DATA_TYPE_AVAILABILITY[type]) {
+    case 'retired':
+      return '수요 · 품목 마스터는 6회차 실데이터 적재(raw.dim_item · fact_shipment)로 들어옵니다. 파일 업로드로는 받지 않습니다.';
+    case 'pending':
+      return '재고 · 공급처 · 발주 · 입고 파일은 실제 형식이 확정되면 그 형식으로 raw 표를 만든 뒤 엽니다. 지금은 받지 않습니다.';
+    default:
+      return null;
+  }
+}
+
 /** 비교용으로 컬럼명을 정규화합니다. 대소문자·공백·밑줄을 무시합니다 */
 export function normalizeColumnName(name: string): string {
   return name.trim().toLowerCase().replace(/[\s_\-.]/g, '');

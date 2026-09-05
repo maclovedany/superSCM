@@ -12,6 +12,7 @@
 //   막아야 하는 것은 반대 방향(영업이 단가를 보는 것)이고, 그것은 뷰 정의로 막혀 있습니다.
 
 import Link from 'next/link';
+import DataWaitBanner from '@/components/ui/data-wait-banner';
 import {
   CalendarClock,
   Hourglass,
@@ -335,6 +336,8 @@ export default async function SalesPage({
   return (
     <>
       {header}
+
+      <DataWaitBanner kinds={['INVENTORY']} />
 
       <div className="grid grid-kpi">
         <KpiCard

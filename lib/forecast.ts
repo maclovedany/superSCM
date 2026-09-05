@@ -292,16 +292,26 @@ export async function getRunModels(runId: string): Promise<{ rows: RunModel[]; e
 export async function getForecastSummary(
   runId: string,
   modelId: string,
+  options: { q?: string | null; limit?: number } = {},
 ): Promise<{ rows: ForecastSummary[]; error: string | null }> {
   try {
     const supabase = await createSupabaseServerClient();
-    const { data, error } = await supabase
+    // 품목 11,000개 — 목록은 상한을 두고(기본 200) 검색어(q)로 좁힙니다. PostgREST 1,000행 상한 안입니다.
+    const limit = options.limit ?? 200;
+    let query = supabase
       .schema('analytics')
       .from('v_forecast_summary')
       .select('*')
       .eq('run_id', runId)
-      .eq('model_id', modelId)
-      .order('total_qty', { ascending: false, nullsFirst: false });
+      .eq('model_id', modelId);
+    const q = options.q?.trim();
+    if (q && q.length >= 2) {
+      const code = q.toUpperCase().replace(/[\s\-_]/g, '');
+      query = query.or(`item_id.ilike.%${code}%,item_name.ilike.%${q}%`);
+    }
+    const { data, error } = await query
+      .order('total_qty', { ascending: false, nullsFirst: false })
+      .limit(limit);
 
     if (error) return { rows: [], error: error.message };
 

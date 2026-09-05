@@ -253,3 +253,38 @@ app/models/__init__.py   플러그인 공통 도구 (make_result · empty_result
 app/models/*.py          모델 하나(또는 여럿)당 파일 하나
 tests/                   pytest. DB 없이 합성 시계열로 검사
 ```
+
+---
+
+## 전체 파이프라인 — `POST /pipeline/run` (실데이터 전환 Plan 2)
+
+관리자 화면의 "예측 실행" 은 서비스가 살아 있으면 이 엔드포인트를 부릅니다. 서비스가 **직접 접속**으로
+아래를 순서대로 돌리므로 PostgREST RPC 의 문장 시간 제한(30초)에 걸리지 않습니다.
+
+```
+POST /pipeline/run  {"mode": "VALIDATION" | "PRODUCTION", "note": "...", "models": ["ETS", ...]?}
+  ① core.run_baseline_forecast(note, mode)      SQL 기준 모델 5종
+  ② Python 모델 — 그 run 에 이어 붙임 (모드에 맞는 격자: 운영은 production_train_end 까지)
+  ③ core.refresh_forecast_current() · core.build_dependent_demand()   화면이 쓰는 표
+  ④ VALIDATION 이면 core.run_backtest(run_id)   Champion 선정
+→ {"pipeline_id": "pipe_…", "status": "RUNNING"}
+GET /forecast/run/{pipeline_id 또는 run_id}   → status · stage(SQL/PYTHON/MATERIALIZE/BACKTEST/DONE) · progress
+```
+
+### 시간 예산 — `PIPELINE_MODEL_BUDGET_SECONDS` (기본 300)
+
+품목 11,000개에서 LightGBM 은 품목당 2초, 전체 5시간이 걸립니다(실측). 모델마다 시간 예산을 두고,
+**학습 총량이 큰 품목부터** 돌리다 예산을 넘기면 남은 품목은 `TIME_BUDGET` 사유로 건너뜁니다 — 값을 지어내지 않습니다.
+건너뛴 수는 run 의 `models` jsonb 에 `n_time_budget` 으로 남습니다. 모델별로 `core.model_config.parameters.time_budget_s`
+로 바꿀 수 있고, 0 이면 무제한입니다.
+
+### Docker 없이 로컬에서
+
+```bash
+cd forecast-service
+DATABASE_URL='postgresql://postgres:PASSWORD@db.<ref>.supabase.co:5432/postgres' \
+SERVICE_TOKEN='<앱의 FORECAST_SERVICE_TOKEN 과 같은 값>' \
+.venv/bin/uvicorn app.main:app --port 8000
+```
+
+Docker 를 쓰면 `docker build -t superscm-forecast . && docker run -p 8000:8000 -e DATABASE_URL=… -e SERVICE_TOKEN=… superscm-forecast`.

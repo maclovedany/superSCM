@@ -32,6 +32,9 @@ import {
 import { getLatestSuccessfulRun } from '@/lib/forecast';
 import { getStockoutRisks } from '@/lib/scm';
 import type { SearchParams } from '@/lib/filter';
+import ItemSearchPanel from '@/components/ui/item-search-panel';
+import DataWaitBanner from '@/components/ui/data-wait-banner';
+import { searchItems } from '@/lib/items';
 import ChartFrame from '@/components/chart/_base/chart-frame';
 import ProjectionTotal from '@/components/chart/projection-total';
 import { getProjectionTotal } from '@/lib/charts';
@@ -161,11 +164,13 @@ export default async function InventoryProjectionPage({
   await requireUser();
 
   const params = await searchParams;
-  const [{ rows: items, error: itemError }, { rows: risks }, run, total] = await Promise.all([
+  const q = param(params, 'q') ?? '';
+  const [{ rows: items, error: itemError }, { rows: risks }, run, total, search] = await Promise.all([
     getProjectionItems(),
     getStockoutRisks(),
     getLatestSuccessfulRun(),
     getProjectionTotal(),
+    q.trim().length >= 2 ? searchItems(q) : Promise.resolve({ rows: [], error: null }),
   ]);
 
   const requested = param(params, 'item');
@@ -204,7 +209,8 @@ export default async function InventoryProjectionPage({
   // 칩 목록은 두 자리에서 씁니다 — 정상 화면과 "품목을 찾을 수 없음" 화면.
   // 후자에서는 아무 칩도 선택하지 않습니다.
   const itemChips = (selected: string | null) => (
-    <Panel title="품목 선택" actions={<span className="t-label">결품 임박 순 · 산출 불가는 맨 뒤</span>}>
+    <ItemSearchPanel q={q} results={search.rows} selectedItemId={selected} title="품목 선택"
+      hint="대표코드 · 품목명 · 구코드로 검색 · 아래 칩은 결품 임박 순">
       <div className="chart-legend">
         {items.slice(0, 24).map((item) => {
           const active = item.itemId === selected;
@@ -225,7 +231,7 @@ export default async function InventoryProjectionPage({
           );
         })}
       </div>
-    </Panel>
+    </ItemSearchPanel>
   );
 
   if (itemError) {
@@ -304,6 +310,8 @@ export default async function InventoryProjectionPage({
   return (
     <>
       {header}
+
+      <DataWaitBanner kinds={['INVENTORY']} />
 
       {itemChips(activeItem)}
 
