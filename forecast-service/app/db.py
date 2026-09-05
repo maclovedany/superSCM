@@ -57,6 +57,14 @@ def connect():
         raise RuntimeError("DATABASE_URL 이 설정되지 않았습니다")
     conn = psycopg.connect(url, connect_timeout=CONNECT_TIMEOUT, autocommit=True)
     try:
+        # ★ Supabase 는 디스크가 가득 차면 서버 설정으로 default_transaction_read_only = on 을 켭니다.
+        #   공간을 되찾은 뒤에도 플랫폼이 풀어 줄 때까지 남아 있어, 세션 단위로 되돌려 둡니다.
+        #   디스크가 정말 가득 차 있으면 이 뒤의 쓰기가 "No space left" 로 실패하니 위험하지 않습니다 (error.md #35).
+        try:
+            with conn.cursor() as cur:
+                cur.execute("set default_transaction_read_only = off")
+        except Exception as exc:  # 권한이 없으면 그대로 갑니다
+            log.warning("default_transaction_read_only 를 끄지 못했습니다: %s", exc)
         yield conn
     finally:
         conn.close()
@@ -191,6 +199,26 @@ def fetch_demand_types(conn) -> dict[str, str]:
     except Exception as exc:
         log.warning("수요 유형을 읽지 못했습니다. 품목 필터를 걸지 않습니다: %s", exc)
         return {}
+
+
+def fetch_production_scope(conn) -> dict | None:
+    """운영(PRODUCTION) 실행이 계산할 (품목, 모델) 범위 — 품목마다 Champion + 기본 모델.
+
+    검증 실행은 12모델을 전부 써야 하지만(백테스트 · 모델 비교의 재료), 운영 실행은 화면이
+    Champion 과 기본 모델만 읽습니다. 나머지를 계산해 두고 지우면 실행마다 270 MB 가 잠깐 쌓여
+    무료 플랜 500 MB 를 넘습니다 (error.md #35). 그래서 처음부터 그 둘만 계산합니다.
+    반환: {"default_model": "MA_3M", "champions": {item_id: model_id}}. 기본 모델이 없으면 None
+    (범위를 제한하지 않습니다).
+    """
+    with conn.cursor() as cur:
+        cur.execute("select model_id from core.model_config where is_default order by model_id limit 1")
+        row = cur.fetchone()
+        if not row:
+            return None
+        default_model = str(row[0])
+        cur.execute("select item_id, champion_model_id from core.champion_model where champion_model_id is not null")
+        champions = {str(r[0]): str(r[1]) for r in cur.fetchall()}
+    return {"default_model": default_model, "champions": champions}
 
 
 def fetch_data_snapshot(conn):

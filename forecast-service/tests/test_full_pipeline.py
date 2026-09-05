@@ -164,3 +164,32 @@ def test_running_pipeline_is_detected_and_cleared():
     assert pipeline.running_pipeline()["run_id"] == "pipe_busy"
     pipeline.set_job("pipe_busy", status="SUCCESS", stage="DONE")
     assert pipeline.running_pipeline() is None
+
+
+def test_production_scope_limits_items_to_champion_or_default(monkeypatch):
+    """운영 실행: 모델이 그 품목의 Champion 이거나 기본 모델일 때만 계산한다 (error.md #35)."""
+    import numpy as np
+    import pandas as pd
+    from app.models import future_periods, make_result
+
+    monkeypatch.setattr(pipeline.registry, "get", lambda model_id: (
+        lambda train_df, horizon, params: make_result(future_periods(train_df, horizon), np.full(horizon, 1.0))))
+    grid = pd.DataFrame({
+        "item_id": ["A"] * 4 + ["B"] * 4 + ["C"] * 4,
+        "period": list(pd.date_range("2025-01-01", periods=4, freq="MS")) * 3,
+        "quantity": [1.0] * 12,
+    })
+    model = {"model_id": "SCOPED", "version": "v1", "parameters": {}}
+    scope = {"default_model": "MA_3M", "champions": {"A": "SCOPED", "B": "ETS"}}
+
+    rows, summary = pipeline.forecast_one_model(model, grid, 2, {}, scope=scope)
+    assert {r[2] for r in rows} == {"A"}            # B 는 다른 Champion, C 는 Champion 없음 → 기본 모델만
+    assert summary["n_out_of_scope"] == 2
+
+    rows_all, summary_all = pipeline.forecast_one_model(model, grid, 2, {}, scope=None)
+    assert {r[2] for r in rows_all} == {"A", "B", "C"}   # 검증 실행은 전부
+    assert summary_all["n_out_of_scope"] == 0
+
+    default_scope = {"default_model": "SCOPED", "champions": {"A": "ETS"}}
+    rows_def, _ = pipeline.forecast_one_model(model, grid, 2, {}, scope=default_scope)
+    assert {r[2] for r in rows_def} == {"A", "B", "C"}   # 기본 모델은 모든 품목

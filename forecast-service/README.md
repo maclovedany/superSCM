@@ -21,16 +21,16 @@ Next.js (Vercel)                       Forecast Service (Railway)
 
 ## 모델
 
-| model_id | 계열 | 구현 | 비고 |
-|---|---|---|---|
-| `ETS` | 시계열 | statsmodels SimpleExpSmoothing | `alpha` 가 null 이면 자동 추정 |
-| `HOLT_WINTERS` | 시계열 | statsmodels ExponentialSmoothing | 가법 추세+계절. **2주기(24개월) 미만이면 빈 결과** |
-| `SARIMA` | 시계열 | statsmodels SARIMAX | 24개월 미만이면 비계절 ARIMA. `auto` 면 실패 시 더 단순한 차수로 물러섬 |
-| `PROPHET` | 시계열 | prophet | **선택 설치.** 없으면 등록되지 않음 |
-| `CROSTON` | 간헐수요 | 직접 구현 | 크기 `z` · 간격 `p` 를 지수평활 → `z/p` |
-| `SBA` | 간헐수요 | 직접 구현 | Croston × `(1 − α/2)` 편향 보정 |
-| `TSB` | 간헐수요 | 직접 구현 | 크기 × 발생확률. 수요가 없는 달에도 확률을 갱신 |
-| `LIGHTGBM` | ML | lightgbm | 시차 1·2·3·6·12 + 월 인덱스, 재귀 다단계. σ 는 out-of-fold 잔차 |
+| model_id       | 계열     | 구현                             | 비고                                                                    |
+| -------------- | -------- | -------------------------------- | ----------------------------------------------------------------------- |
+| `ETS`          | 시계열   | statsmodels SimpleExpSmoothing   | `alpha` 가 null 이면 자동 추정                                          |
+| `HOLT_WINTERS` | 시계열   | statsmodels ExponentialSmoothing | 가법 추세+계절. **2주기(24개월) 미만이면 빈 결과**                      |
+| `SARIMA`       | 시계열   | statsmodels SARIMAX              | 24개월 미만이면 비계절 ARIMA. `auto` 면 실패 시 더 단순한 차수로 물러섬 |
+| `PROPHET`      | 시계열   | prophet                          | **선택 설치.** 없으면 등록되지 않음                                     |
+| `CROSTON`      | 간헐수요 | 직접 구현                        | 크기 `z` · 간격 `p` 를 지수평활 → `z/p`                                 |
+| `SBA`          | 간헐수요 | 직접 구현                        | Croston × `(1 − α/2)` 편향 보정                                         |
+| `TSB`          | 간헐수요 | 직접 구현                        | 크기 × 발생확률. 수요가 없는 달에도 확률을 갱신                         |
+| `LIGHTGBM`     | ML       | lightgbm                         | 시차 1·2·3·6·12 + 월 인덱스, 재귀 다단계. σ 는 out-of-fold 잔차         |
 
 값을 낼 수 없으면 **행을 만들지 않습니다.** 0 이나 임의 값으로 채우지 않습니다
 (AGENTS.md 규칙 5 · renew.prd 31.5). 사유는 run 의 `models` jsonb 안 `skipped` 에 남습니다.
@@ -83,13 +83,13 @@ brew install libomp
 인증은 `Authorization: Bearer <SERVICE_TOKEN>` 입니다. `/health` 만 열려 있습니다.
 `SERVICE_TOKEN` 이 설정되지 않으면 나머지는 전부 401 입니다 (fail-closed).
 
-| 메서드 | 경로 | 하는 일 |
-|---|---|---|
-| `GET` | `/health` | `{ ok, db, db_configured, models, skipped, version }` |
-| `GET` | `/models` | registry 목록 + `core.model_config` 의 enabled 여부 |
-| `POST` | `/forecast/run` | `{ run_id?, note?, models? }` → 즉시 `{ run_id, status:'RUNNING' }`. 실행은 BackgroundTask |
-| `GET` | `/forecast/run/{run_id}` | `{ run_id, status, n_models, n_items, n_rows, message }` |
-| `POST` | `/backtest/run` | `{ forecast_run_id? }` → DB 함수 `core.run_backtest` 호출 |
+| 메서드 | 경로                     | 하는 일                                                                                    |
+| ------ | ------------------------ | ------------------------------------------------------------------------------------------ |
+| `GET`  | `/health`                | `{ ok, db, db_configured, models, skipped, version }`                                      |
+| `GET`  | `/models`                | registry 목록 + `core.model_config` 의 enabled 여부                                        |
+| `POST` | `/forecast/run`          | `{ run_id?, note?, models? }` → 즉시 `{ run_id, status:'RUNNING' }`. 실행은 BackgroundTask |
+| `GET`  | `/forecast/run/{run_id}` | `{ run_id, status, n_models, n_items, n_rows, message }`                                   |
+| `POST` | `/backtest/run`          | `{ forecast_run_id? }` → DB 함수 `core.run_backtest` 호출                                  |
 
 ```bash
 TOKEN=change-me
@@ -201,9 +201,12 @@ on conflict (model_id) do nothing;
 
 1번이 없으면 `POST /backtest/run` 이 `관리자 권한이 필요합니다` 로 실패합니다.
 
-**`DATABASE_URL` 은 `postgres` 사용자로 접속해야 합니다.** 직접 접속
-(`db.<ref>.supabase.co:5432`) 이든 Supavisor **세션 모드** 든 상관없지만, 다른 롤로 붙으면
-백테스트 호출이 막힙니다. 배포 전에 그 URL 로 아래를 돌려 확인하세요.
+**`DATABASE_URL` 은 `postgres` 사용자로 접속해야 합니다.** 다른 롤로 붙으면 백테스트 호출이 막힙니다.
+주소는 Supabase → Connect → **Session pooler** 를 권합니다 —
+`postgresql://postgres.<ref>:PASSWORD@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres`.
+Direct connection(`db.<ref>.supabase.co`) 은 **IPv6 전용**이라 IPv4 망에서는 `could not translate host name` 으로
+실패하고, Transaction pooler(6543) 는 `set statement_timeout` 같은 세션 설정을 잃습니다 (error.md #35).
+배포 전에 그 URL 로 아래를 돌려 확인하세요.
 
 ```sql
 select core.is_admin(), session_user;
@@ -221,12 +224,12 @@ select core.is_admin(), session_user;
 2. Root Directory 를 `forecast-service` 로 지정 (모노레포이므로 반드시 필요합니다)
 3. Variables
 
-   | 이름 | 값 |
-   |---|---|
-   | `DATABASE_URL` | Supabase → Project Settings → Database → Connection string (URI). **`postgres` 사용자** — 직접 접속 또는 Supavisor 세션 모드 |
-   | `SERVICE_TOKEN` | 임의의 긴 문자열. Next.js 의 `FORECAST_SERVICE_TOKEN` 과 같게 |
-   | `LOG_LEVEL` | `INFO` |
-   | `DB_PING_TTL` | `45` (선택). `/health` 의 DB 확인 결과를 재사용할 초 |
+   | 이름            | 값                                                                                                                           |
+   | --------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+   | `DATABASE_URL`  | Supabase → Project Settings → Database → Connection string (URI). **`postgres` 사용자** — 직접 접속 또는 Supavisor 세션 모드 |
+   | `SERVICE_TOKEN` | 임의의 긴 문자열. Next.js 의 `FORECAST_SERVICE_TOKEN` 과 같게                                                                |
+   | `LOG_LEVEL`     | `INFO`                                                                                                                       |
+   | `DB_PING_TTL`   | `45` (선택). `/health` 의 DB 확인 결과를 재사용할 초                                                                         |
 
 4. `railway.toml` 이 Dockerfile 빌드와 `/health` 헬스체크를 지정합니다
 5. 배포 후 `curl https://<앱>.up.railway.app/health` 로 `{"ok":true,"db":true}` 확인
@@ -282,7 +285,7 @@ GET /forecast/run/{pipeline_id 또는 run_id}   → status · stage(SQL/PYTHON/M
 
 ```bash
 cd forecast-service
-DATABASE_URL='postgresql://postgres:PASSWORD@db.<ref>.supabase.co:5432/postgres' \
+DATABASE_URL='postgresql://postgres.<ref>:PASSWORD@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres' \
 SERVICE_TOKEN='<앱의 FORECAST_SERVICE_TOKEN 과 같은 값>' \
 .venv/bin/uvicorn app.main:app --port 8000
 ```

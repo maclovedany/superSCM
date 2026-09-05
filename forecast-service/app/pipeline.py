@@ -99,11 +99,14 @@ def forecast_one_model(
     demand_types: dict[str, str],
     progress=None,
     budget_seconds: float | None = None,
+    scope: dict | None = None,
 ) -> tuple[list[tuple], dict]:
     """한 모델을 전 품목에 돌립니다. (insert 할 행, 요약) 을 돌려줍니다.
 
     progress(items_seen, items_total) 를 PROGRESS_EVERY 품목마다 부릅니다 (있으면).
     budget_seconds 를 넘기면 남은 품목은 TIME_BUDGET 사유로 건너뜁니다.
+    scope 가 있으면(운영 실행) 이 모델이 그 품목의 Champion 이거나 기본 모델일 때만 계산합니다
+    (db.fetch_production_scope · error.md #35). 건너뛴 수는 n_out_of_scope 로 남깁니다.
     """
     model_id = str(model["model_id"])
     version = str(model.get("version") or "v1")
@@ -132,6 +135,7 @@ def forecast_one_model(
     budget = float(params.get("time_budget_s", DEFAULT_MODEL_BUDGET_SECONDS) or 0) if budget_seconds is None else budget_seconds
     started = time.monotonic()
     over_budget = 0
+    out_of_scope = 0
     groups = dict(tuple(grid.groupby("item_id", sort=False)))
     order = item_order(grid)
     total = len(order)
@@ -143,6 +147,10 @@ def forecast_one_model(
             progress(seen, total)
         if not item_matches(demand_types.get(item_id), applicable):
             filtered += 1
+            continue
+        if scope is not None and model_id != scope.get("default_model") \
+                and scope.get("champions", {}).get(item_id) != model_id:
+            out_of_scope += 1
             continue
         if budget and (time.monotonic() - started) > budget:
             over_budget += 1
@@ -203,6 +211,7 @@ def forecast_one_model(
         "n_rows": len(rows),
         "n_items": items_done,
         "n_filtered": filtered,
+        "n_out_of_scope": out_of_scope,
     }
     if skipped:
         # 전부 나열하면 jsonb 가 커집니다. 앞 20건만 남깁니다.
@@ -497,6 +506,8 @@ def execute(run_id: str, created: bool, only: list[str] | None = None) -> dict:
             grid["quantity"] = pd.to_numeric(grid["quantity"], errors="coerce").fillna(0.0)
 
             demand_types = db.fetch_demand_types(conn)
+            # ★ 운영 실행은 Champion + 기본 모델만 계산합니다 (error.md #35). 검증은 전부.
+            scope = db.fetch_production_scope(conn) if mode == "PRODUCTION" else None
 
             summaries: list[dict] = []
             n_models = len(configs)
@@ -514,7 +525,7 @@ def execute(run_id: str, created: bool, only: list[str] | None = None) -> dict:
                     set_job(run_id, progress={"model": _mid, "model_index": _idx, "model_total": n_models,
                                               "items_seen": seen, "items_total": total})
 
-                rows, summary = forecast_one_model(model, grid, horizon, demand_types, progress=_progress)
+                rows, summary = forecast_one_model(model, grid, horizon, demand_types, progress=_progress, scope=scope)
                 write_results(conn, run_id, model_id, rows)
                 summary["seconds"] = round((_now() - started).total_seconds(), 1)
                 summaries.append(summary)

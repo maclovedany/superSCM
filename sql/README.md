@@ -34,7 +34,7 @@ Supabase → SQL Editor 에 **파일 하나를 통째로** 붙여넣고 실행�
 | 25 | `24-what-if.sql` | What-If 시뮬레이션 — 읽기 전용. `15` · `16` 의 계산식을 그대로 비추고 `23` 의 `core.is_sales()` 로 영업을 막습니다 |
 | 26 | `26-api.sql` | 외부 연동 API — API 키 · 호출 로그 · 멱등성. 조회(GET) 라우트가 쓰는 `service_role` 권한(뷰 9 · 함수 1)도 여기서 줍니다 |
 | 27 | `27-admin-ops.sql` | ★ Admin 강화 · 운영 모니터링 — 실행 모드(검증/운영) · stale 요약 · 통합 로그 |
-| 28 | `35-dependent-demand.sql` | ★ 실체화 — `forecast_current` · `dependent_demand`(기종 예측 × BOM) · `v_ai_forecast` 재정의 · `v_demand_compare` · `v_machine_bom_forecast` · `v_machine_plan_actual` |
+| 28 | `35-dependent-demand.sql` | ★ 실체화 — `forecast_current` · `dependent_demand`(기종 예측 × BOM) · `v_ai_forecast` 재정의 · `v_demand_compare` · `v_machine_bom_forecast` · `v_machine_plan_actual` · **저장 다이어트**(`make_room_for_run` · `prune_production_models` · `prune_forecast_runs` · `finalize_run_storage`, error.md #35) |
 | 29 | `31-chart-views.sql` | 차트 집계 뷰 10개 — 기간 · 공급처 · 유형별 합계와 건수. 새 계산 없음. 앞 파일(15 · 16 · 19 · 20 · 21 · 23)을 다시 실행했으면 이 파일도 다시 |
 | 30 | `29-sales-column-guard.sql` | ★ 영업 정보 접근 범위를 DB 에서 닫습니다 — 조달 단가 · 발주 금액 · 공급처 상세 · 리드타임 통계 · 예측 정확도를 `core.is_sales()` 로 null 처리 (renew.prd 4.4 · 4.5) |
 | 31 | `28-anon-lockdown.sql` | ★ 항상 마지막 — anon(로그인 전) 권한 회수. 함수를 추가하는 파일을 적용했으면 이 파일을 다시 실행하세요 |

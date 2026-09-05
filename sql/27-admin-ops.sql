@@ -394,6 +394,10 @@ begin
     into v_models
     from core.model_config where enabled and engine = 'SQL';
 
+  -- ★ 자리 비우기 (error.md #35). 같은 모드의 지난 실행을 새 행을 쓰기 전에 지웁니다 — 둘이 겹치면
+  --   무료 플랜 500 MB 를 넘습니다. 함수는 sql/35 가 만듭니다 (plpgsql 은 호출 때 이름을 찾습니다).
+  perform core.make_room_for_run(v_mode);
+
   insert into core.forecast_run
     (run_id, status, mode, granularity, train_start, train_end, horizon, champion_metric,
      data_snapshot_at, models, n_models, triggered_by, triggered_email, note)
@@ -460,6 +464,14 @@ begin
         on d.item_id = g.item_id
        and d.period  = (hp.period - interval '12 months')::date
   ),
+  -- ★ 운영(PRODUCTION) 실행은 품목마다 Champion + 기본 모델만 계산합니다 (error.md #35).
+  --   12모델을 다 써 두고 지우면 실행마다 270 MB 가 잠깐 쌓여 무료 플랜 500 MB 를 넘습니다.
+  --   검증(VALIDATION) 실행은 백테스트 · 모델 비교의 재료라 전부 씁니다.
+  scope as materialized (
+    select c.item_id, c.champion_model_id as model_id
+      from core.champion_model c
+     where c.champion_model_id is not null
+  ),
   points as (
     select m.model_id, m.version, t.item_id, hp.period,
            case m.model_id
@@ -482,7 +494,9 @@ begin
       cross join horizon_periods hp
       left join resid r on r.item_id = t.item_id
       left join py on py.item_id = t.item_id and py.period = hp.period
+      left join scope sc on sc.item_id = t.item_id and sc.model_id = m.model_id
      where m.enabled and m.engine = 'SQL'
+       and (v_mode <> 'PRODUCTION' or m.is_default or sc.item_id is not null)
   )
   insert into core.forecast_result
     (run_id, model_id, model_version, item_id, period, predicted_qty, p50, p80, p90, sigma, basis)

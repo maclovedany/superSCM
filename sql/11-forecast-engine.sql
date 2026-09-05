@@ -201,8 +201,10 @@ create table if not exists core.forecast_result (
   primary key (run_id, model_id, item_id, period)
 );
 
-create index if not exists forecast_result_lookup_idx
-  on core.forecast_result(item_id, model_id, period);
+-- ★ (item_id, model_id, period) 보조 인덱스는 두지 않습니다. 모든 조회가 run_id 로 시작해 기본키로
+--   충분하고, 실행 한 번에 43 MB(전체 199 MB 의 22%) 를 먹어 무료 플랜 디스크를 채웠습니다 (error.md #35).
+--   품목 단위 조회는 core.forecast_current(sql/35) 가 맡습니다.
+drop index if exists core.forecast_result_lookup_idx;
 
 -- ══ 5. In-sample 적합값 ════════════════════════════════════════
 --

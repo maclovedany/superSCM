@@ -429,12 +429,23 @@ begin
   -- 대상은 "그 실행에 예측이 있는 활성 품목" 입니다.
   -- 예측이 없으면 시스템이 발주를 낼 수 없어, 비교가 시스템의 불리 쪽으로 기울지 않게
   -- 아예 제외합니다. 제외 건수는 kpis.skipped_items 로 밝힙니다 (design.md §8.2).
+  -- ★ 검증 구간 실적을 한 번만 뽑아 둡니다 (error.md #35). 루프 안에서 품목 × 달마다
+  --   v_test_actual 을 regexp 정규화하며 통째로 훑던 것이 품목 1만 개에서 300초를 넘겼습니다.
+  drop table if exists _vo_actual;
+  create temp table _vo_actual as
+    select upper(regexp_replace(coalesce(a.item_id, ''), '[\s\-_]', '', 'g')) as item_id,
+           a.period, sum(a.quantity) as q
+      from core.v_test_actual a
+     group by 1, 2;
+  create index on _vo_actual (item_id, period);
+  analyze _vo_actual;
+
   for it in
     with dm as (
       select mc.model_id from core.model_config mc where mc.is_default
        order by mc.model_id limit 1
     ),
-    avail as (
+    avail as materialized (
       select distinct f.item_id, f.model_id
         from core.forecast_result f
        where f.run_id = v_run_id
@@ -457,7 +468,7 @@ begin
         from core.model_performance p
        where p.backtest_run_id = v_bt_id
     ),
-    ins as (
+    ins as materialized (
       select f.item_id, f.model_id, avg(f.sigma) as sigma_avg
         from core.forecast_result f
        where f.run_id = v_run_id and f.sigma is not null
@@ -512,11 +523,11 @@ begin
           from generate_series(1, v_n_months) g(idx)
       ) mon
       left join lateral (
-        -- 검증 구간 실적. 백테스트 채점과 같은 뷰입니다 (sql/07).
-        select sum(a.quantity) as q
-          from core.v_test_actual a
-         where upper(regexp_replace(coalesce(a.item_id, ''), '[\s\-_]', '', 'g')) = it.item_id
-           and a.period = mon.period
+        -- 검증 구간 실적. 백테스트 채점과 같은 뷰(sql/07)를 루프 앞에서 _vo_actual 로 떠 둔 것입니다.
+        select sum(a.q) as q
+          from _vo_actual a
+         where a.item_id = it.item_id
+           and a.period  = mon.period
       ) d on true
       left join lateral (
         select sum(gr.qty) as q

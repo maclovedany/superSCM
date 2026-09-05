@@ -34,6 +34,7 @@
 
 그래도 시간 초과가 나면, 아래를 한 번 돌려 제한을 늘려 두고 다시 보세요.
 되돌리려면 `reset statement_timeout` 으로 같은 자리에서 지웁니다.
+(2026-09-05 운영 DB 에는 이미 적용되어 있습니다 — `select rolconfig from pg_roles where rolname = 'authenticated'` 로 확인)
 
 ```sql
 alter role authenticated set statement_timeout = '30s';
@@ -86,12 +87,16 @@ alter role authenticated set statement_timeout = '30s';
 
 `34` 끝의 확인 쿼리에서 `dummy ITEM0%` 가 0, `602K02693` 의 `avg_12m` 이 772.3 이면 맞게 들어간 것입니다.
 
-**② Python 예측 서비스** — `forecast-service/README.md` 의 "로컬 실행" 또는 Docker. 환경변수:
-- 서비스: `DATABASE_URL`(Supabase → Settings → Database → Connection string, **postgres 사용자**) · `SERVICE_TOKEN`(임의 긴 문자열)
+**② Python 예측 서비스** — `forecast-service/README.md` 의 "로컬 실행"(`./run-local.sh`, Docker 없이 venv) 또는 Docker. 환경변수는 `forecast-service/.env` 에:
+- 서비스: `DATABASE_URL`(Supabase → Connect → **Session pooler** · `postgres.<ref>@aws-0-ap-northeast-2.pooler.supabase.com:5432`. Direct 는 IPv6 전용이라 집 · 회사 망에서 대개 안 붙습니다) · `SERVICE_TOKEN`(임의 긴 문자열)
 - 앱 `.env.local`: `FORECAST_SERVICE_URL=http://localhost:8000` · `FORECAST_SERVICE_TOKEN=<같은 값>`
+- `curl localhost:8000/health` 가 `"db":true,"db_configured":true` 면 준비된 것입니다. `false` 면 `.env` 를 읽지 못한 것입니다.
 
 **③ 예측 실행** — `/admin/forecast-runs` 에서 **검증 실행** 1회(백테스트까지 자동) → **운영 실행** 1회 → `/alerts` 스캔.
-서비스가 SQL 모델 → Python 모델 → 실체화 → 백테스트를 순서대로 돌립니다(11,000 품목 기준 10~15분).
+서비스가 SQL 모델 → Python 모델 → 실체화 → 백테스트를 순서대로 돌립니다(9,772 품목 기준 약 8분).
+버튼은 끝날 때까지 "실행 중" 으로 잠기고, 실행 이력에 행이 생기면 "완료" 입니다. **한 번만 누르세요** — 두 번째부터는 서버가 409 로 거절합니다.
+디스크: 검증 1회 ≈ 190 MB · 운영 1회 ≈ 60 MB 를 씁니다. 실행마다 같은 모드의 지난 실행을 먼저 지우므로 무료 플랜 500 MB 안에 머뭅니다 (`error.md` #35).
+Supabase → Settings → Usage 의 Database size 가 400 MB 를 넘으면 Pro 플랜을 먼저 검토하세요.
 
 **④ 확인** — `/machine-forecast` · `/model-comparison` · `/forecast` · `/analysis/demand-profile` · `/dashboard` 에 `ITEM0` 이 없고
 기종 차트에 영업 OL · SCM OL 두 선이 보이면 전환이 끝난 것입니다.

@@ -184,9 +184,11 @@ grant execute on function core.build_dependent_demand()      to authenticated;
 -- 실행 한 번이 96만 행(모델 12 × 품목 1만 × 12기간)입니다. Supabase 무료 플랜(500 MB)은
 -- 한 번도 다 담지 못했습니다. 규칙 셋으로 줄입니다.
 --   ① basis 를 행마다 쓰지 않습니다 (sql/27 · 서비스).
---   ② 운영(PRODUCTION) 실행은 화면이 쓰는 행만 남깁니다 — 품목마다 Champion 모델 + 기본 모델.
+--   ② 운영(PRODUCTION) 실행은 화면이 쓰는 행만 씁니다 — 품목마다 Champion 모델 + 기본 모델. 실행 함수와
+--      서비스가 처음부터 그 둘만 계산하고(sql/27 · pipeline.py), prune_production_models 는 안전망으로 남습니다.
 --      모델 비교 · 기종 화면은 검증(VALIDATION) 실행을 읽으므로 잃는 것이 없습니다.
 --   ③ 실행 이력은 검증 최근 1 · 운영 최근 1 만 보존합니다 (Champion 을 뽑은 백테스트가 가리키는 실행은 지키고).
+--   ④ 새 실행은 **시작할 때** 같은 모드의 지난 실행을 먼저 지웁니다 — 둘이 겹치는 정점을 없애기 위해.
 
 -- ② 운영 실행 다이어트
 create or replace function core.prune_production_models(p_run_id text)
@@ -254,6 +256,32 @@ begin
   return v_n;
 end;
 $$;
+
+-- ④ 실행을 **시작하기 전에** 같은 모드의 지난 실행을 비웁니다.
+--    검증 실행 하나가 21만 행 × 12모델 ≈ 270 MB 입니다. 지난 검증을 둔 채 새 검증을 쓰면 정점이
+--    78 + 270 + 60 + 270 ≈ 680 MB 로 500 MB 를 다시 넘습니다 (error.md #35). 그래서 끝나고 지우는
+--    prune_forecast_runs 만으로는 부족하고, 새 실행이 행을 쓰기 전에 자리를 비워야 합니다.
+--    Champion 보호(protected)는 여기서 무시합니다 — champion_model.backtest_run_id 는 on delete set null
+--    이라 Champion 자체는 남고, model_performance 는 새 백테스트가 10분 뒤 다시 채웁니다.
+--    새 실행이 실패하면 그 모드의 실행이 잠시 없습니다. 무료 플랜 500 MB 에서는 감수하는 거래입니다.
+create or replace function core.make_room_for_run(p_mode text)
+returns int
+language plpgsql
+security definer
+set search_path = core, public
+as $$
+declare v_n int := 0; v_mode text := case when upper(coalesce(p_mode, '')) = 'PRODUCTION' then 'PRODUCTION' else 'VALIDATION' end;
+begin
+  delete from core.forecast_run r
+   where (r.status = 'SUCCESS' and coalesce(r.mode, 'VALIDATION') = v_mode)
+      or (r.status in ('FAILED', 'RUNNING') and r.started_at < now() - interval '1 day');
+  get diagnostics v_n = row_count;   -- forecast_result · backtest_run · model_performance 는 on delete cascade
+  return v_n;
+end;
+$$;
+
+revoke all on function core.make_room_for_run(text) from public, anon;
+grant execute on function core.make_room_for_run(text) to authenticated;
 
 -- 실행이 끝났을 때 한 번 부르는 마무리 — 실체화 → 다이어트 → 보존. 서비스와 SQL 실행 함수가 부릅니다.
 create or replace function core.finalize_run_storage(p_run_id text default null)

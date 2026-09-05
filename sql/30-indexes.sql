@@ -64,11 +64,11 @@
 -- ══ 5. core — 예측 결과 ════════════════════════════════════════
 --
 -- 기본키가 (run_id, model_id, item_id, period) 라 run_id 로 시작하는 조회는 이미
--- 덮입니다. 모자란 것은 "한 run 의 한 품목" 을 곧바로 찾는 경로입니다 —
--- core.v_ai_forecast 와 v_consensus_forecast 가 그렇게 읽습니다.
+-- 덮입니다. "한 run 의 한 품목" 경로는 sql/35 부터 core.forecast_current(실체화 표)가 맡으므로
+-- forecast_result 에 보조 인덱스를 더 두지 않습니다 — 실행당 60 MB 를 먹어 무료 플랜 디스크를
+-- 채운 전력이 있습니다 (error.md #35). 예전에 만들었다면 지웁니다.
 
-create index if not exists forecast_result_run_item_idx
-  on core.forecast_result (run_id, item_id, period);
+drop index if exists core.forecast_result_run_item_idx;
 
 -- 성공한 실행 중 가장 최근을 고르는 조회(core.v_ai_forecast · analytics 뷰들).
 create index if not exists forecast_run_status_started_idx
@@ -80,7 +80,7 @@ select schemaname, tablename, indexname
   from pg_indexes
  where (schemaname = 'raw')
     or (schemaname = 'core' and indexname in
-          ('forecast_result_run_item_idx', 'forecast_run_status_started_idx'))
+          ('forecast_run_status_started_idx'))
  order by schemaname, tablename, indexname;
 
 -- 인덱스는 통계가 있어야 쓰입니다. 대량 적재 뒤에는 한 번 돌려주세요.

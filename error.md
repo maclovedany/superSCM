@@ -41,6 +41,7 @@
 | `… 에 없는 컬럼을 가리려 했습니다: …` (P0001, sql/29) | 앞 파일의 뷰가 `16` 의 cascade 로 지워진 채 `29` 를 돌림 | [#32](#32-에-없는-컬럼을-가리려-했습니다--앞-파일의-뷰가-cascade-로-지워진-채-29-를-돌렸습니다) |
 | `Functions cannot be passed directly to Client Components` — 화면 500 | 서버 page.tsx 가 `'use client'` 차트에 함수 props(`hrefFor`)를 넘김 | [#33](#33-functions-cannot-be-passed-directly-to-client-components--서버가-차트에-함수를-넘겼습니다) |
 | 예측 실행이 11,000 품목에서 10분+ · `statement timeout` | 상관 서브쿼리 · CTE 인라인 · 방금 넣은 run 의 통계 없음 | [#34](#34-품목-11000개에서-실행-함수가-10분을-넘긴다--세-가지-원인) |
+| `cannot execute INSERT in a read-only transaction` · Supabase 디스크 723 MB / 500 MB | 실행마다 96만 행 × basis jsonb · 보조 인덱스 · 실행 3개가 동시에 | [#35](#35-cannot-execute-insert-in-a-read-only-transaction--예측-결과가-디스크를-채웠습니다) |
 
 > **Supabase 3층 구조를 먼저 기억하면 #3·#4·#5 를 헷갈리지 않습니다.**
 >
@@ -965,3 +966,89 @@ Uncaught Error: Functions cannot be passed directly to Client Components unless 
 - 뷰 위에 뷰를 쌓을 때 아래 뷰가 정규식 · distinct on · 집계를 품고 있으면 materialized view 로 바꾸고 인덱스를 둡니다.
 - 성능은 **품목 수를 실제 규모로 놓고** 재야 합니다. 20품목에서 1초는 아무것도 증명하지 않습니다.
 
+---
+
+## #35 `cannot execute INSERT in a read-only transaction` — 예측 결과가 디스크를 채웠습니다
+
+**증상** 실데이터 첫 검증 실행 뒤로 화면마다 `canceling statement due to statement timeout`, 서비스 로그에는
+`cannot execute INSERT in a read-only transaction`, Supabase 대시보드에는 **Database size 723 MB / 500 MB**.
+디스크가 차면 Supabase 는 서버 설정(postgresql.conf 층)으로 `default_transaction_read_only = on` 을 켭니다.
+그 뒤로는 앱 · 서비스 · SQL Editor 의 모든 쓰기가 위 오류로 죽고, 남은 공간 때문에 읽기도 느려집니다.
+
+**어디에 갔나** (`pg_total_relation_size`)
+
+| 표 | 크기 | 내용 |
+|---|---|---|
+| `core.forecast_result` | 619 MB | 검증 실행 3개 · 실행마다 12모델 × 9,772품목 × 12기간 ≈ 96만 행 |
+| ├ heap | 384 MB | 행마다 `basis` jsonb 79~259 B — 어느 화면도 읽지 않는 계산 근거 |
+| ├ `forecast_result_pkey` | 171 MB | (run_id, model_id, item_id, period) — 22 B 짜리 run_id 가 행마다 |
+| └ `forecast_result_lookup_idx` | 64 MB | (item_id, model_id, period) — 조회는 전부 run_id 로 시작해 쓰이지 않음 |
+
+**원인 넷**
+
+1. **basis 를 행마다 썼습니다.** 더미 20품목에서는 무해했던 `jsonb_build_object(...)` 가 96만 행에서 80~250 MB 입니다. 어느 화면도 행 단위 basis 를 읽지 않습니다 (실행 단위 `forecast_run.models` 로 충분합니다).
+2. **버튼이 세 번 눌려 실행 3개가 동시에 돌았습니다.** 첫 실행이 8초 `statement_timeout` 에 걸려 "실패" 로 보였지만 서비스 쪽은 계속 도는 상태였고, 다시 누른 두 번이 각각 96만 행을 더 썼습니다.
+3. **보존 정책이 없었습니다.** 실행마다 새 run_id 로 쌓이고 지우는 자리가 없었습니다.
+4. **두 실행이 겹치는 정점.** 지난 검증(270 MB)을 둔 채 새 검증을 쓰면 정점이 78 + 270 + 60 + 270 ≈ 680 MB 로, 끝나고 지우는 것만으로는 500 MB 를 다시 넘습니다.
+
+**복구 순서** (SQL Editor 는 read-only 라 안 됩니다 — `psql` 로 **postgres 사용자** · Session pooler 로 붙습니다)
+
+```sql
+set default_transaction_read_only = off;          -- 이 세션만 쓰기 허용
+truncate core.forecast_result, core.forecast_current, core.dependent_demand;
+delete from core.forecast_run;                    -- backtest_run · model_performance 는 cascade
+vacuum;                                           -- 723 MB → 78 MB
+```
+
+공간을 되찾아도 Supabase 는 `default_transaction_read_only = on` 을 **바로 풀지 않습니다**
+(설정 파일 층이라 `alter database … reset` 이 듣지 않습니다). 플랫폼이 풀어 줄 때까지 세션 시작 시 덮어쓰는
+롤 설정으로 다리를 놓았습니다. 풀린 뒤에는 `reset` 으로 걷어 냅니다.
+
+```sql
+alter role authenticated set default_transaction_read_only = off;
+alter role service_role  set default_transaction_read_only = off;
+alter role postgres      set default_transaction_read_only = off;
+-- 나중에: alter role authenticated reset default_transaction_read_only;  (세 롤 모두)
+```
+
+서비스(`forecast-service/app/db.py`)도 접속마다 `set default_transaction_read_only = off` 를 한 줄 합니다.
+디스크가 정말 가득 차 있으면 그 뒤의 쓰기는 `No space left` 로 실패하니 위험하지 않습니다.
+
+**해결 — 저장 다이어트** (`sql/35 §2b` · `sql/27` · `sql/11` · 서비스)
+
+| 규칙 | 어디서 | 효과 (실행 1회) |
+|---|---|---|
+| ① basis 를 행마다 쓰지 않음 (`null::jsonb`) | `run_baseline_forecast` · `pipeline.py` | −80~250 MB |
+| ② 보조 인덱스 제거 — 모든 조회가 run_id 로 시작 · 품목 단위는 `forecast_current` 가 맡음 | `sql/11` · `sql/30` | −43 MB |
+| ③ 운영 실행은 품목마다 Champion + 기본 모델만 **계산** (SQL 은 `scope` CTE · 서비스는 `fetch_production_scope`) — 다 쓰고 지우면 정점 270 MB 가 생기므로 처음부터 안 씁니다. `prune_production_models` 는 안전망 | `run_baseline_forecast` · `pipeline.py` | 270 MB → 60 MB · 실행 8분 → 2분 |
+| ④ 실행 이력은 검증 1 · 운영 1 (`prune_forecast_runs`) | `finalize_run_storage` | 누적 안 함 |
+| ⑤ **새 실행은 시작할 때** 같은 모드의 지난 실행을 먼저 지움 (`make_room_for_run`) | `run_baseline_forecast` 첫 줄 | 정점 680 → 410 MB |
+| ⑥ 실행 중이면 새 실행을 거절 (HTTP 409) · 버튼은 "실행 중" 으로 잠금 | `main.py` · `run-form.tsx` | 동시 실행 0 |
+
+**결과** (운영 · 실데이터 9,772 품목)
+
+| | 전 | 후 |
+|---|---|---|
+| 검증 실행 1회 (12모델 · 963,000행) | ≈ 320 MB | 190 MB (heap 88 · pkey 68 · 보조 idx 0) |
+| 운영 실행 1회 | ≈ 320 MB | ≈ 60 MB (Champion + 기본 모델) |
+| DB 전체 (입력 78 MB 포함) | 723 MB · read-only | ≈ 330 MB |
+| 검증 실행 시간 (SQL 5 + Python 7 + 실체화 + 백테스트) | — | 8분 (LightGBM 예산 300초) |
+
+⑤ 의 대가: 새 검증 실행이 실패하면 그 모드의 실행이 잠시 없고 `model_performance` 는 새 백테스트(10분 뒤)가 다시 채웁니다
+(`champion_model` 은 `on delete set null` 이라 남습니다). 무료 플랜 500 MB 에서 감수하는 거래이며, **Pro 플랜(8 GB)** 으로
+올리면 `make_room_for_run` 을 빈 함수로 바꾸고 `prune_forecast_runs(3, 3)` 처럼 보존을 늘릴 수 있습니다.
+
+**함께 잡은 것** — `run_virtual_operation`(가상 운영) 이 품목 1만 개에서 300초를 넘겼습니다. 루프 안에서 품목 × 달마다
+`v_test_actual` 을 regexp 정규화하며 통째로 훑고 있었습니다. 루프 앞에서 임시 표 `_vo_actual` 로 한 번 떠 두고 인덱스를
+걸었습니다 (`sql/17`). #34 의 "무거운 뷰를 조인마다 다시 계산하게 두면 안 됩니다" 와 같은 병입니다.
+
+**접속 메모** — Supabase **Direct connection** 은 IPv6 전용이라 IPv4 망에서는 `could not translate host name` 으로 실패합니다.
+`postgres.<ref>@aws-0-ap-northeast-2.pooler.supabase.com:5432` (**Session pooler**) 를 쓰면 됩니다. Transaction pooler(6543) 는
+`set statement_timeout` 같은 세션 설정을 잃으니 서비스에는 쓰지 않습니다.
+
+**예방**
+- 행 단위로 jsonb 를 쓰기 전에 **누가 읽는지** 먼저 묻습니다. 읽는 화면이 없으면 쓰지 않습니다.
+- 대량 결과 표는 만들 때 **보존 정책과 정점(겹침) 크기**를 같이 정합니다. "끝나고 지운다" 는 정점을 못 막습니다.
+- 인덱스는 조회 패턴으로 정당화합니다. 기본키 앞 컬럼으로 시작하는 조회만 있으면 보조 인덱스는 비용입니다.
+- 오래 도는 실행 버튼은 서버가 409 로 거절하고, 화면은 서버 상태를 폴링해 "실행 중" 을 보여야 합니다. "완료" 는 실행 이력에 행이 생겼을 때만 씁니다.
+- Supabase 무료 플랜은 Database size 를 매주 한 번은 봅니다 (Settings → Usage). 400 MB 를 넘으면 다이어트나 플랜을 먼저 결정합니다.
