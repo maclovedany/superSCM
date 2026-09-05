@@ -8,6 +8,7 @@
 //   2  Backend    이 파일 — 레이아웃 · 액션에서 검증
 //   3  Database   sql/03-auth.sql · 04-rls.sql 의 RLS
 
+import { cache } from 'react';
 import { redirect } from 'next/navigation';
 import { createSupabaseServerClient } from './supabase/server';
 import { isSalesActor } from './agent/redact';
@@ -35,7 +36,13 @@ export type SessionResult =
   | { status: 'INACTIVE' }
   | { status: 'ERROR'; detail: string };
 
-export async function getSession(): Promise<SessionResult> {
+/**
+ * ★ react `cache()` — 한 요청 안에서는 한 번만 Auth 서버와 DB 에 묻습니다.
+ *   레이아웃(requireUser)과 화면(requireUser · getSessionUser)이 각자 부르면 요청마다
+ *   Auth 검증 2회 + app_user 조회 2회 = 왕복 4번(약 300~400ms)이 더 붙었습니다.
+ *   캐시는 요청 단위라 사용자끼리 섞이지 않고, 다음 요청은 다시 검증합니다.
+ */
+export const getSession = cache(async function getSession(): Promise<SessionResult> {
   let supabase;
   try {
     supabase = await createSupabaseServerClient();
@@ -83,7 +90,7 @@ export async function getSession(): Promise<SessionResult> {
       active: row.active,
     },
   };
-}
+});
 
 /** 쓸 수 있는 계정이 아니면 null 을 돌려줍니다. */
 export async function getSessionUser(): Promise<SessionUser | null> {

@@ -49,9 +49,13 @@ export async function middleware(request: NextRequest) {
     },
   });
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // ★ getClaims — 토큰을 서명 키(JWKS, 캐시됨)로 로컬에서 검증합니다. getUser 는 요청마다
+  //   Auth 서버를 왕복(60~160ms)했고, 화면 전환마다 그 시간이 그대로 붙었습니다.
+  //   여기서는 "세션이 있는가" 만 판정하고 쿠키를 갱신합니다. 사용자 신원과 역할은
+  //   레이아웃의 requireUser() 가 getUser 로 다시 확인합니다 (lib/auth.ts).
+  //   프로젝트가 아직 대칭 키(HS256)면 라이브러리가 스스로 getUser 로 내려가므로 안전합니다.
+  const { data: claims } = await supabase.auth.getClaims();
+  const user = claims?.claims ?? null;
 
   const { pathname } = request.nextUrl;
 
