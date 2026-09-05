@@ -141,3 +141,11 @@ analytics  화면 · 차트 · 에이전트가 읽는 뷰. 무거운 것은 실�
 3. 화면: 검색형 선택 · `/machine-forecast` · 오버레이 시리즈 · DataWaitBanner · 페이지 → ③
 4. 운영 DB 적용(확인 후) → 검증 실행 → 백테스트 → 운영 실행 → ④
 5. 더미 파생 결과 삭제(확인 후) → ⑤ · 문서(`SCHEMA.md` · `sql/README.md` · `step.md` · `error.md`)
+
+## 12. 구현 결과 (2026-09-05)
+
+- 하네스(실데이터 9,772 품목)에서 SQL 31 파일 pass 1 · 2 전부 통과, seed(운영 실행 · 백테스트 · 알림 스캔) 완료, `602K02693` 12개월 평균 772.3 일치.
+- 전체 파이프라인 6분 44초 (목표 30분). Champion 이 12개 모델 전부에 분포 — ETS 697 · TSB 664 · MA_6M 628 · … · SARIMA 2.
+- 스펙과 다른 점은 `docs/superpowers/plans/2026-09-05-realdata-2-service.md` · `-3-screens.md` 의 "스펙과 다른 점" 절.
+- 성능 세 원인과 처방은 `error.md` #34.
+
