@@ -86,6 +86,9 @@ ALL_FILES=(
   03-auth.sql
   04-rls.sql
   06-core-extend.sql
+  32-realdata-schema.sql
+  33-realdata-views.sql
+  34-realdata-input.sql
   07-train-isolation.sql
   08-import.sql
   09-import-commit.sql
@@ -106,6 +109,7 @@ ALL_FILES=(
   25-python-models.sql
   26-api.sql
   27-admin-ops.sql
+  35-dependent-demand.sql
   31-chart-views.sql
   29-sales-column-guard.sql
   28-anon-lockdown.sql
@@ -120,13 +124,14 @@ ALL_FILES=(
 if [[ "${ORDER:-}" == "25first" ]]; then
   ALL_FILES=(
     01-grants.sql 03-auth.sql 04-rls.sql 06-core-extend.sql
+    32-realdata-schema.sql 33-realdata-views.sql 34-realdata-input.sql
     07-train-isolation.sql 08-import.sql 09-import-commit.sql
     10-demand-profile.sql 11-forecast-engine.sql 12-forecast-summary.sql
     13-backtest.sql 15-inventory-projection.sql
     16-safety-stock-recommendation.sql 17-virtual-operation.sql
     18-forecast-override.sql 19-approval.sql 25-python-models.sql
     20-alert.sql 21-dashboard.sql 22-agent.sql 23-atp-sales.sql
-    24-what-if.sql 26-api.sql 27-admin-ops.sql 31-chart-views.sql
+    24-what-if.sql 26-api.sql 27-admin-ops.sql 35-dependent-demand.sql 31-chart-views.sql
     29-sales-column-guard.sql
     28-anon-lockdown.sql
   )
@@ -245,6 +250,26 @@ load_step() {
 echo "Setup:"
 load_step "prelude (Supabase stubs)" "$PRELUDE" "$LOG_DIR/00-prelude.log"
 load_step "dump (schema + data)"     "$DUMP"    "$LOG_DIR/00-dump.log"
+
+# ── Real data (6회차) ──────────────────────────────────────────
+#
+# sql/34 drops the dummy raw tables and rebuilds the input layer on the real
+# tables (raw.dim_item, raw.fact_shipment, ...). Those tables are created by
+# sql/32 (idempotent copy of the external 01-schema.sql) and FILLED by the
+# external 02-data-*.sql files, which are 16 MB and live outside the repo.
+# REALDATA_SQL_DIR points at that folder; default is the lecture folder on
+# this machine. Set REALDATA_SQL_DIR= (empty) to run without real data --
+# every demand-driven file then sees zero rows.
+REALDATA_SQL_DIR="${REALDATA_SQL_DIR-/Users/danymac/Desktop/00. AI/00. 강의 및 교육/08. 한국후지BI/6회차/03. DB적재_SQL}"
+if [[ -n "$REALDATA_SQL_DIR" && -d "$REALDATA_SQL_DIR" ]]; then
+  load_step "sql/32 (real raw tables)" "$SQL_DIR/32-realdata-schema.sql" "$LOG_DIR/00-realdata-schema.log"
+  for data in "$REALDATA_SQL_DIR"/02-data-*.sql; do
+    [[ -f "$data" ]] || continue
+    load_step "real data $(basename "$data")" "$data" "$LOG_DIR/00-realdata-$(basename "${data%.sql}").log"
+  done
+else
+  echo "  real data                    skipped (REALDATA_SQL_DIR not set or missing)"
+fi
 echo
 
 # ── Run project files ─────────────────────────────────────────

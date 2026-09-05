@@ -66,7 +66,7 @@ comment on column core.forecast_setting.production_train_end is
 
 -- 기본값은 데이터의 마지막 날입니다. 값이 이미 있으면 건드리지 않습니다.
 update core.forecast_setting s
-   set production_train_end = (select max(u.use_date) from raw.usage_history u)
+   set production_train_end = (select max(d.period) from core.v_demand_monthly d)
  where s.id = 1
    and s.production_train_end is null;
 
@@ -181,7 +181,7 @@ begin
     select r.*,
            (select count(*) from core.forecast_result f where f.run_id = r.run_id) as result_rows,
            (r.data_snapshot_at is not null
-            and r.data_snapshot_at < (select max(loaded_at) from raw.usage_history)) as is_stale
+            and r.data_snapshot_at < (select d.data_loaded_at from core.v_data_loaded_at d)) as is_stale
       from core.forecast_run r
   $v$;
   execute 'grant select on analytics.v_forecast_run to authenticated';
@@ -210,24 +210,21 @@ select 'BULK_CHANGE_ROWS', 1000, '행',
 
 create or replace view core.v_production_demand as
 select
-  u.item_id,
-  case s.granularity
-    when 'WEEK' then date_trunc('week',  u.use_date)::date
-    else             date_trunc('month', u.use_date)::date
-  end                as period,
-  sum(u.qty)         as quantity,
-  count(*)           as tx_count,
-  min(u.use_date)    as first_use_date,
-  max(u.use_date)    as last_use_date
-from raw.usage_history u
+  d.item_id,
+  d.period,
+  sum(d.qty)             as quantity,
+  sum(d.n_source_codes)  as tx_count,
+  min(d.period)          as first_use_date,
+  max(d.period)          as last_use_date
+from core.v_demand_monthly d
 cross join core.forecast_setting s
 where s.id = 1
-  and u.use_date >= s.train_start
-  and u.use_date <= coalesce(s.production_train_end, s.train_end)
-  and u.qty > 0
+  and d.period >= s.train_start
+  and d.period <= coalesce(s.production_train_end, s.train_end)
+  and d.qty > 0
   and not exists (
         select 1 from core.outlier_exclusion e
-         where e.item_id = u.item_id and e.use_date = u.use_date
+         where e.item_id = d.item_id and e.use_date = d.period
       )
 group by 1, 2;
 
@@ -420,13 +417,15 @@ begin
            (date_trunc('month', v_train_end) + (h || ' month')::interval)::date as period
       from generate_series(1, s.forecast_horizon) as h
   ),
-  grid as (
+  -- ★ materialized — 격자를 한 번만 계산해 둡니다. 인라인되면 계획기가 PRODUCTION 모드에서
+  --   아래 tail · py 조인마다 격자 뷰를 다시 돌려(Nested Loop) 10분을 넘겼습니다 (error.md #34).
+  grid as materialized (
     select g.item_id, g.period, g.quantity
       from core.v_forecast_grid g
      where g.mode = v_mode
   ),
   -- 학습 구간 마지막 값들
-  tail as (
+  tail as materialized (
     select item_id,
            avg(quantity) filter (where rn <= 3) as last3,
            avg(quantity) filter (where rn <= 6) as last6,
@@ -439,7 +438,7 @@ begin
      group by item_id
   ),
   -- 모델별 잔차 표준편차
-  resid as (
+  resid as materialized (
     select item_id,
            stddev_samp(quantity - fit_ma_3m)          as sd_ma_3m,
            stddev_samp(quantity - fit_ma_6m)          as sd_ma_6m,
@@ -451,13 +450,15 @@ begin
      group by item_id
   ),
   -- 전년 동월 실적 (없으면 null → 행을 만들지 않습니다)
-  py as (
-    select g.item_id, hp.period,
-           (select d.quantity from grid d
-             where d.item_id = g.item_id
-               and d.period = (hp.period - interval '12 months')::date) as py_qty
+  -- ★ 상관 서브쿼리가 아니라 조인입니다. 서브쿼리로 쓰면 (품목 × 지평) 칸마다 격자 CTE 를
+  --   통째로 다시 훑어 11,000 품목에서 몇 분이 걸립니다 (error.md #34). 해시 조인이면 1초 안입니다.
+  py as materialized (
+    select g.item_id, hp.period, d.quantity as py_qty
       from (select distinct item_id from grid) g
       cross join horizon_periods hp
+      left join grid d
+        on d.item_id = g.item_id
+       and d.period  = (hp.period - interval '12 months')::date
   ),
   points as (
     select m.model_id, m.version, t.item_id, hp.period,
@@ -522,6 +523,11 @@ begin
      where a.resolved_at is null
        and a.type = 'BULK_DATA_CHANGE';
   end if;
+
+  -- ★ 실체화 (sql/35). 화면이 쓰는 예측 표를 이 실행으로 다시 씁니다. 함수는 sql/35 가
+  --   만들므로 실행 시점에만 있으면 됩니다 (plpgsql 은 호출 때 이름을 찾습니다).
+  perform core.refresh_forecast_current();
+  perform core.build_dependent_demand();
 
   exception
     when others then
@@ -835,6 +841,10 @@ begin
          duration_ms = (extract(epoch from (clock_timestamp() - v_started)) * 1000)::int,
          message = v_rows || '행을 채점했습니다'
    where r.backtest_run_id = v_id;
+
+  -- ★ Champion 이 바뀌었으니 화면이 쓰는 예측 표를 다시 씁니다 (sql/35).
+  perform core.refresh_forecast_current();
+  perform core.build_dependent_demand();
 
   exception
     when others then
@@ -1722,7 +1732,7 @@ with loaded as (
   --   raw.usage_history 만 보면 재고·발주 적재가 배너를 띄우지 못하는데,
   --   대량 적재 트리거는 data_type 을 가리지 않고 울려 두 신호가 어긋납니다.
   select (select d.data_loaded_at from core.v_data_loaded_at d) as data_loaded_at,
-         (select max(u.use_date)  from raw.usage_history u)      as data_end
+         (select max(d.period)    from core.v_demand_monthly d)  as data_end
 ),
 picked as (
   -- core.v_ai_forecast 와 같은 규칙으로 고릅니다. 두 곳이 다르면 배너와 숫자가 어긋납니다.
@@ -1809,8 +1819,8 @@ select e.item_id,
        e.excluded_at,
        au.email as excluded_email,
        -- 그날 그 품목의 원본 수량. 무엇을 뺐는지 눈으로 확인할 수 있어야 합니다.
-       (select sum(u.qty) from raw.usage_history u
-         where u.item_id = e.item_id and u.use_date = e.use_date) as excluded_qty
+       (select sum(d.qty) from core.v_demand_monthly d
+         where d.item_id = e.item_id and d.period = e.use_date) as excluded_qty
   from core.outlier_exclusion e
   left join core.v_item_master im on im.item_id = e.item_id
   left join core.app_user au on au.user_id = e.excluded_by;

@@ -310,7 +310,7 @@ def test_execute_runs_every_model_and_finalizes_the_run(monkeypatch):
             }
         ],
     )
-    monkeypatch.setattr(pipeline.db, "fetch_grid", lambda c: grid_rows)
+    monkeypatch.setattr(pipeline.db, "fetch_grid", lambda c, mode="VALIDATION": grid_rows)
     monkeypatch.setattr(pipeline.db, "fetch_demand_types", lambda c: {})
     monkeypatch.setattr(pipeline.db, "fetch_run", lambda c, run_id: sql_run(run_id))
 

@@ -77,7 +77,7 @@ grant execute on function core.is_admin() to authenticated;
 -- 학습했든 다음 적재 전까지 항상 최신으로 읽힙니다.
 
 create or replace view core.v_data_snapshot as
-select max(loaded_at) as data_snapshot_at from raw.usage_history;
+select max(loaded_at) as data_snapshot_at from core.realdata_load;
 
 comment on view core.v_data_snapshot is
   'renew.prd 8.6 — 데이터 기준 시각. 예측 서비스가 raw 대신 이 뷰를 읽습니다';

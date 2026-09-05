@@ -1097,7 +1097,7 @@ select a.alert_id,
        a.item_id,
        im.item_name,
        a.supplier_id,
-       sm."공급업체명"                            as supplier_name,
+       sm.supplier_name                            as supplier_name,
        a.reason,
        a.impact,
        a.recommended_action,
@@ -1113,7 +1113,7 @@ select a.alert_id,
        a.fingerprint
   from core.alert a
   left join core.v_item_master im on im.item_id = a.item_id
-  left join raw.supplier_master sm on sm."공급업체코드" = a.supplier_id
+  left join core.v_supplier_master sm on sm.supplier_id = a.supplier_id
  where a.resolved_at is null;
 
 comment on view analytics.v_alert is
@@ -1128,7 +1128,7 @@ select a.alert_id,
        a.item_id,
        im.item_name,
        a.supplier_id,
-       sm."공급업체명"                  as supplier_name,
+       sm.supplier_name                  as supplier_name,
        a.reason,
        a.impact,
        a.recommended_action,
@@ -1144,7 +1144,7 @@ select a.alert_id,
        a.fingerprint
   from core.alert a
   left join core.v_item_master im on im.item_id = a.item_id
-  left join raw.supplier_master sm on sm."공급업체코드" = a.supplier_id
+  left join core.v_supplier_master sm on sm.supplier_id = a.supplier_id
  order by coalesce(a.resolved_at, a.last_seen_at) desc, a.alert_id desc
  limit 500;
 
@@ -1169,7 +1169,7 @@ select a.alert_id,
        a.item_id,
        im.item_name,
        a.supplier_id,
-       sm."공급업체명"                  as supplier_name,
+       sm.supplier_name                  as supplier_name,
        a.reason,
        a.impact,
        a.recommended_action,
@@ -1185,7 +1185,7 @@ select a.alert_id,
        a.fingerprint
   from core.alert a
   left join core.v_item_master im on im.item_id = a.item_id
-  left join raw.supplier_master sm on sm."공급업체코드" = a.supplier_id
+  left join core.v_supplier_master sm on sm.supplier_id = a.supplier_id
  where a.resolved_at is not null
  order by a.resolved_at desc, a.alert_id desc
  limit 500;

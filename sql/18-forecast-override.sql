@@ -78,24 +78,16 @@ select d.item_id,
        d.period,
        d.actual_qty,
        d.tx_count,
-       (d.period_end <= least(current_date,
-                              (select max(u2.use_date) from raw.usage_history u2) + 1)) as is_closed
+       -- 실데이터는 월 단위라 "그 달이 데이터의 마지막 달까지 들어와 있으면" 확정입니다.
+       (d.period <= (select max(m.period) from core.v_demand_monthly m)) as is_closed
   from (
     select u.item_id,
-           case s.granularity
-             when 'WEEK' then date_trunc('week',  u.use_date)::date
-             else             date_trunc('month', u.use_date)::date
-           end as period,
-           case s.granularity
-             when 'WEEK' then (date_trunc('week',  u.use_date) + interval '7 days')::date
-             else             (date_trunc('month', u.use_date) + interval '1 month')::date
-           end as period_end,
-           sum(u.qty)::numeric as actual_qty,
-           count(*)            as tx_count
-      from raw.usage_history u
-      cross join core.forecast_setting s
-     where s.id = 1
-       and u.qty > 0          -- 반품(음수)은 실적에서 제외 (core.v_test_actual 과 같은 규칙)
+           u.period,
+           (u.period + interval '1 month')::date as period_end,
+           sum(u.qty)::numeric         as actual_qty,
+           sum(u.n_source_codes)       as tx_count
+      from core.v_demand_monthly u
+     where u.qty > 0          -- 반품(음수)은 실적에서 제외 (core.v_test_actual 과 같은 규칙)
      group by 1, 2, 3
   ) d;
 

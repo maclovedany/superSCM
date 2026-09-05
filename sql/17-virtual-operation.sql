@@ -164,32 +164,21 @@ comment on view core.v_supplier_alias is
   '공급업체 표기 → 코드. 매핑이 없으면 0행이고, 그때는 표기를 그대로 씁니다';
 
 -- ── 2-2. 실제 입고 ────────────────────────────────────────────
+-- [DATA_PENDING: RECEIPT] 실데이터에 입고 실적이 없습니다. 파일이 오면 그 raw 표 위로 다시 씁니다 (sql/34 §8).
 create or replace view core.v_goods_receipt as
-select nullif(btrim(g."입고번호"::text), '')                                     as receipt_no,
-       nullif(btrim(g."발주번호"::text), '')                                     as po_no,
-       upper(regexp_replace(coalesce(g."품목코드"::text, ''), '[\s\-_]', '', 'g')) as item_id,
-       core.num_safe(g."입고수량"::text)                                         as qty,
-       core.date_safe(g."입고일"::text)                                          as receipt_date,
-       nullif(btrim(g."입고창고"::text), '')                                     as warehouse
-  from raw.goods_receipt g
- where upper(regexp_replace(coalesce(g."품목코드"::text, ''), '[\s\-_]', '', 'g')) <> '';
+select null::text as receipt_no, null::text as po_no, null::text as item_id,
+       null::numeric as qty, null::date as receipt_date, null::text as warehouse
+ where false;
 
 comment on view core.v_goods_receipt is
   'renew.prd 13.2 — 실제 입고 실적. 가상 운영 결과의 "실제" 쪽 재고 추이가 이 값을 씁니다';
 
 -- ── 2-3. 실제 발주 ────────────────────────────────────────────
+-- [DATA_PENDING: PURCHASE_ORDER] 실데이터에 발주 실적이 없습니다 (sql/34 §8).
 create or replace view core.v_purchase_order as
-select nullif(btrim(p."발주번호"::text), '')                                     as po_no,
-       core.date_safe(p."발주일"::text)                                          as order_date,
-       -- 매핑이 있으면 코드로, 없으면 표기 그대로 (지시서 규칙).
-       coalesce(sa.supplier_id, nullif(btrim(p."공급업체"::text), ''))           as supplier_id,
-       upper(regexp_replace(coalesce(p."품목코드"::text, ''), '[\s\-_]', '', 'g')) as item_id,
-       core.num_safe(p."발주수량"::text)                                         as qty,
-       core.num_safe(p."단가"::text)                                             as unit_price,
-       core.date_safe(p."납기예정일"::text)                                       as due_date
-  from raw.purchase_order p
-  left join core.v_supplier_alias sa on sa.alias = btrim(p."공급업체"::text)
- where upper(regexp_replace(coalesce(p."품목코드"::text, ''), '[\s\-_]', '', 'g')) <> '';
+select null::text as po_no, null::date as order_date, null::text as supplier_id, null::text as item_id,
+       null::numeric as qty, null::numeric as unit_price, null::date as due_date
+ where false;
 
 comment on view core.v_purchase_order is
   'renew.prd 13.2 — 실제 발주 실적. 과잉 발주 비교의 "실제" 쪽이 이 값을 씁니다';
@@ -203,12 +192,11 @@ comment on view core.v_purchase_order is
 --
 -- 반품(음수)은 sql/07 의 학습 뷰와 같은 규칙으로 제외합니다.
 create or replace view core.v_usage_monthly as
-select upper(regexp_replace(coalesce(u.item_id, ''), '[\s\-_]', '', 'g')) as item_id,
-       date_trunc('month', u.use_date)::date                              as period,
-       sum(u.qty)                                                         as quantity
-  from raw.usage_history u
- where u.use_date is not null
-   and u.qty > 0
+select d.item_id,
+       d.period,
+       sum(d.qty) as quantity
+  from core.v_demand_monthly d
+ where d.qty > 0
  group by 1, 2;
 
 comment on view core.v_usage_monthly is

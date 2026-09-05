@@ -254,20 +254,31 @@ comment on table core.forecast_setting is
 --        set train_start='2023-01-01', train_end='2024-12-31',
 --            test_start ='2025-01-01', test_end ='2025-12-31'
 --      where id = 1;
-insert into core.forecast_setting (id, train_start, train_end, test_start, test_end)
-select 1,
-       min(use_date),
-       (date_trunc('month', max(use_date)) - interval '6 months')::date - 1,
-       (date_trunc('month', max(use_date)) - interval '6 months')::date,
-       max(use_date)
-  from raw.usage_history
---   ★ 이 가드는 반드시 having 이어야 합니다 (where 가 아닙니다).
+-- ★ 실데이터 전환 뒤에는 raw.usage_history 가 없습니다 (sql/34 가 지웁니다). 그때는 sql/34 가
+--   core.v_demand_monthly 범위로 경계를 잡으므로 여기서는 표가 있을 때만 초기값을 넣습니다.
+--   ★ 아래 가드는 반드시 having 이어야 합니다 (where 가 아닙니다).
 --     group by 없는 집계 질의는 입력이 0행이어도 결과가 1행(전부 null)입니다.
 --     where 에 두면 이미 행이 있을 때 입력이 모두 걸러져 (1, null, null, null, null)
 --     한 행이 들어가고 not-null 제약에 걸립니다. having 은 집계 뒤에 걸리므로
 --     0행이 되어 아무것도 넣지 않습니다 (error.md #22 주변, 재실행 안전).
-having count(*) > 0
-   and not exists (select 1 from core.forecast_setting);
+do $$
+begin
+  if to_regclass('raw.usage_history') is null then
+    raise notice 'sql/06: raw.usage_history 가 없습니다 — forecast_setting 초기값은 sql/34 가 잡습니다';
+    return;
+  end if;
+  execute $q$
+    insert into core.forecast_setting (id, train_start, train_end, test_start, test_end)
+    select 1,
+           min(use_date),
+           (date_trunc('month', max(use_date)) - interval '6 months')::date - 1,
+           (date_trunc('month', max(use_date)) - interval '6 months')::date,
+           max(use_date)
+      from raw.usage_history
+    having count(*) > 0
+       and not exists (select 1 from core.forecast_setting)
+  $q$;
+end $$;
 
 -- ══ 5. 권한과 RLS ══════════════════════════════════════════════
 --

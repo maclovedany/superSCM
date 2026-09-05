@@ -238,9 +238,8 @@ grant select on analytics.v_raw_schema       to authenticated;
 -- raw 에 RLS 를 켠 뒤에도 기존 화면 뷰가 그대로 나와야 합니다.
 -- 뷰가 postgres 소유라 RLS 를 우회하기 때문입니다.
 
+-- ★ v_stockout_risk 는 sql/15 가 만듭니다(실데이터 전환 뒤에는 덤프에 없습니다). 여기서는 보지 않습니다.
 select 'v_leadtime_gap'  as view_name, count(*) as rows from analytics.v_leadtime_gap
-union all
-select 'v_stockout_risk',  count(*) from analytics.v_stockout_risk
 union all
 select 'v_data_coverage',  count(*) from analytics.v_data_coverage;
 

@@ -18,26 +18,26 @@
 --   예측·백테스트 코드는 이 뷰만 조회합니다.
 --   raw.usage_history 를 직접 읽는 코드는 리뷰에서 반려합니다.
 
+-- ★ 실데이터 전환(sql/34) — 수요의 단일 사실은 core.v_demand_monthly(품목 × 월)입니다.
+--   원본이 월 단위라 granularity WEEK 는 뜻이 없습니다. 항상 월입니다.
+--   tx_count 는 그 달에 합쳐진 원본 코드 수(XCN)입니다.
 create or replace view core.v_train_demand as
 select
-  u.item_id,
-  case s.granularity
-    when 'WEEK' then date_trunc('week',  u.use_date)::date
-    else             date_trunc('month', u.use_date)::date
-  end                as period,
-  sum(u.qty)         as quantity,
-  count(*)           as tx_count,
-  min(u.use_date)    as first_use_date,
-  max(u.use_date)    as last_use_date
-from raw.usage_history u
+  d.item_id,
+  d.period,
+  sum(d.qty)               as quantity,
+  sum(d.n_source_codes)    as tx_count,
+  min(d.period)            as first_use_date,
+  max(d.period)            as last_use_date
+from core.v_demand_monthly d
 cross join core.forecast_setting s
 where s.id = 1
-  and u.use_date >= s.train_start
-  and u.use_date <= s.train_end          -- ★ 경계. 이 뒤 데이터는 나가지 않습니다
-  and u.qty > 0                          -- 반품(음수)은 학습에서 제외 (core.outlier_rule RETURN)
+  and d.period >= s.train_start
+  and d.period <= s.train_end            -- ★ 경계. 이 뒤 데이터는 나가지 않습니다
+  and d.qty > 0                          -- 반품(음수)은 학습에서 제외 (core.outlier_rule RETURN)
   and not exists (
         select 1 from core.outlier_exclusion e
-         where e.item_id = u.item_id and e.use_date = u.use_date
+         where e.item_id = d.item_id and e.use_date = d.period
       )
 group by 1, 2;
 
@@ -52,19 +52,16 @@ comment on view core.v_train_demand is
 
 create or replace view core.v_test_actual as
 select
-  u.item_id,
-  case s.granularity
-    when 'WEEK' then date_trunc('week',  u.use_date)::date
-    else             date_trunc('month', u.use_date)::date
-  end        as period,
-  sum(u.qty) as quantity,
-  count(*)   as tx_count
-from raw.usage_history u
+  d.item_id,
+  d.period,
+  sum(d.qty)            as quantity,
+  sum(d.n_source_codes) as tx_count
+from core.v_demand_monthly d
 cross join core.forecast_setting s
 where s.id = 1
-  and u.use_date >= s.test_start
-  and u.use_date <= s.test_end
-  and u.qty > 0
+  and d.period >= s.test_start
+  and d.period <= s.test_end
+  and d.qty > 0
 group by 1, 2;
 
 comment on view core.v_test_actual is
@@ -85,8 +82,8 @@ $$;
 create or replace view analytics.v_data_coverage as
 with s as (select * from core.forecast_setting where id = 1),
      u as (
-       select min(use_date) as min_date, max(use_date) as max_date, count(*) as row_count
-         from raw.usage_history
+       select min(period) as min_date, max(period) as max_date, count(*) as row_count
+         from core.v_demand_monthly
      ),
      tr as (select count(*) as periods, sum(quantity) as qty from core.v_train_demand),
      te as (select count(*) as periods, sum(quantity) as qty from core.v_test_actual)

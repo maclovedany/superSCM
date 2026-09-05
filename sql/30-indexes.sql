@@ -35,53 +35,31 @@
 -- core.v_train_demand · v_test_actual · v_usage_monthly · v_usage_effective 가
 -- 전부 item_id 로 묶고 use_date 로 자릅니다.
 
-create index if not exists usage_history_item_date_idx
-  on raw.usage_history (item_id, use_date);
 
 -- 정규화한 품목코드로 조인하는 경로(core.v_usage_effective)를 위한 식 인덱스.
 -- 식이 뷰의 것과 **글자까지 같아야** 계획기가 씁니다.
-create index if not exists usage_history_norm_item_idx
-  on raw.usage_history (upper(regexp_replace(item_id, '[\s\-_]', '', 'g')));
 
 -- ══ 2. raw.shipment_log ════════════════════════════════════════
 --
 -- core.v_fact_shipment 이 status 로 거르고(IN_TRANSIT · COMPLETED),
 -- 품목·공급처로 묶습니다. 가장 많이 훑히는 표입니다.
 
-create index if not exists shipment_log_status_idx
-  on raw.shipment_log (status);
 
-create index if not exists shipment_log_supplier_idx
-  on raw.shipment_log (supplier_id, status);
 
-create index if not exists shipment_log_norm_item_idx
-  on raw.shipment_log (upper(regexp_replace(coalesce(item_id, ''), '[\s\-_]', '', 'g')));
 
-create index if not exists shipment_log_norm_po_idx
-  on raw.shipment_log (upper(regexp_replace(coalesce(po_no, ''), '[\s\-_]', '', 'g')));
 
 -- ══ 3. 마스터 · 재고 ═══════════════════════════════════════════
 --
 -- 한글 컬럼입니다. core.v_item_master · v_stock_on_hand 가 정규화해서 씁니다.
 
-create index if not exists item_master_norm_idx
-  on raw.item_master (upper(regexp_replace("품목코드", '[\s\-_]', '', 'g')));
 
-create index if not exists inventory_norm_item_idx
-  on raw.inventory (upper(regexp_replace("품목코드", '[\s\-_]', '', 'g')));
 
-create index if not exists supplier_master_code_idx
-  on raw.supplier_master ("공급업체코드");
 
 -- ══ 4. 발주 · 입고 ═════════════════════════════════════════════
 --
 -- STEP 11 의 가상 운영이 발주번호로 잇습니다 (core.v_purchase_order · v_goods_receipt).
 
-create index if not exists purchase_order_no_idx
-  on raw.purchase_order ("발주번호");
 
-create index if not exists goods_receipt_po_idx
-  on raw.goods_receipt ("발주번호");
 
 -- ══ 5. core — 예측 결과 ════════════════════════════════════════
 --

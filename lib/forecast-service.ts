@@ -53,6 +53,16 @@ export type ServiceRunStatus = {
   ok: boolean;
   runId: string;
   status: string | null;
+  /** 파이프라인 단계 — QUEUED · SQL · PYTHON · MATERIALIZE · BACKTEST · DONE · FAILED */
+  stage?: string | null;
+  /** Python 모델 진행률 */
+  progress?: {
+    model: string | null;
+    modelIndex: number | null;
+    modelTotal: number | null;
+    itemsSeen: number | null;
+    itemsTotal: number | null;
+  } | null;
   nModels: number | null;
   nItems: number | null;
   nRows: number | null;
@@ -205,6 +215,32 @@ export async function runPythonForecast(
   };
 }
 
+/**
+ * POST /pipeline/run — 전체 파이프라인 (실데이터 전환 Plan 2).
+ * 서비스가 SQL 기준 모델 → Python 모델 → 실체화 → (검증이면) 백테스트를 직접 접속으로
+ * 순서대로 부릅니다. PostgREST RPC 의 문장 시간 제한(30초)에 걸리지 않습니다.
+ * 즉시 pipeline id 를 돌려주고, 진행 상황은 getServiceRun(pipelineId) 로 봅니다.
+ */
+export async function runPipeline(
+  mode: 'VALIDATION' | 'PRODUCTION',
+  note?: string | null,
+): Promise<{ ok: boolean; pipelineId: string | null; error: string | null }> {
+  if (!isServiceConfigured()) {
+    return { ok: false, pipelineId: null, error: '예측 서비스가 설정되지 않았습니다' };
+  }
+  const { data, error } = await call('/pipeline/run', {
+    method: 'POST',
+    body: { mode, note: note ?? null },
+    timeoutMs: RUN_TIMEOUT_MS,
+  });
+  if (error || !data) return { ok: false, pipelineId: null, error: error ?? '응답이 비어 있습니다' };
+  return {
+    ok: true,
+    pipelineId: typeof data.pipeline_id === 'string' ? data.pipeline_id : null,
+    error: null,
+  };
+}
+
 /** GET /forecast/run/{run_id} — 진행 상황 */
 export async function getServiceRun(runId: string): Promise<ServiceRunStatus> {
   const empty: ServiceRunStatus = {
@@ -227,10 +263,23 @@ export async function getServiceRun(runId: string): Promise<ServiceRunStatus> {
   });
   if (error || !data) return { ...empty, error: error ?? '응답이 비어 있습니다' };
 
+  const progress = data.progress && typeof data.progress === 'object'
+    ? (data.progress as Record<string, unknown>)
+    : null;
   return {
     ok: true,
     runId: typeof data.run_id === 'string' ? data.run_id : runId,
     status: typeof data.status === 'string' ? data.status : null,
+    stage: typeof data.stage === 'string' ? data.stage : null,
+    progress: progress
+      ? {
+          model: typeof progress.model === 'string' ? progress.model : null,
+          modelIndex: num(progress.model_index),
+          modelTotal: num(progress.model_total),
+          itemsSeen: num(progress.items_seen),
+          itemsTotal: num(progress.items_total),
+        }
+      : null,
     nModels: num(data.n_models),
     nItems: num(data.n_items),
     nRows: num(data.n_rows),

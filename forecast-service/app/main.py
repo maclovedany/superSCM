@@ -61,6 +61,12 @@ class ForecastRunRequest(BaseModel):
     models: list[str] | None = Field(default=None, description="이 모델만 실행합니다")
 
 
+class PipelineRunRequest(BaseModel):
+    mode: str = Field(default="VALIDATION", description="VALIDATION 또는 PRODUCTION")
+    note: str | None = Field(default=None, description="실행 메모")
+    models: list[str] | None = Field(default=None, description="이 Python 모델만 실행합니다")
+
+
 class BacktestRunRequest(BaseModel):
     forecast_run_id: str | None = Field(default=None, description="채점할 예측 실행. 없으면 최근 성공 run")
     note: str | None = None
@@ -149,6 +155,24 @@ def forecast_run(body: ForecastRunRequest, background: BackgroundTasks) -> dict:
         "models": prepared["models"],
         "horizon": prepared["horizon"],
     }
+
+
+@app.post("/pipeline/run", dependencies=[Depends(require_token)])
+def pipeline_run(body: PipelineRunRequest, background: BackgroundTasks) -> dict:
+    """전체 파이프라인 — SQL 기준 모델 → Python 모델 → 실체화 → (검증이면) 백테스트.
+
+    PostgREST RPC 의 문장 시간 제한을 피해 서비스가 직접 접속으로 전부 부릅니다.
+    즉시 pipeline id 를 돌려주고 GET /forecast/run/{id} 로 진행 상황을 봅니다.
+    """
+    mode = body.mode.strip().upper()
+    if mode not in ("VALIDATION", "PRODUCTION"):
+        raise HTTPException(status_code=400, detail="mode 는 VALIDATION 또는 PRODUCTION 이어야 합니다")
+    if not db.is_configured():
+        raise HTTPException(status_code=400, detail="DATABASE_URL 이 설정되지 않았습니다")
+    job_id = pipeline.new_pipeline_id()
+    pipeline.set_job(job_id, status="RUNNING", mode=mode, stage="QUEUED", message="대기 중입니다")
+    background.add_task(pipeline.run_full, job_id, mode, body.note, body.models)
+    return {"pipeline_id": job_id, "status": "RUNNING", "mode": mode}
 
 
 @app.get("/forecast/run/{run_id}", dependencies=[Depends(require_token)])

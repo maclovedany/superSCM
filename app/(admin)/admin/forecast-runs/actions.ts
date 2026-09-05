@@ -10,7 +10,7 @@ import { requireAdminOrThrow } from '@/lib/auth';
 import { writeAuditLog } from '@/lib/audit';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { getModelConfigs } from '@/lib/forecast';
-import { isServiceConfigured, runPythonForecast } from '@/lib/forecast-service';
+import { getServiceHealth, isServiceConfigured, runPipeline, runPythonForecast } from '@/lib/forecast-service';
 import { isRunModeValue, type RunActionState } from './state';
 
 export async function runForecast(
@@ -41,6 +41,37 @@ export async function runForecast(
   }
 
   try {
+    // ── 전체 파이프라인 (실데이터 전환 Plan 2) ──────────────────
+    //
+    // 예측 서비스가 살아 있으면 서비스가 SQL 모델 → Python 모델 → 실체화 → 백테스트를
+    // 직접 접속으로 한 번에 돌립니다. 11,000 품목은 PostgREST RPC 의 문장 시간 제한(30초)
+    // 안에 끝나지 않으므로 이 길이 기본입니다. 서비스가 없거나 응답하지 않으면 아래의
+    // 예전 길(RPC · SQL 모델만)로 내려갑니다 — 화면은 그 사실을 문구로 말합니다.
+    if (isServiceConfigured()) {
+      const health = await getServiceHealth();
+      if (health.ok && health.db) {
+        const started = await runPipeline(mode, note);
+        if (started.ok) {
+          await writeAuditLog(actor, {
+            action: 'FORECAST_RUN',
+            targetType: 'core.forecast_run',
+            targetId: started.pipelineId ?? '',
+            after: { mode, via: 'forecast-service', pipelineId: started.pipelineId },
+          });
+          revalidatePath('/admin/forecast-runs');
+          const modeText = mode === 'PRODUCTION' ? '운영 실행' : '검증 실행';
+          return {
+            error: null,
+            message:
+              `${modeText}을 예측 서비스에 맡겼습니다 (${started.pipelineId ?? '-'}). ` +
+              `SQL 모델 → Python 모델 → 화면 예측 표 갱신${mode === 'VALIDATION' ? ' → 백테스트' : ''} 순서로 ` +
+              `돌아가며, 품목 11,000개 기준 몇 분이 걸립니다. 아래 실행 이력을 새로고침해 상태를 보세요.`,
+          };
+        }
+        // 서비스가 요청을 받지 못했습니다. 예전 길로 내려갑니다.
+      }
+    }
+
     const supabase = await createSupabaseServerClient();
     const { data, error } = await supabase
       .schema('core')

@@ -112,7 +112,8 @@ def fetch_setting(conn) -> dict | None:
         cur.execute(
             """
             select granularity, train_start, train_end, test_start, test_end,
-                   forecast_horizon, champion_metric
+                   forecast_horizon, champion_metric,
+                   coalesce(production_train_end, train_end) as production_train_end
               from core.forecast_setting
              where id = 1
             """
@@ -152,12 +153,23 @@ def fetch_all_models(conn) -> list[dict]:
         return _dicts(cur)
 
 
-def fetch_grid(conn) -> list[dict]:
-    """학습 격자. 0 인 달을 포함합니다 (core.v_demand_grid)."""
+def fetch_grid(conn, mode: str = "VALIDATION") -> list[dict]:
+    """학습 격자. 0 인 달을 포함합니다.
+
+    VALIDATION 은 core.v_demand_grid(train_end 까지), PRODUCTION 은 core.v_forecast_grid 의
+    PRODUCTION 모드(production_train_end 까지). 운영 실행에 Python 모델을 붙일 수 있게 된
+    지점입니다 (실데이터 전환 Plan 2).
+    """
     with conn.cursor() as cur:
-        cur.execute(
-            "select item_id, period, quantity from core.v_demand_grid order by item_id, period"
-        )
+        if mode == "PRODUCTION":
+            cur.execute(
+                "select item_id, period, quantity from core.v_forecast_grid"
+                " where mode = 'PRODUCTION' order by item_id, period"
+            )
+        else:
+            cur.execute(
+                "select item_id, period, quantity from core.v_demand_grid order by item_id, period"
+            )
         rows = _dicts(cur)
     if rows:
         return rows
@@ -207,7 +219,7 @@ def fetch_run(conn, run_id: str) -> dict | None:
             """
             select run_id, status, granularity, train_start, train_end, horizon,
                    champion_metric, data_snapshot_at, models, n_models, n_items, n_rows,
-                   started_at, finished_at, message, note
+                   started_at, finished_at, message, note, mode
               from core.forecast_run
              where run_id = %s
             """,
@@ -215,3 +227,58 @@ def fetch_run(conn, run_id: str) -> dict | None:
         )
         rows = _dicts(cur)
     return rows[0] if rows else None
+
+
+# ── 실행 함수 호출 (전체 파이프라인 · Plan 2) ─────────────────────
+#
+# 직접 접속에는 문장 시간 제한이 없습니다. PostgREST RPC 는 30초 안에 끝나야 하지만
+# 11,000 품목 실행은 그보다 길 수 있어 서비스가 대신 부릅니다.
+# sql/25 의 core.is_admin() 이 postgres 직접 접속을 관리자로 봅니다.
+
+
+def call_baseline_forecast(conn, note: str | None, mode: str) -> dict:
+    """core.run_baseline_forecast(p_note, p_mode) — SQL 기준 모델 5종."""
+    with conn.cursor() as cur:
+        cur.execute("set statement_timeout = 0")
+        cur.execute(
+            "select run_id, n_models, n_items, n_rows, message"
+            "  from core.run_baseline_forecast(%s, %s)",
+            (note, mode),
+        )
+        row = cur.fetchone()
+    if not row:
+        raise RuntimeError("run_baseline_forecast 가 결과를 돌려주지 않았습니다")
+    return {"run_id": row[0], "n_models": row[1], "n_items": row[2], "n_rows": row[3], "message": row[4]}
+
+
+def call_refresh_materialized(conn) -> dict:
+    """core.refresh_forecast_current() · core.build_dependent_demand() — 화면이 쓰는 표 갱신 (sql/35)."""
+    with conn.cursor() as cur:
+        cur.execute("set statement_timeout = 0")
+        cur.execute(
+            "select core.refresh_forecast_current() as forecast_current,"
+            "       core.build_dependent_demand()    as dependent_demand"
+        )
+        row = cur.fetchone()
+    return {"forecast_current": int(row[0] or 0), "dependent_demand": int(row[1] or 0)}
+
+
+def call_backtest(conn, forecast_run_id: str | None, note: str | None) -> dict:
+    with conn.cursor() as cur:
+        cur.execute("set statement_timeout = 0")
+        cur.execute(
+            "select backtest_run_id, n_models, n_items, n_rows, message"
+            "  from core.run_backtest(%s, %s)",
+            (forecast_run_id, note),
+        )
+        row = cur.fetchone()
+    if not row:
+        return {"ok": False, "message": "채점 결과가 비어 있습니다"}
+    return {
+        "ok": bool(row[0]),
+        "backtest_run_id": row[0],
+        "n_models": row[1],
+        "n_items": row[2],
+        "n_rows": row[3],
+        "message": row[4],
+    }

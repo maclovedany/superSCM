@@ -150,7 +150,7 @@ begin
   end if;
 
   select exists (
-    select 1 from raw.supplier_master s where s."공급업체코드" = p_supplier_id
+    select 1 from core.v_supplier_master s where s.supplier_id = p_supplier_id
   ) into v_exists;
 
   if not v_exists then
@@ -331,7 +331,7 @@ comment on view analytics.v_leadtime_policy is
 create or replace view analytics.v_leadtime_plan_history as
 select lh.id,
        lh.supplier_id,
-       sm."공급업체명" as supplier_name,
+       sm.supplier_name as supplier_name,
        lh.lead_time_before,
        lh.lead_time_after,
        lh.basis,
@@ -340,7 +340,7 @@ select lh.id,
        lh.changed_email,
        lh.changed_at
   from core.leadtime_plan_history lh
-  left join raw.supplier_master sm on sm."공급업체코드" = lh.supplier_id;
+  left join core.v_supplier_master sm on sm.supplier_id = lh.supplier_id;
 
 -- ══ 5. analytics 뷰 — 재고 전개 ★ ══════════════════════════════
 --

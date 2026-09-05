@@ -14,20 +14,35 @@
 -- 1) 수업용 정책 폐기 ──────────────────────────────────────────
 
 drop policy if exists "수업용 전체 허용" on core.leadtime_plan;
-drop policy if exists "수업용 전체 허용" on core.usage_profile;
-
 revoke insert, update, delete on core.leadtime_plan  from anon, authenticated;
-revoke insert, update, delete on core.usage_profile  from anon, authenticated;
+
+-- core.usage_profile 은 더미 시절 표라 실데이터 전환(sql/34)에서 지워집니다. 있을 때만 정리합니다.
+do $$
+begin
+  if to_regclass('core.usage_profile') is not null then
+    execute 'drop policy if exists "수업용 전체 허용" on core.usage_profile';
+    execute 'revoke insert, update, delete on core.usage_profile from anon, authenticated';
+  end if;
+end $$;
 
 -- 2) 정책값 쓰기는 관리자만 ────────────────────────────────────
 --
 -- renew.prd 4.2 — SCM 정책(리드타임 · 안전재고 · 서비스 수준)은 ADMIN 권한입니다.
 
 grant insert, update, delete on core.leadtime_plan to authenticated;
-grant insert, update, delete on core.usage_profile to authenticated;
-
 alter table core.leadtime_plan enable row level security;
-alter table core.usage_profile enable row level security;
+
+-- core.usage_profile 은 실데이터 전환(sql/34) 뒤에는 없습니다. 있을 때만 같은 정책을 겁니다.
+do $$
+begin
+  if to_regclass('core.usage_profile') is null then return; end if;
+  execute 'grant insert, update, delete on core.usage_profile to authenticated';
+  execute 'alter table core.usage_profile enable row level security';
+  execute 'drop policy if exists usage_profile_read on core.usage_profile';
+  execute 'create policy usage_profile_read on core.usage_profile for select to anon, authenticated using (true)';
+  execute 'drop policy if exists usage_profile_write_admin on core.usage_profile';
+  execute 'create policy usage_profile_write_admin on core.usage_profile for all to authenticated using (core.is_admin()) with check (core.is_admin())';
+end $$;
 
 drop policy if exists leadtime_plan_read on core.leadtime_plan;
 create policy leadtime_plan_read on core.leadtime_plan
@@ -36,17 +51,6 @@ create policy leadtime_plan_read on core.leadtime_plan
 
 drop policy if exists leadtime_plan_write_admin on core.leadtime_plan;
 create policy leadtime_plan_write_admin on core.leadtime_plan
-  for all to authenticated
-  using (core.is_admin())
-  with check (core.is_admin());
-
-drop policy if exists usage_profile_read on core.usage_profile;
-create policy usage_profile_read on core.usage_profile
-  for select to anon, authenticated
-  using (true);
-
-drop policy if exists usage_profile_write_admin on core.usage_profile;
-create policy usage_profile_write_admin on core.usage_profile
   for all to authenticated
   using (core.is_admin())
   with check (core.is_admin());

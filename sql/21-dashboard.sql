@@ -322,7 +322,7 @@ with pend as (
 select p.item_id,
        im.item_name,
        p.supplier_id,
-       sm."공급업체명" as supplier_name,
+       sm.supplier_name as supplier_name,
        p.n_shipments,
        p.earliest_due_date,
        p.days_late,
@@ -330,7 +330,7 @@ select p.item_id,
        (p.days_late > 0) as is_late
   from pend p
   left join core.v_item_master im on im.item_id = p.item_id
-  left join raw.supplier_master sm on sm."공급업체코드" = p.supplier_id
+  left join core.v_supplier_master sm on sm.supplier_id = p.supplier_id
  order by p.days_late desc, p.earliest_due_date asc, p.item_id
  limit 20;
 

@@ -383,6 +383,12 @@ begin
     return;
   end if;
 
+  -- ★ 화면이 쓰는 예측 표를 다시 씁니다 (sql/35). 함수가 아직 없는 DB(sql/35 미적용)면 건너뜁니다.
+  if to_regprocedure('core.refresh_forecast_current(text)') is not null then
+    perform core.refresh_forecast_current();
+    perform core.build_dependent_demand();
+  end if;
+
   return query select true, (p_item_id || ' 의 Champion 을 ' || p_model_id || ' 로 지정했습니다')::text;
 end;
 $$;

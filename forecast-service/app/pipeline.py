@@ -75,13 +75,20 @@ def item_matches(demand_type: str | None, applicable: list[str] | None) -> bool:
 # ── 한 모델 실행 ──────────────────────────────────────────────
 
 
+PROGRESS_EVERY = 500
+
+
 def forecast_one_model(
     model: dict,
     grid: pd.DataFrame,
     horizon: int,
     demand_types: dict[str, str],
+    progress=None,
 ) -> tuple[list[tuple], dict]:
-    """한 모델을 전 품목에 돌립니다. (insert 할 행, 요약) 을 돌려줍니다."""
+    """한 모델을 전 품목에 돌립니다. (insert 할 행, 요약) 을 돌려줍니다.
+
+    progress(items_seen, items_total) 를 PROGRESS_EVERY 품목마다 부릅니다 (있으면).
+    """
     model_id = str(model["model_id"])
     version = str(model.get("version") or "v1")
     params = model.get("parameters") or {}
@@ -105,9 +112,15 @@ def forecast_one_model(
     skipped: dict[str, str] = {}
     items_done = 0
     filtered = 0
+    seen = 0
+    groups = grid.groupby("item_id", sort=True)
+    total = groups.ngroups
 
-    for item_id, item_df in grid.groupby("item_id", sort=True):
+    for item_id, item_df in groups:
         item_id = str(item_id)
+        seen += 1
+        if progress is not None and seen % PROGRESS_EVERY == 0:
+            progress(seen, total)
         if not item_matches(demand_types.get(item_id), applicable):
             filtered += 1
             continue
@@ -197,10 +210,14 @@ def check_run_window(run: dict, setting: dict) -> None:
     서로 다른 학습 구간으로 학습되고 서로 다른 기간을 덮습니다. 이어 붙이기가 존재하는
     유일한 이유("같은 조건")가 깨지므로 거절합니다.
     """
+    # ★ 운영(PRODUCTION) 실행은 production_train_end 까지 학습합니다. 검증 경계와 견주면
+    #   언제나 어긋나므로 모드에 맞는 경계와 견줍니다 (실데이터 전환 Plan 2 — 운영 실행에도
+    #   Python 모델이 붙습니다).
+    end_key = "production_train_end" if str(run.get("mode") or "") == "PRODUCTION" else "train_end"
     mismatched = []
     for label, run_key, setting_key in (
         ("학습 시작", "train_start", "train_start"),
-        ("학습 종료", "train_end", "train_end"),
+        ("학습 종료", "train_end", end_key),
     ):
         if _as_date(run.get(run_key)) != _as_date(setting.get(setting_key)):
             mismatched.append(f"{label} {run.get(run_key)} → {setting.get(setting_key)}")
@@ -438,9 +455,11 @@ def execute(run_id: str, created: bool, only: list[str] | None = None) -> dict:
             ]
             register_versions(conn, configs)
 
-            grid_rows = db.fetch_grid(conn)
+            run_row = db.fetch_run(conn, run_id) or {}
+            mode = str(run_row.get("mode") or "VALIDATION")
+            grid_rows = db.fetch_grid(conn, mode)
             if not grid_rows:
-                raise ValueError("학습 격자가 비어 있습니다 (core.v_demand_grid)")
+                raise ValueError("학습 격자가 비어 있습니다 (core.v_demand_grid / v_forecast_grid)")
             grid = pd.DataFrame(grid_rows)
             grid["period"] = pd.to_datetime(grid["period"])
             grid["quantity"] = pd.to_numeric(grid["quantity"], errors="coerce").fillna(0.0)
@@ -448,13 +467,26 @@ def execute(run_id: str, created: bool, only: list[str] | None = None) -> dict:
             demand_types = db.fetch_demand_types(conn)
 
             summaries: list[dict] = []
-            for model in configs:
+            n_models = len(configs)
+            for idx, model in enumerate(configs, start=1):
                 model_id = str(model["model_id"])
-                set_job(run_id, message=f"{model_id} 실행 중입니다")
-                rows, summary = forecast_one_model(model, grid, horizon, demand_types)
+                started = _now()
+                set_job(
+                    run_id,
+                    message=f"{model_id} 실행 중입니다 ({idx}/{n_models})",
+                    progress={"model": model_id, "model_index": idx, "model_total": n_models,
+                              "items_seen": 0, "items_total": None},
+                )
+
+                def _progress(seen: int, total: int, _mid=model_id, _idx=idx) -> None:
+                    set_job(run_id, progress={"model": _mid, "model_index": _idx, "model_total": n_models,
+                                              "items_seen": seen, "items_total": total})
+
+                rows, summary = forecast_one_model(model, grid, horizon, demand_types, progress=_progress)
                 write_results(conn, run_id, model_id, rows)
+                summary["seconds"] = round((_now() - started).total_seconds(), 1)
                 summaries.append(summary)
-                log.info("%s · %s: %d행", run_id, model_id, len(rows))
+                log.info("%s · %s: %d행 · %.1fs", run_id, model_id, len(rows), summary["seconds"])
 
             produced = sum(s["n_rows"] for s in summaries)
             names = ", ".join(f"{s['model_id']}({s['n_rows']}행)" for s in summaries)
@@ -492,6 +524,91 @@ def execute(run_id: str, created: bool, only: list[str] | None = None) -> dict:
         return result
 
 
+# ── 전체 파이프라인 (Plan 2) ───────────────────────────────────
+#
+#   POST /pipeline/run {mode, note}
+#     ① core.run_baseline_forecast(note, mode)   SQL 기준 모델 5종 (직접 접속 — 시간 제한 없음)
+#     ② Python 모델 — 그 run 에 이어 붙임 (모드에 맞는 격자)
+#     ③ core.refresh_forecast_current() · build_dependent_demand()   화면이 쓰는 표
+#     ④ VALIDATION 이면 core.run_backtest(run_id)   Champion 선정
+#
+#   즉시 pipeline id 를 돌려주고 실제 일은 BackgroundTask 가 합니다. run_id 는 ① 뒤에 job 에
+#   적히고, GET /forecast/run/{pipeline id} 도 GET /forecast/run/{run_id} 도 같은 진행 상황을
+#   돌려줍니다.
+
+
+def new_pipeline_id() -> str:
+    now = _now()
+    return f"pipe_{now.strftime('%Y%m%d%H%M%S')}_{now.microsecond // 1000:03d}"
+
+
+def _mirror(job_id: str, run_id: str | None) -> None:
+    """pipeline id 로 조회해도 run_id 로 조회해도 같은 것이 보이게 두 키를 같은 내용으로 둡니다."""
+    if not run_id:
+        return
+    job = get_job(job_id) or {}
+    set_job(run_id, **{k: v for k, v in job.items() if k != "run_id"}, pipeline_id=job_id)
+
+
+def run_full(job_id: str, mode: str, note: str | None, only: list[str] | None = None) -> dict:
+    """전체 파이프라인. BackgroundTask 에서 돕니다."""
+    mode = "PRODUCTION" if str(mode).upper() == "PRODUCTION" else "VALIDATION"
+    set_job(job_id, status="RUNNING", mode=mode, stage="SQL", started_at=_now().isoformat(),
+            message="SQL 기준 모델을 실행하는 중입니다")
+    run_id: str | None = None
+    try:
+        with db.connect() as conn:
+            baseline = db.call_baseline_forecast(conn, note, mode)
+        run_id = baseline["run_id"]
+        if not baseline.get("n_rows"):
+            raise ValueError(baseline.get("message") or "SQL 기준 모델이 결과를 내지 못했습니다")
+        set_job(job_id, run_id=run_id, stage="PYTHON", baseline=baseline,
+                message=f"SQL 모델 {baseline['n_models']}종 {baseline['n_rows']}행 · Python 모델 실행 중")
+        _mirror(job_id, run_id)
+
+        python = execute(run_id, created=False, only=only)
+        if python.get("status") == "FAILED":
+            # SQL 결과는 이미 유효합니다. Python 실패는 사유만 남기고 계속 갑니다 (renew.prd 31.4).
+            set_job(job_id, python_error=python.get("message"))
+
+        set_job(job_id, stage="MATERIALIZE", message="화면이 쓰는 예측 표를 갱신하는 중입니다")
+        _mirror(job_id, run_id)
+        with db.connect() as conn:
+            refreshed = db.call_refresh_materialized(conn)
+
+        backtest = None
+        if mode == "VALIDATION":
+            set_job(job_id, stage="BACKTEST", message="백테스트로 Champion 을 뽑는 중입니다")
+            _mirror(job_id, run_id)
+            with db.connect() as conn:
+                backtest = db.call_backtest(conn, run_id, note)
+                # Champion 이 바뀌었으니 표를 한 번 더 (run_backtest 안에서도 갱신하지만 실패에 대비)
+                refreshed = db.call_refresh_materialized(conn)
+
+        message = (
+            f"{'운영' if mode == 'PRODUCTION' else '검증'} 실행 {run_id} · SQL {baseline['n_models']}종 "
+            f"· Python {python.get('n_models', 0)}종 · 총 {python.get('n_rows', baseline['n_rows'])}행"
+            + (f" · 백테스트 {backtest.get('n_rows')}행" if backtest and backtest.get('ok') else "")
+        )
+        result = {
+            "status": "SUCCESS", "stage": "DONE", "run_id": run_id, "mode": mode,
+            "baseline": baseline, "python": {k: python.get(k) for k in ("n_models", "n_rows", "message", "status")},
+            "materialized": refreshed, "backtest": backtest,
+            "message": message, "finished_at": _now().isoformat(),
+        }
+        set_job(job_id, **result)
+        _mirror(job_id, run_id)
+        return result
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {exc}"
+        log.error("파이프라인 %s 실패: %s\n%s", job_id, detail, traceback.format_exc())
+        result = {"status": "FAILED", "stage": "FAILED", "run_id": run_id,
+                  "message": f"파이프라인 실행에 실패했습니다: {detail}", "finished_at": _now().isoformat()}
+        set_job(job_id, **result)
+        _mirror(job_id, run_id)
+        return result
+
+
 def run_backtest(forecast_run_id: str | None, note: str | None = None) -> dict:
     """STEP 7 의 core.run_backtest 를 부릅니다.
 
@@ -520,11 +637,18 @@ def run_backtest(forecast_run_id: str | None, note: str | None = None) -> dict:
 
 
 def run_status(run_id: str) -> dict:
-    """GET /forecast/run/{run_id} — DB 의 run 과 서비스 작업 상태를 합칩니다."""
+    """GET /forecast/run/{run_id} — DB 의 run 과 서비스 작업 상태를 합칩니다.
+
+    pipeline id(pipe_…)로 물어도 됩니다. 그 job 이 만든 run_id 로 DB 를 봅니다.
+    """
     job = get_job(run_id) or {}
+    if job.get("run_id") and job["run_id"] != run_id:
+        run_id = str(job["run_id"])
     payload: dict = {
         "run_id": run_id,
         "status": job.get("status"),
+        "stage": job.get("stage"),
+        "progress": job.get("progress"),
         "n_models": job.get("n_models"),
         "n_items": job.get("n_items"),
         "n_rows": job.get("n_rows"),

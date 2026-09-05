@@ -167,9 +167,10 @@ create index if not exists forecast_run_mode_idx
 --   두 신호가 어긋날 수 없습니다.
 --
 --   greatest() 는 null 을 무시합니다. 둘 다 비어 있으면 결과도 null 입니다.
+-- ★ 실데이터 전환(sql/34) — 수요 원본의 적재 시각은 core.realdata_load 가 기록합니다.
 create or replace view core.v_data_loaded_at as
 select greatest(
-         (select max(u.loaded_at)  from raw.usage_history u),
+         (select max(l.loaded_at)   from core.realdata_load l),
          (select max(b.imported_at) from core.upload_batch b where b.status = 'IMPORTED')
        ) as data_loaded_at;
 
