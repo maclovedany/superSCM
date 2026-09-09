@@ -33,22 +33,111 @@ export type StockoutKpi = {
   averageStockoutDays: number | null;
 };
 
-export type DemandProfile = {
-  itemId: string;
-  itemName: string;
+/**
+ * 실데이터 수요 프로파일 — analytics.v_item_demand_profile 한 행.
+ *
+ * ★ 5회차 더미(v_sku_demand_profile)와 다른 점 — 실데이터에는 계절성 · 추세 기울기 ·
+ *   최근 변화율이 없습니다. 없는 값을 화면 필드로 남겨 두면 언젠가 0 으로 채우게 되므로
+ *   아예 두지 않습니다. 대신 관측 창(first_ym ~ last_ym)과 품목 구분이 들어옵니다.
+ */
+export type ItemDemandProfile = {
+  itemCode: string;
+  description: string;
+  family: string | null;
+  /** MACHINE · PART 등 품목 구분 */
+  itemType: string | null;
+  /** 데이터 기준월 (YYYY-MM) */
+  dataAsOf: string | null;
+  firstYm: string | null;
+  lastYm: string | null;
+  /** 관측 창 개월 수 */
   nPeriods: number;
-  nNonzeroPeriods: number;
+  /** 출고가 있었던 달 수 */
+  nNonzero: number;
+  meanNonzeroQty: number | null;
   adi: number | null;
-  cv: number | null;
-  cvSquared: number | null;
   zeroDemandRate: number | null;
-  trend: number | null;
-  recentChangeRate: number | null;
-  peakPeriod: string | null;
+  cvSquared: number | null;
   demandType: 'SMOOTH' | 'INTERMITTENT' | 'ERRATIC' | 'LUMPY' | null;
-  seasonality: boolean | null;
+  /** INSUFFICIENT_HISTORY · INSUFFICIENT_SAMPLE · NO_POSITIVE_DEMAND */
   reasonCode: string | null;
-  stability: string | null;
+};
+
+/** 품목 구분별 수요 유형 분포 — analytics.v_item_demand_kpi */
+export type ItemDemandKpi = {
+  itemType: string;
+  nItems: number;
+  nSmooth: number;
+  nErratic: number;
+  nIntermittent: number;
+  nLumpy: number;
+  nUnknown: number;
+  nCrostonCandidate: number;
+};
+
+/** 출고 추이 — analytics.v_shipment_trend */
+export type ShipmentTrend = {
+  itemCode: string;
+  description: string;
+  family: string | null;
+  itemType: string | null;
+  dataAsOf: string | null;
+  nMonths: number;
+  firstYm: string | null;
+  lastYm: string | null;
+  monthsSinceLast: number | null;
+  totalQty: number | null;
+  latestQty: number | null;
+  avg3m: number | null;
+  avg6m: number | null;
+  avg12m: number | null;
+  /** 최근 3개월 ÷ 12개월 평균. 1.0 이면 변화 없음 */
+  trend3mVs12m: number | null;
+  reasonCode: string | null;
+};
+
+/** OL 예측 정확도 (기종 × 회계연도) — analytics.v_ol_accuracy */
+export type OlAccuracy = {
+  modelBase: string;
+  fySheet: string;
+  biz: string | null;
+  nRows: number;
+  firstYm: string | null;
+  lastYm: string | null;
+  totalAct: number | null;
+  nScoredSales: number;
+  salesWape: number | null;
+  salesBias: number | null;
+  nScoredScm: number;
+  scmWape: number | null;
+  scmBias: number | null;
+  reasonCode: string | null;
+};
+
+/** OL 예측 정확도 (회계연도 합) — analytics.v_ol_accuracy_fy */
+export type OlAccuracyFy = {
+  fySheet: string;
+  nRows: number;
+  nScored: number;
+  salesWape: number | null;
+  scmWape: number | null;
+  salesBias: number | null;
+  scmBias: number | null;
+};
+
+/** BOM 소요 — analytics.v_bom_requirement_x */
+export type BomRequirement = {
+  modelBase: string;
+  modelKey: string | null;
+  /** CAP · NEUTRAL · MUST_OPTION · SCC · BOM */
+  partRole: string;
+  itemCode: string;
+  description: string;
+  qty: number | null;
+  bomGroup: string | null;
+  nModels: number | null;
+  commonFlag: string | null;
+  commonNote: string | null;
 };
 
 export type ForecastModelConfig = {
@@ -148,28 +237,112 @@ export function normalizeStockoutKpi(row: Record<string, unknown>): StockoutKpi 
   };
 }
 
-function demandTypeValue(raw: unknown): DemandProfile['demandType'] {
+function demandTypeValue(raw: unknown): ItemDemandProfile['demandType'] {
   return raw === 'SMOOTH' || raw === 'INTERMITTENT' || raw === 'ERRATIC' || raw === 'LUMPY' ? raw : null;
 }
 
-export function normalizeDemandProfile(row: Record<string, unknown>): DemandProfile {
-  const seasonality = value(row, ['seasonality']);
+function text(row: Record<string, unknown>, keys: string[]): string | null {
+  const raw = value(row, keys);
+  return raw === null ? null : String(raw);
+}
+
+export function normalizeItemDemandProfile(row: Record<string, unknown>): ItemDemandProfile {
   return {
-    itemId: String(value(row, ['item_id', 'item_code', '품목코드']) ?? '미정'),
-    itemName: String(value(row, ['item_name', 'item_name_ko', '품목명']) ?? '미정'),
-    nPeriods: numberValue(row, ['n_periods']) ?? 0,
-    nNonzeroPeriods: numberValue(row, ['n_nonzero_periods']) ?? 0,
+    itemCode: String(value(row, ['item_code', 'item_id', '품목코드']) ?? '미정'),
+    description: String(value(row, ['description', 'item_name', '품목명']) ?? '미정'),
+    family: text(row, ['family']),
+    itemType: text(row, ['item_type']),
+    dataAsOf: text(row, ['data_as_of', 'max_ym']),
+    firstYm: text(row, ['first_ym']),
+    lastYm: text(row, ['last_ym']),
+    nPeriods: numberValue(row, ['n_periods', 'n_span']) ?? 0,
+    nNonzero: numberValue(row, ['n_nonzero', 'n_nonzero_periods']) ?? 0,
+    meanNonzeroQty: numberValue(row, ['mean_nonzero_qty']),
     adi: numberValue(row, ['adi']),
-    cv: numberValue(row, ['cv']),
-    cvSquared: numberValue(row, ['cv_squared']),
     zeroDemandRate: numberValue(row, ['zero_demand_rate']),
-    trend: numberValue(row, ['trend', 'trend_per_period']),
-    recentChangeRate: numberValue(row, ['recent_change_rate']),
-    peakPeriod: value(row, ['peak_period']) === null ? null : String(value(row, ['peak_period'])),
+    cvSquared: numberValue(row, ['cv_squared']),
     demandType: demandTypeValue(value(row, ['demand_type'])),
-    seasonality: seasonality === true || seasonality === false ? seasonality : null,
-    reasonCode: value(row, ['reason_code']) === null ? null : String(value(row, ['reason_code'])),
-    stability: value(row, ['stability']) === null ? null : String(value(row, ['stability'])),
+    reasonCode: text(row, ['reason_code']),
+  };
+}
+
+export function normalizeItemDemandKpi(row: Record<string, unknown>): ItemDemandKpi {
+  return {
+    itemType: String(value(row, ['item_type']) ?? '미정'),
+    nItems: numberValue(row, ['n_items']) ?? 0,
+    nSmooth: numberValue(row, ['n_smooth']) ?? 0,
+    nErratic: numberValue(row, ['n_erratic']) ?? 0,
+    nIntermittent: numberValue(row, ['n_intermittent']) ?? 0,
+    nLumpy: numberValue(row, ['n_lumpy']) ?? 0,
+    nUnknown: numberValue(row, ['n_unknown']) ?? 0,
+    nCrostonCandidate: numberValue(row, ['n_croston_candidate']) ?? 0,
+  };
+}
+
+export function normalizeShipmentTrend(row: Record<string, unknown>): ShipmentTrend {
+  return {
+    itemCode: String(value(row, ['item_code', 'hoc_item']) ?? '미정'),
+    description: String(value(row, ['description', 'item_name']) ?? '미정'),
+    family: text(row, ['family']),
+    itemType: text(row, ['item_type']),
+    dataAsOf: text(row, ['data_as_of', 'max_ym']),
+    nMonths: numberValue(row, ['n_months']) ?? 0,
+    firstYm: text(row, ['first_ym']),
+    lastYm: text(row, ['last_ym']),
+    monthsSinceLast: numberValue(row, ['months_since_last']),
+    totalQty: numberValue(row, ['total_qty']),
+    latestQty: numberValue(row, ['latest_qty']),
+    avg3m: numberValue(row, ['avg_3m']),
+    avg6m: numberValue(row, ['avg_6m']),
+    avg12m: numberValue(row, ['avg_12m']),
+    trend3mVs12m: numberValue(row, ['trend_3m_vs_12m']),
+    reasonCode: text(row, ['reason_code']),
+  };
+}
+
+export function normalizeOlAccuracy(row: Record<string, unknown>): OlAccuracy {
+  return {
+    modelBase: String(value(row, ['model_base']) ?? '(미분류)'),
+    fySheet: String(value(row, ['fy_sheet']) ?? '미정'),
+    biz: text(row, ['biz']),
+    nRows: numberValue(row, ['n_rows']) ?? 0,
+    firstYm: text(row, ['first_ym']),
+    lastYm: text(row, ['last_ym']),
+    totalAct: numberValue(row, ['total_act']),
+    nScoredSales: numberValue(row, ['n_scored_sales']) ?? 0,
+    salesWape: numberValue(row, ['sales_wape']),
+    salesBias: numberValue(row, ['sales_bias']),
+    nScoredScm: numberValue(row, ['n_scored_scm']) ?? 0,
+    scmWape: numberValue(row, ['scm_wape']),
+    scmBias: numberValue(row, ['scm_bias']),
+    reasonCode: text(row, ['reason_code']),
+  };
+}
+
+export function normalizeOlAccuracyFy(row: Record<string, unknown>): OlAccuracyFy {
+  return {
+    fySheet: String(value(row, ['fy_sheet']) ?? '미정'),
+    nRows: numberValue(row, ['n_rows']) ?? 0,
+    nScored: numberValue(row, ['n_scored']) ?? 0,
+    salesWape: numberValue(row, ['sales_wape']),
+    scmWape: numberValue(row, ['scm_wape']),
+    salesBias: numberValue(row, ['sales_bias']),
+    scmBias: numberValue(row, ['scm_bias']),
+  };
+}
+
+export function normalizeBomRequirement(row: Record<string, unknown>): BomRequirement {
+  return {
+    modelBase: String(value(row, ['model_base']) ?? '미정'),
+    modelKey: text(row, ['model_key']),
+    partRole: String(value(row, ['part_role']) ?? '미정'),
+    itemCode: String(value(row, ['item_code']) ?? '미정'),
+    description: String(value(row, ['description']) ?? '미정'),
+    qty: numberValue(row, ['qty']),
+    bomGroup: text(row, ['bom_group']),
+    nModels: numberValue(row, ['n_models']),
+    commonFlag: text(row, ['common_flag']),
+    commonNote: text(row, ['common_note']),
   };
 }
 

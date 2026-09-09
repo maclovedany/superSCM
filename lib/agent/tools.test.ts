@@ -12,10 +12,10 @@ import {
 
 test('4-Tool MVP — 지금 데이터로 만들 수 있는 툴만 등록한다', () => {
   assert.deepEqual(AGENT_TOOL_NAMES, [
+    'getShipmentTrend',
     'getDemandProfile',
-    'getForecastAccuracy',
-    'getStockoutRisk',
-    'getLeadtimeStats',
+    'getOlAccuracy',
+    'getBomRequirement',
   ]);
 });
 
@@ -47,7 +47,7 @@ test('OpenAI 형식으로 변환하면 이름 · 설명 · 인자만 나간다',
 
 test('findTool 은 없는 이름에 null 을 준다 — 조작된 이름은 여기서 걸립니다', () => {
   assert.equal(findTool('dropAllTables'), null);
-  assert.equal(findTool('getStockoutRisk')?.name, 'getStockoutRisk');
+  assert.equal(findTool('getShipmentTrend')?.name, 'getShipmentTrend');
 });
 
 test('Agent 폴더는 Supabase 를 직접 조회하지 않는다 (대화 저장 파일 1곳 제외)', () => {
@@ -67,10 +67,23 @@ test('flatten 은 숫자와 글자 속 숫자를 함께 싣는다 — Guardrail 
   assert.equal(numbers['row0.name'], undefined);
 });
 
-test('숫자로 온 itemId 는 인자로 받지 않는다 (품목코드는 문자열)', async () => {
+test('숫자로 온 itemCode 는 인자로 받지 않는다 (품목코드는 문자열)', async () => {
   // run() 은 DB 를 부르므로 여기서는 인자 검사 경로만 확인합니다.
   // 숫자 인자는 argText 가 null 로 만들어 "전체 목록" 으로 처리되며, 임의 품목을 지어내지 않습니다.
   const tool = findTool('getDemandProfile');
   assert.ok(tool);
-  assert.equal(tool!.parameters.properties.itemId.type, 'string');
+  assert.equal(tool!.parameters.properties.itemCode.type, 'string');
+});
+
+test('재고 · 리드타임 툴은 등록되어 있지 않다 — 실데이터에 그 입력이 없습니다', () => {
+  // 남겨 두면 모델이 폐기된 더미 숫자를 사실처럼 답합니다.
+  for (const gone of ['getStockoutRisk', 'getLeadtimeStats', 'getForecastAccuracy']) {
+    assert.equal(findTool(gone), null, `${gone} 이(가) 아직 등록되어 있습니다`);
+  }
+});
+
+test('BOM 툴은 기종 이름을 반드시 받는다 — 비우면 전체를 훑지 않습니다', () => {
+  const tool = findTool('getBomRequirement');
+  assert.ok(tool);
+  assert.deepEqual(tool!.parameters.required, ['modelBase']);
 });

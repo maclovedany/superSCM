@@ -93,10 +93,12 @@ function fakeModel(messages: Record<string, unknown>[]) {
 
 test('시스템 프롬프트가 네 툴과 금지 규칙을 담는다', () => {
   const prompt = systemPrompt('USER');
-  for (const name of ['getDemandProfile', 'getForecastAccuracy', 'getStockoutRisk', 'getLeadtimeStats']) {
+  for (const name of ['getShipmentTrend', 'getDemandProfile', 'getOlAccuracy', 'getBomRequirement']) {
     assert.match(prompt, new RegExp(name));
   }
   assert.match(prompt, /숫자를 스스로 계산하지 마세요/);
+  // 실데이터에 없는 것은 프롬프트가 먼저 못박습니다 — Guardrail 앞의 1차 방어입니다.
+  assert.match(prompt, /데이터에 없는 것/);
   assert.match(prompt, /USER/);
 });
 

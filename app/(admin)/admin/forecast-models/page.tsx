@@ -1,11 +1,19 @@
 import PageHeader from '@/components/shell/page-header';
-import ForecastModelManagement from '@/components/admin/forecast-model-management';
-import Panel from '@/components/ui/panel';
-import { getForecastModels } from '@/lib/scm';
+import NoRealDataNotice from '@/components/analysis/no-realdata-notice';
 
 export const dynamic = 'force-dynamic';
 
-export default async function ForecastModelsPage() {
-  const { rows, error } = await getForecastModels();
-  return <section className="analysis-page"><PageHeader eyebrow="ADMIN" title="Forecast Models" description="SQL Baseline 모델의 적용 범위와 실행 상태를 관리합니다." /><Panel title="Model Registry" description="변경 사항은 다음 Forecast Run부터 적용됩니다.">{error ? <><p className="text-danger">모델 목록을 조회하지 못했습니다.</p><p className="muted">{error}</p></> : <ForecastModelManagement rows={rows} />}</Panel></section>;
+export default function Page() {
+  return (
+    <section className="analysis-page">
+      <PageHeader eyebrow="ADMIN" title="Forecast Models" description="예측 모델 registry 입니다." />
+      <div className="analysis-content">
+        <NoRealDataNotice
+          what="Forecast Models"
+          missing={['모델 registry (실데이터 기준 모델 정의)']}
+          unlocks={['수요 유형별 모델 배정', 'Croston 계열 엔진 연결', '모델 파라미터 관리']}
+        />
+      </div>
+    </section>
+  );
 }

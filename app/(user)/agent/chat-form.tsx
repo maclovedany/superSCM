@@ -15,10 +15,10 @@ import type { AgentProgress } from '@/lib/agent/orchestrator';
 
 /** 툴 이름을 사람 말로 — 진행 표시에만 씁니다 */
 const TOOL_LABELS: Record<string, string> = {
-  getDemandProfile: '수요 특성',
-  getForecastAccuracy: '예측 정확도',
-  getStockoutRisk: '재고 소진 위험',
-  getLeadtimeStats: '납기 통계',
+  getShipmentTrend: '출고 추이',
+  getDemandProfile: '수요 성격',
+  getOlAccuracy: 'OL 예측 정확도',
+  getBomRequirement: 'BOM 소요',
 };
 
 /** 한 번에 찍는 글자 수와 간격 — 사람이 읽을 수 있는 속도입니다 */

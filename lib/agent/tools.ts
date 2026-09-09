@@ -8,10 +8,13 @@
 // 지금 만들 수 있는 Tool 은 4개입니다. 재고 전개 · 안전재고 · 발주 추천 · 알림은 아직
 // 데이터 계층이 없으므로 이름만 먼저 만들지 않습니다 (슬라이드 31 · 78).
 //
+//   getShipmentTrend     출고 추이 · 최근 3/6/12개월 평균 · 추세 배수
 //   getDemandProfile     수요 유형 · ADI · CV² · 무수요 비율
-//   getForecastAccuracy  Champion 모델 · WAPE · Bias · 표본 수
-//   getStockoutRisk      가용재고 · 일평균 사용량 · 소진 예상일 · 리드타임 · 위험 상태
-//   getLeadtimeStats     계획 리드타임 · 실제 평균 · P80 · 격차
+//   getOlAccuracy        영업 OL · SCM OL 의 WAPE 와 Bias
+//   getBomRequirement    기종 1대에 필요한 CAP · Neutral · 필수옵션 · BOM
+//
+// 2026-09-10 실데이터 이관 — 재고·리드타임 툴은 없앴습니다. 실데이터에 그 입력이
+// 없는데 툴이 남아 있으면, 모델이 폐기된 더미 숫자를 사실처럼 답합니다.
 //
 // 동적 import 를 쓰는 이유: 이 파일을 node --test 가 그대로 실행합니다. 맨 위에서
 // lib/scm.ts 를 정적으로 부르면 서버 전용 Supabase 클라이언트가 딸려 들어와 테스트가
@@ -117,185 +120,206 @@ const ITEM_ARG: JsonSchemaObject = {
   additionalProperties: false,
   required: [],
   properties: {
-    itemId: { type: 'string', description: '품목 코드. 비우면 전체 목록에서 상위 몇 건을 봅니다' },
+    itemCode: { type: 'string', description: '품목 코드. 비우면 전체 목록에서 상위 몇 건을 봅니다' },
+  },
+};
+
+const MODEL_ARG: JsonSchemaObject = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['modelBase'],
+  properties: {
+    modelBase: { type: 'string', description: '기종 이름 (model_base). 예: ApeosPort C3070' },
+  },
+};
+
+const FY_ARG: JsonSchemaObject = {
+  type: 'object',
+  additionalProperties: false,
+  required: [],
+  properties: {
+    fySheet: { type: 'string', description: '회계연도. 예: FY25. 비우면 전체를 봅니다' },
+    modelBase: { type: 'string', description: '기종 이름. 비우면 상위 몇 건을 봅니다' },
   },
 };
 
 /** 목록 툴이 한 번에 돌려줄 최대 행 수 — 모델에게 표를 통째로 넘기지 않습니다 */
 const LIST_LIMIT = 10;
 
-const getDemandProfile: AgentTool = {
-  name: 'getDemandProfile',
+const getShipmentTrend: AgentTool = {
+  name: 'getShipmentTrend',
   description:
-    '품목의 수요 특성을 돌려줍니다 — 수요 유형(SMOOTH · INTERMITTENT · ERRATIC · LUMPY) · 수요 발생 간격(ADI) · 변동성(CV²) · 무수요 비율 · 추세. "수요가 규칙적인가", "드물게 나가는 품목인가" 같은 질문에 씁니다.',
+    '품목의 출고 추이를 돌려줍니다 — 관측 개월 수 · 최근 출고량 · 3/6/12개월 이동평균 · 최근 3개월이 12개월 평균의 몇 배인가(추세). "요즘 얼마나 나가나", "출고가 늘었나 줄었나" 같은 질문에 씁니다. 이동평균은 출고가 없던 달을 0으로 포함해 계산된 값입니다.',
   parameters: ITEM_ARG,
   roles: ['ADMIN', 'USER'],
   async run(args) {
-    const itemId = argText(args, 'itemId');
-    const { getDemandProfiles } = await import('../scm.ts');
-    const { rows, error } = await getDemandProfiles();
-    if (error) return fail(`수요 패턴을 조회하지 못했습니다: ${error}`);
-    if (rows.length === 0) return fail('NO_USAGE — 수요 패턴 데이터가 없습니다.');
+    const itemCode = argText(args, 'itemCode');
+    const { getShipmentTrends } = await import('../scm.ts');
+    const { rows, error } = await getShipmentTrends();
+    if (error) return fail(`출고 추이를 조회하지 못했습니다: ${error}`);
+    if (rows.length === 0) return fail('NO_SHIPMENT — 출고 실적이 없습니다.');
 
-    const picked = itemId ? rows.filter((row) => row.itemId === itemId) : rows.slice(0, LIST_LIMIT);
-    if (itemId && picked.length === 0) {
-      return fail(`UNKNOWN_ITEM — ${itemId} 은(는) 수요 패턴 목록에 없습니다.`);
+    const picked = itemCode ? rows.filter((row) => row.itemCode === itemCode) : rows.slice(0, LIST_LIMIT);
+    if (itemCode && picked.length === 0) {
+      return fail(`UNKNOWN_ITEM — ${itemCode} 은(는) 출고 목록에 없습니다.`);
     }
 
     const plain = picked.map((row) => ({
-      itemId: row.itemId,
-      itemName: row.itemName,
-      demandType: row.demandType,
-      adi: row.adi,
-      cvSquared: row.cvSquared,
-      zeroDemandRate: row.zeroDemandRate,
-      nPeriods: row.nPeriods,
-      nNonzeroPeriods: row.nNonzeroPeriods,
-      recentChangeRate: row.recentChangeRate,
+      itemCode: row.itemCode,
+      description: row.description,
+      itemType: row.itemType,
+      firstYm: row.firstYm,
+      lastYm: row.lastYm,
+      nMonths: row.nMonths,
+      monthsSinceLast: row.monthsSinceLast,
+      totalQty: row.totalQty,
+      latestQty: row.latestQty,
+      avg3m: row.avg3m,
+      avg6m: row.avg6m,
+      avg12m: row.avg12m,
+      trend3mVs12m: row.trend3mVs12m,
       reasonCode: row.reasonCode,
     }));
+
     const numbers: Record<string, number | null> = { matched: picked.length, total: rows.length };
     flatten(numbers, 'row', plain as unknown as Record<string, unknown>[]);
-    return ok({ scope: itemId ?? `상위 ${plain.length}건`, total: rows.length, rows: plain }, numbers);
-  },
-};
-
-const getForecastAccuracy: AgentTool = {
-  name: 'getForecastAccuracy',
-  description:
-    '예측 정확도를 돌려줍니다 — 품목별 Champion 모델과 WAPE(오차율) · Bias(치우침) · 표본 수. "예측을 믿을 만한가", "어떤 모델이 뽑혔나" 같은 질문에 씁니다. Bias 가 양수면 과대예측입니다.',
-  parameters: ITEM_ARG,
-  roles: ['ADMIN', 'USER'],
-  async run(args) {
-    const itemId = argText(args, 'itemId');
-    const { getModelComparison } = await import('../scm.ts');
-    const { champions, performance, runs, error } = await getModelComparison();
-    if (error) return fail(`예측 검증 결과를 조회하지 못했습니다: ${error}`);
-    if (champions.length === 0) {
-      return fail('INSUFFICIENT_SAMPLE — 아직 검증(Backtest) 실행 결과가 없습니다.');
-    }
-
-    const rows = (itemId
-      ? champions.filter((row) => String(row.item_id) === itemId)
-      : champions.slice(0, LIST_LIMIT)
-    ).map((row) => ({
-      itemId: String(row.item_id),
-      championModelId: row.champion_model_id === null || row.champion_model_id === undefined ? null : String(row.champion_model_id),
-      metric: String(row.champion_metric ?? ''),
-      wape: num(row.wape),
-      mape: num(row.mape),
-      bias: num(row.bias),
-      rmse: num(row.rmse),
-      selectionMethod: String(row.selection_method ?? ''),
-      // 표본 수는 성능 표에서 같은 품목 · 같은 모델의 행에서 가져옵니다 (여기서 계산하지 않습니다).
-      nPeriods: num(
-        performance.find(
-          (p) => String(p.item_id) === String(row.item_id) && String(p.model_id) === String(row.champion_model_id),
-        )?.n_periods,
-      ),
-    }));
-
-    if (itemId && rows.length === 0) {
-      return fail(`UNKNOWN_ITEM — ${itemId} 은(는) 채점된 품목 목록에 없습니다.`);
-    }
-
-    const latestRun = runs.length > 0 ? runs[0] : null;
-    const numbers: Record<string, number | null> = { matched: rows.length, total: champions.length };
-    flatten(numbers, 'row', rows as unknown as Record<string, unknown>[]);
     return ok(
-      { scope: itemId ?? `상위 ${rows.length}건`, total: champions.length, rows, backtestRunAt: latestRun?.started_at ?? null },
+      { scope: itemCode ?? `출고량 상위 ${plain.length}건`, total: rows.length, rows: plain },
       numbers,
-      latestRun?.started_at ? String(latestRun.started_at) : null,
+      picked[0]?.dataAsOf ?? null,
     );
   },
 };
 
-const getStockoutRisk: AgentTool = {
-  name: 'getStockoutRisk',
+const getDemandProfile: AgentTool = {
+  name: 'getDemandProfile',
   description:
-    '재고 소진 위험을 돌려줍니다 — 가용재고 · 일평균 사용량 · 소진 예상 일수와 날짜 · 계획 리드타임 · 위험 상태. "언제 떨어지나", "지금 위험한 품목이 뭔가" 같은 질문에 씁니다. 사용 이력이나 리드타임이 없으면 숫자 대신 사유를 돌려줍니다.',
+    '품목의 수요 성격을 돌려줍니다 — 수요 유형(SMOOTH · INTERMITTENT · ERRATIC · LUMPY) · 수요 발생 간격(ADI) · 변동성(CV²) · 무수요 비율. "수요가 규칙적인가", "드물게 나가는 품목인가", "Croston 이 필요한가" 같은 질문에 씁니다. 관측 6개월 미만이면 유형 대신 사유를 돌려줍니다.',
   parameters: ITEM_ARG,
   roles: ['ADMIN', 'USER'],
   async run(args) {
-    const itemId = argText(args, 'itemId');
-    const { getStockoutRisks } = await import('../scm.ts');
-    const { rows, error } = await getStockoutRisks();
-    if (error) return fail(`재고 소진 위험을 조회하지 못했습니다: ${error}`);
-    if (rows.length === 0) return fail('NO_USAGE — 재고 소진 분석 대상이 없습니다.');
+    const itemCode = argText(args, 'itemCode');
+    const { getItemDemandProfiles } = await import('../scm.ts');
+    const { rows, error } = await getItemDemandProfiles();
+    if (error) return fail(`수요 패턴을 조회하지 못했습니다: ${error}`);
+    if (rows.length === 0) return fail('NO_SHIPMENT — 수요 패턴 데이터가 없습니다.');
 
-    const picked = itemId ? rows.filter((row) => row.itemId === itemId) : rows.slice(0, LIST_LIMIT);
-    if (itemId && picked.length === 0) {
-      return fail(`UNKNOWN_ITEM — ${itemId} 은(는) 재고 목록에 없습니다.`);
+    const picked = itemCode ? rows.filter((row) => row.itemCode === itemCode) : rows.slice(0, LIST_LIMIT);
+    if (itemCode && picked.length === 0) {
+      return fail(`UNKNOWN_ITEM — ${itemCode} 은(는) 수요 패턴 목록에 없습니다.`);
     }
 
     const plain = picked.map((row) => ({
-      itemId: row.itemId,
-      itemName: row.itemName,
-      supplierId: row.supplierId,
-      availableQty: row.availableQty,
-      dailyUsageAvg: row.dailyUsageAvg,
-      stockoutDays: row.stockoutDays,
-      stockoutDate: row.stockoutDate,
-      plannedLeadTime: row.plannedLeadTime,
-      riskStatus: row.riskStatus,
-      reason: row.reason,
+      itemCode: row.itemCode,
+      description: row.description,
+      itemType: row.itemType,
+      firstYm: row.firstYm,
+      lastYm: row.lastYm,
+      nPeriods: row.nPeriods,
+      nNonzero: row.nNonzero,
+      meanNonzeroQty: row.meanNonzeroQty,
+      adi: row.adi,
+      cvSquared: row.cvSquared,
+      zeroDemandRate: row.zeroDemandRate,
+      demandType: row.demandType,
+      reasonCode: row.reasonCode,
     }));
+
     const numbers: Record<string, number | null> = { matched: picked.length, total: rows.length };
     flatten(numbers, 'row', plain as unknown as Record<string, unknown>[]);
-    return ok({ scope: itemId ?? `상위 ${plain.length}건`, total: rows.length, rows: plain }, numbers);
+    return ok(
+      { scope: itemCode ?? `상위 ${plain.length}건`, total: rows.length, rows: plain },
+      numbers,
+      picked[0]?.dataAsOf ?? null,
+    );
   },
 };
 
-const getLeadtimeStats: AgentTool = {
-  name: 'getLeadtimeStats',
+const getOlAccuracy: AgentTool = {
+  name: 'getOlAccuracy',
   description:
-    '공급처별 리드타임 통계를 돌려줍니다 — 계획(마스터) 리드타임 · 실제 평균 · P80 · 격차 · 표본 수. "납기가 계획보다 늦나", "어느 공급처가 문제인가" 같은 질문에 씁니다. P80 은 과거 납품의 80%가 그 일수 안에 도착했다는 뜻입니다.',
-  parameters: {
-    type: 'object',
-    additionalProperties: false,
-    required: [],
-    properties: {
-      supplier: { type: 'string', description: '공급처 이름. 비우면 전체' },
-    },
-  },
+    '영업 OL 과 SCM OL 의 예측 정확도를 돌려줍니다 — 기종 × 회계연도별 WAPE(작을수록 정확)와 Bias(양수면 과대예측), 채점에 쓴 행 수. "예측이 얼마나 맞았나", "영업과 SCM 중 어느 쪽이 정확한가", "과대예측인가" 같은 질문에 씁니다. 실적이 없는 행은 채점에서 빠져 있습니다.',
+  parameters: FY_ARG,
   roles: ['ADMIN', 'USER'],
   async run(args) {
-    const supplier = argText(args, 'supplier');
-    const { getLeadtimeGap } = await import('../scm.ts');
-    const { rows, error } = await getLeadtimeGap();
-    if (error) return fail(`리드타임 격차를 조회하지 못했습니다: ${error}`);
-    if (rows.length === 0) return fail('NO_LEADTIME — 리드타임 실적이 없습니다.');
+    const fySheet = argText(args, 'fySheet');
+    const modelBase = argText(args, 'modelBase');
+    const { getOlAccuracy: readOlAccuracy } = await import('../scm.ts');
+    const { rows, error } = await readOlAccuracy();
+    if (error) return fail(`OL 정확도를 조회하지 못했습니다: ${error}`);
+    if (rows.length === 0) return fail('NO_ACTUAL — 채점할 실적이 없습니다.');
 
-    const needle = supplier ? supplier.toLowerCase() : null;
-    const picked = needle
-      ? rows.filter((row) => row.supplier.toLowerCase().includes(needle))
-      : rows.slice(0, LIST_LIMIT);
-    if (needle && picked.length === 0) {
-      return fail(`UNKNOWN_SUPPLIER — ${supplier} 에 맞는 공급처가 없습니다.`);
+    let matched = rows;
+    if (fySheet) matched = matched.filter((row) => row.fySheet === fySheet);
+    if (modelBase) matched = matched.filter((row) => row.modelBase === modelBase);
+    if ((fySheet || modelBase) && matched.length === 0) {
+      return fail(`UNKNOWN_SCOPE — ${[fySheet, modelBase].filter(Boolean).join(' · ')} 에 해당하는 행이 없습니다.`);
     }
 
+    const picked = matched.slice(0, LIST_LIMIT);
     const plain = picked.map((row) => ({
-      supplier: row.supplier,
-      country: row.country,
-      masterLeadTime: row.masterLeadTime,
-      actualAverage: row.actualAverage,
-      p80: row.p80,
-      gap: row.gap,
-      sampleCount: row.sampleCount,
+      fySheet: row.fySheet,
+      modelBase: row.modelBase,
+      biz: row.biz,
+      totalAct: row.totalAct,
+      nScoredSales: row.nScoredSales,
+      salesWape: row.salesWape,
+      salesBias: row.salesBias,
+      nScoredScm: row.nScoredScm,
+      scmWape: row.scmWape,
+      scmBias: row.scmBias,
+      reasonCode: row.reasonCode,
     }));
-    const numbers: Record<string, number | null> = { matched: picked.length, total: rows.length };
+
+    const numbers: Record<string, number | null> = { matched: matched.length, total: rows.length };
     flatten(numbers, 'row', plain as unknown as Record<string, unknown>[]);
-    return ok({ scope: supplier ?? `상위 ${plain.length}건`, total: rows.length, rows: plain }, numbers);
+    return ok(
+      { scope: [fySheet, modelBase].filter(Boolean).join(' · ') || `상위 ${plain.length}건`, total: matched.length, rows: plain },
+      numbers,
+      picked[0]?.lastYm ?? null,
+    );
+  },
+};
+
+const getBomRequirement: AgentTool = {
+  name: 'getBomRequirement',
+  description:
+    '기종 1대를 팔려면 무엇이 몇 개 필요한지 돌려줍니다 — CAP(판매 구성 단위) · NEUTRAL(본체) · MUST_OPTION(필수 투입 옵션) · SCC · BOM 구성. 복수 기종에 공용으로 쓰이는 부품에는 공용 표시가 붙습니다. "이 기종에 뭐가 들어가나", "옵션이 몇 개 필요한가" 같은 질문에 씁니다.',
+  parameters: MODEL_ARG,
+  roles: ['ADMIN', 'USER'],
+  async run(args) {
+    const modelBase = argText(args, 'modelBase');
+    if (modelBase === null) return fail('기종 이름(modelBase)이 필요합니다.');
+
+    const { getBomRequirements } = await import('../scm.ts');
+    const { rows, error } = await getBomRequirements(modelBase);
+    if (error) return fail(`BOM 소요를 조회하지 못했습니다: ${error}`);
+    if (rows.length === 0) return fail(`UNKNOWN_MODEL — ${modelBase} 의 BOM 구성이 없습니다.`);
+
+    const picked = rows.slice(0, LIST_LIMIT * 3);
+    const plain = picked.map((row) => ({
+      partRole: row.partRole,
+      itemCode: row.itemCode,
+      description: row.description,
+      qty: row.qty,
+      bomGroup: row.bomGroup,
+      nModels: row.nModels,
+      commonFlag: row.commonFlag,
+    }));
+
+    const numbers: Record<string, number | null> = { total: rows.length, listed: picked.length };
+    flatten(numbers, 'row', plain as unknown as Record<string, unknown>[]);
+    return ok({ modelBase, total: rows.length, rows: plain }, numbers);
   },
 };
 
 // ── Registry ─────────────────────────────────────────────────
 
 export const AGENT_TOOLS: AgentTool[] = [
+  getShipmentTrend,
   getDemandProfile,
-  getForecastAccuracy,
-  getStockoutRisk,
-  getLeadtimeStats,
+  getOlAccuracy,
+  getBomRequirement,
 ];
 
 export const AGENT_TOOL_NAMES = AGENT_TOOLS.map((tool) => tool.name);
