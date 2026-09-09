@@ -1,0 +1,234 @@
+# 4회차 Supabase 구조
+
+> Codex 에게 기능을 시킬 때 이 파일을 먼저 읽으라고 하세요.
+> 이 문서가 없으면 Codex 는 존재하지 않는 테이블과 컬럼을 지어냅니다.
+
+## 스키마 역할
+
+| 스키마 | 역할 |
+|---|---|
+| `raw` | CSV 원본. 적재 후 수정하지 않습니다 |
+| `core` | 공급처 표기 매핑과 수업 중 확정하는 기준 |
+| `analytics` | 화면과 AI 가 조회하는 뷰 |
+
+**화면 코드에서 `raw` 를 직접 조회하지 마세요.** 정제 규칙이 화면마다 흩어지면 같은 지표가 화면마다 다른 숫자로 나옵니다.
+
+## 수업 전 확인 건수
+
+| 대상 | 기대값 |
+|---|---:|
+| `raw.shipment_log` | 2,864 |
+| `raw.usage_history` | 7,038 |
+| `raw.inventory` | 43 |
+| `raw.item_master` | 23 |
+| `raw.supplier_master` | 13 |
+| `raw.purchase_order` | 92 |
+| `raw.goods_receipt` | 81 |
+| `core.supplier_alias` | 36 |
+| `core.leadtime_plan` | **0** |
+| `core.usage_profile` | **0** |
+| `analytics.v_stockout_risk` | 20 |
+
+`core.leadtime_plan` 과 `core.usage_profile` 은 오전 분석 후 참가자와 확정합니다. 수업 전에는 비어 있어야 합니다.
+
+---
+
+## analytics — 화면이 조회하는 뷰
+
+### `v_leadtime_gap`
+공급처별 마스터 리드타임과 실제 P80 비교. 12행.
+
+| 컬럼 | 타입 | 설명 |
+|---|---|---|
+| supplier_id | text | SUP001 ~ SUP013 |
+| supplier_name | text | Fujifilm BI Japan 등 |
+| country | text | Japan, China, India … |
+| std_lead_time | int | 마스터 표준 리드타임(일) |
+| n_samples | int | 실적 표본 수 |
+| avg_order_to_ship | numeric | 발주 → 현지 출고 평균(일) |
+| avg_ship_to_receive | numeric | 출고 → 검수완료 평균(일) |
+| mean_days | numeric | 전체 평균(일) |
+| p50_days / p80_days / p90_days | int | 분위수 |
+| std_days | numeric | 표준편차 |
+| gap_days | int | p80_days − std_lead_time. 양수면 실제가 더 김 |
+| confidence | text | HIGH / MEDIUM / LOW (표본 수 기준) |
+
+### `v_stockout_risk`
+재고 소진 위험. 20행. **오후 실습의 검증 정답지입니다.**
+
+| 컬럼 | 타입 | 설명 |
+|---|---|---|
+| item_id | text | ITEM001 ~ ITEM020 |
+| item_name | text | 품목명 |
+| supplier_id | text | 생산법인 |
+| current_stock | numeric | 현재고 (창고 합산) |
+| inbound_qty | numeric | 입고예정 (진행 중 선적) |
+| available_qty | numeric | current_stock + inbound_qty |
+| daily_usage_avg | numeric | 일평균 사용량 (없으면 null) |
+| cv | numeric | 변동계수 |
+| planned_lead_time | int | 적용 중인 계획 리드타임 |
+| stockout_days | numeric | available_qty ÷ daily_usage_avg (계산 불가 시 null) |
+| stockout_date | date | 소진 예상일 |
+| risk_status | text | SAFE / CRITICAL / UNKNOWN |
+| reason | text | NO_USAGE / NO_LEADTIME (정상이면 null) |
+
+### `v_stockout_kpi`
+요약 한 줄.
+`n_items`, `n_critical`, `n_safe`, `n_unknown`, `n_within_30d`, `avg_stockout_days`
+
+### `v_usage_profile`
+자재별 사용 프로파일. 19행.
+`item_id`, `item_name`, `item_type`, `supplier_id`, `valid_days`,
+`daily_usage_avg`, `daily_usage_sd`, `cv`, `stability`, `source`
+
+### `v_usage_anomaly`
+이상 사용 이력. 39행.
+`usage_id`, `item_id`, `use_date`, `qty`, `avg_qty`, `ratio`, `note`,
+`anomaly_type` (RETURN / PROJECT / UNEXPLAINED)
+
+---
+
+## core — 정제와 계산
+
+### `leadtime_plan` (테이블 · 쓰기 가능)
+오전 분석에서 확정한 계획 리드타임.
+`supplier_id`(PK), `planned_lead_time`, `basis`, `service_level`, `confirmed_reason`, `confirmed_at`
+
+**이 값을 바꾸면 `v_stockout_risk` 의 판정이 즉시 달라집니다.** 화면 코드는 한 줄도 고치지 않습니다.
+
+### `usage_profile` (테이블 · 쓰기 가능)
+오전 분석에서 확정한 일평균 사용량.
+`item_id`(PK), `valid_days`, `daily_usage_avg`, `daily_usage_sd`, `cv`, `confirmed_at`
+
+### `agent_conversation` · `agent_message` (테이블 · STEP 16)
+AI Agent 의 대화와 문답 기록.
+`agent_conversation`: `conversation_id`(PK), `user_id`, `title`, `created_at`, `last_message_at`
+`agent_message`: `message_id`(PK), `conversation_id`, `user_id`, `question`, `answer`(jsonb),
+`tool_trace`(jsonb), `guardrail`(jsonb), `token_usage`(jsonb), `error`, `created_at`
+
+**본인 대화만 읽고 씁니다.** 관리자는 감사 목적으로 전체를 읽습니다(RLS).
+뷰를 두지 않는 이유는 이 프로젝트의 뷰가 소유자 권한으로 돌아 RLS 가 적용되지 않기 때문입니다.
+적용 파일 — `supabase/migrations/20260909000100_step16_agent_conversation.sql`
+
+### 그 밖의 core 뷰
+
+```
+v_fact_shipment          정제 + 구간 일수 + 품질 판정
+v_shipment_valid         분석 가능한 완료 건만
+v_leadtime_stat          공급처별 분위수
+v_leadtime_effective     확정값 → 없으면 실적 P80
+v_usage_effective        확정값 → 없으면 정제 기준 평균
+v_item_master            품목코드 정규화 · 중복 제거
+v_stock_on_hand          창고 표기 통일 후 현재고 합산
+v_inbound_qty            진행 중 선적 = 입고예정
+v_train_demand           Forecast·Demand Profile 학습 전용 수요 기간
+v_test_actual            Backtest scoring 전용 검증 Actual 기간
+```
+
+### STEP 3 정책·Forecast 설정
+
+| 객체 | 역할 |
+|---|---|
+| `core.policy_config` | 서비스 레벨, 검토 주기, 안전 버퍼 등 공통 운영 정책 |
+| `core.outlier_rule` | 프로젝트·반품·중복 등 학습 제외 규칙 |
+| `core.item_policy` | 품목별 MOQ, pack size, grade, 서비스 레벨 |
+| `core.forecast_setting` | 활성 학습/검증 기간과 DAY/WEEK/MONTH granularity |
+
+`core.v_train_demand`와 `core.v_test_actual`은 `core.forecast_setting`의 활성 기간만 사용한다.
+기간이 비어 있거나 train/test가 겹치면 **두 뷰 모두 0행**을 반환한다. Forecast·Demand Profile은 전자만,
+Backtest scoring은 후자만 읽는다. `raw.usage_history`를 화면이나 Forecast 코드에서 직접 읽지 않는다.
+
+`analytics.v_data_coverage`는 전체 데이터 기간, 설정 기간, train/test 행수, 각 window 유효성,
+격리 상태를 한 행으로 제공한다.
+
+### STEP 5 수요 프로파일
+
+| 객체 | 역할 |
+|---|---|
+| `analytics.v_sku_demand_profile` | 학습 기간 월별 grid에서 SKU별 ADI, CV², Zero-demand rate, 추세, 최근 변화, Peak month, 수요 유형을 계산 |
+| `analytics.v_demand_profile_kpi` | SMOOTH / INTERMITTENT / ERRATIC / LUMPY 수와 Croston 후보 수를 요약 |
+
+수요 프로파일은 **반드시 `core.v_train_demand`만** 사용합니다. `core.v_test_actual`은 Backtest scoring 전용입니다.
+기록이 없는 월은 기간 grid의 `0`으로 표현하지만, 원본 수량이 null인 경우에는 `null`과 reason code를 유지합니다.
+계절성은 24개월 미만에서 `false`가 아니라 `null + INSUFFICIENT_PERIODS`로 표시합니다.
+
+### STEP 6 SQL Baseline Forecast
+
+| 객체 | 역할 |
+|---|---|
+| `core.model_config` | 모델 enabled 상태, 적용 수요 유형, DB 파라미터를 관리하는 registry |
+| `core.model_version` | Forecast Run마다 사용한 모델 정의와 파라미터의 불변 snapshot |
+| `core.forecast_run` | 실행 상태, 학습 기간, data snapshot, 실행자, 집계값을 보관 |
+| `core.forecast_result` | Run·모델·SKU·기간별 P50/P80/P90/sigma 저장 |
+| `core.run_baseline_forecast()` | ADMIN 전용 SQL Baseline 실행 함수 |
+
+`core.run_baseline_forecast()`는 `core.v_train_demand`의 월별 grid만 읽습니다. MA_3M, MA_6M,
+WMA_3M(최근순 3:2:1), PY_SAME_MONTH, SEASONAL_NAIVE 결과는 실행 시 저장되며 화면 조회마다 다시 계산하지 않습니다.
+기본 SQL Baseline 모델의 적용 수요 유형은 `SMOOTH`, `ERRATIC`으로 registry에 저장됩니다. INTERMITTENT/LUMPY는
+STEP 8 Croston 계열 엔진이 추가될 때 registry 설정으로 연결합니다.
+
+`analytics.v_forecast_run`의 `is_stale`은 run의 `data_snapshot_at` 이후 수요 관련 IMPORT가 완료됐거나 `stale_at`이 기록된 경우 true입니다.
+과거 Run과 결과 행은 stale이어도 삭제하거나 덮어쓰지 않습니다.
+
+### STEP 7 Backtest와 Champion
+
+`core.backtest_run`, `core.model_performance`, `core.champion_model_selection`은 Forecast 실행과 분리된 검증 이력입니다.
+Backtest는 `core.forecast_result + core.v_test_actual`만 사용합니다. Bias는 `Forecast - Actual`이며 양수는 과대예측입니다.
+WAPE 분모가 0이거나 비교 행이 없으면 null과 reason code를 저장합니다. 최신 Champion은 `analytics.v_champion_model`에서 조회하며,
+수동 변경은 append-only 이력과 `core.audit_log`를 함께 남깁니다.
+
+---
+
+## raw — 원본 (직접 조회하지 않음)
+
+| 테이블 | 행수 | 비고 |
+|---|---|---|
+| shipment_log | 2,864 | 타임스탬프 7개. 진행 중 117건 포함 |
+| usage_history | 7,038 | 영업일 385일. 음수(반품) 16건 포함 |
+| supplier_master | 13 | 법인 12곳 + 중복 등록 1건 |
+| item_master | 23 | 품목 20개 + 표기 오염 2 + 단종 1 |
+| purchase_order | 92 | 공급업체 표기 25종 |
+| goods_receipt | 81 | |
+| business_event | STEP 3부터 | 프로젝트·반품 등 업무 이벤트 원본 |
+| sales_order | STEP 3부터 | 주문 원본 |
+| item_substitute | STEP 3부터 | 대체 품목 관계 원본 |
+| inventory | 43 | 창고 표기 흔들림 있음 |
+
+`shipment_log` 타임스탬프 순서:
+
+```
+order_date → supplier_ship_date → port_departure_date → port_arrival_date
+→ customs_clear_date → warehouse_receipt_date → qc_release_date
+```
+
+**리드타임의 끝점은 `qc_release_date`** 입니다. 창고에 도착해도 검수 전이면 쓸 수 없습니다.
+
+모든 raw 입력 테이블은 STEP 3부터 `batch_id`, `source_type`, `loaded_at`, `source_record_id`를 공통 적재 추적 열로 사용한다.
+기존 행은 이 열이 null일 수 있으며, 원본 데이터를 0 또는 임의값으로 바꾸지 않는다.
+
+---
+
+## 접속 방법
+
+```ts
+import { createSupabaseServerClient } from '@/lib/supabase';
+
+const supabase = await createSupabaseServerClient();
+const { data, error } = await supabase
+  .schema('analytics')
+  .from('v_stockout_risk')
+  .select('*');
+```
+
+`public` 스키마가 아니므로 `.schema()` 를 반드시 거쳐야 합니다.
+
+**Supabase 대시보드에서 스키마 노출 설정이 되어 있어야 합니다.**
+
+```
+Project Settings → API → Data API → Exposed schemas
+    public, core, analytics
+```
+
+이 설정이 없으면 조회 결과가 **에러 없이 빈 배열**로 나옵니다.
+
+조회 함수는 `lib/scm.ts` 에 모읍니다. 화면에서 supabase 를 직접 부르지 않습니다.

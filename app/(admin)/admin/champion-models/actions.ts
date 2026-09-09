@@ -1,0 +1,4 @@
+'use server';
+import {revalidatePath} from 'next/cache';import {requireAdmin} from '@/lib/auth';import {createSupabaseServerClient} from '@/lib/supabase/server';
+export type ChampionState={error:string|null;success:string|null};
+export async function selectChampionAction(_:ChampionState,f:FormData):Promise<ChampionState>{try{await requireAdmin();const backtestRunId=String(f.get('backtestRunId')??''),itemId=String(f.get('itemId')??''),modelId=String(f.get('modelId')??''),reason=String(f.get('reason')??'').trim();if(!reason)return{error:'변경 사유는 필수입니다.',success:null};const s=await createSupabaseServerClient();const{error}=await s.rpc('select_manual_champion',{p_backtest_run_id:backtestRunId,p_item_id:itemId,p_model_id:modelId,p_reason:reason});if(error)return{error:error.message,success:null};revalidatePath('/admin/champion-models');return{error:null,success:'수동 Champion을 기록했습니다.'};}catch(e){return{error:e instanceof Error?e.message:'Champion 변경 실패',success:null};}}

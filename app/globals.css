@@ -1,0 +1,8 @@
+@import url("https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap");
+@import "../styles/shell.css";
+@import "../styles/components.css";
+@import "../styles/chart.css";
+
+:root{--canvas:#f5f7fb;--surface:#fff;--surface-subtle:#f7f9fc;--surface-translucent:rgba(255,255,255,.92);--ink:#182230;--ink-soft:#536174;--muted:#718096;--line:#e3e8ef;--line-subtle:#edf0f4;--navy:#17365d;--navy-deep:#102b4b;--navy-hover:rgba(255,255,255,.08);--on-dark:#fff;--on-dark-soft:#c3d2e3;--on-dark-muted:#8fa7c0;--dark-line:rgba(255,255,255,.12);--blue:#2f6fed;--blue-line:#c9dafe;--pale-blue:#edf4ff;--green:#1f9d68;--green-line:#c8ead8;--pale-green:#eaf8f1;--amber:#bd7211;--amber-line:#f0d9a1;--pale-amber:#fff6e4;--red:#c2413d;--red-line:#f2c6c4;--pale-red:#fff0ef;--sidebar-width:250px;--topbar-height:75px;--content-max:1440px;--content-pad:42px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:20px;--space-6:24px;--space-7:28px;--space-8:32px;--space-10:40px;--space-12:48px;--radius-sm:9px;--radius-md:11px;--radius-lg:14px;--radius-pill:999px;--shadow-card:0 3px 12px rgba(16,43,75,.025);--shadow-button:0 5px 13px rgba(47,111,237,.18);--shadow-active:0 8px 20px rgba(0,0,0,.15);--shadow-focus:0 0 0 3px rgba(47,111,237,.1)}
+*{box-sizing:border-box}html{background:var(--canvas)}body{margin:0;color:var(--ink);background:var(--canvas);font-family:"Noto Sans KR",ui-sans-serif,system-ui,sans-serif;word-break:keep-all;overflow-wrap:break-word}button,input,select,textarea{font:inherit}button{cursor:pointer}a{color:inherit}:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+
