@@ -65,3 +65,13 @@ export async function requireAdmin(): Promise<AuthenticatedUser> {
   if (current.profile.role !== 'ADMIN') throw new AuthorizationError('관리자 권한이 필요합니다.', 403);
   return current;
 }
+
+/**
+ * 로그인만 확인합니다. requireUser 와 달리 redirect 하지 않고 던집니다.
+ * API 라우트는 HTML 로 이동시킬 수 없고 상태 코드로 답해야 하기 때문입니다.
+ */
+export async function requireSignedIn(): Promise<AuthenticatedUser> {
+  const current = await readAuthenticatedUser();
+  if (!current) throw new AuthorizationError('로그인이 필요합니다.', 401);
+  return current;
+}

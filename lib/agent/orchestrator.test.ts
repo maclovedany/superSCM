@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { MAX_TOOL_ROUNDS, runAgent, systemPrompt } from './orchestrator.ts';
+import { MAX_TOOL_ROUNDS, runAgent, systemPrompt, type AgentProgress } from './orchestrator.ts';
 import { registerTool, type ToolResult } from './tools.ts';
 
 // 실제 DB 를 부르지 않는 가짜 툴을 하나 등록합니다.
@@ -198,5 +198,67 @@ test('빈 질문은 모델을 부르지 않는다', async () => {
     const result = await runAgent({ question: '   ', user: USER, fetchImpl: impl });
     assert.equal(sent.length, 0);
     assert.match(result.error ?? '', /질문을 입력/);
+  });
+});
+
+test('진행 이벤트가 화면 순서대로 나온다 — 계획 · 툴 · 정리 · 검증', async () => {
+  await withEnv(async () => {
+    const { impl } = fakeModel([toolCallMessage('stubStockout'), answerMessage(GOOD_ANSWER)]);
+    const events: AgentProgress[] = [];
+    const result = await runAgent({
+      question: 'ITEM012 언제 떨어져?',
+      user: USER,
+      fetchImpl: impl,
+      onProgress: (event) => events.push(event),
+    });
+
+    assert.equal(result.error, null);
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ['planning', 'tool_start', 'tool_end', 'answering', 'verifying'],
+    );
+    const started = events[1];
+    assert.equal(started.type === 'tool_start' ? started.name : null, 'stubStockout');
+    const ended = events[2];
+    assert.equal(ended.type === 'tool_end' ? ended.ok : null, true);
+  });
+});
+
+test('수치가 어긋나면 regenerating 을 알린다 — 검증 전 문장은 내보내지 않는다', async () => {
+  await withEnv(async () => {
+    const { impl } = fakeModel([
+      toolCallMessage('stubStockout'),
+      answerMessage({ ...GOOD_ANSWER, answer: 'ITEM012 는 약 3일 뒤 소진 예상입니다.' }),
+      answerMessage(GOOD_ANSWER),
+    ]);
+    const events: AgentProgress[] = [];
+    await runAgent({
+      question: 'ITEM012 언제 떨어져?',
+      user: USER,
+      fetchImpl: impl,
+      onProgress: (event) => events.push(event),
+    });
+
+    assert.ok(events.some((event) => event.type === 'regenerating'), '재생성을 알려야 합니다');
+    // 이벤트에는 답변 문장이 실리지 않습니다 — 단계 이름과 툴 이름뿐입니다.
+    const text = JSON.stringify(events);
+    assert.ok(!text.includes('소진 예상'), '검증 전 본문이 새어 나가면 안 됩니다');
+  });
+});
+
+test('onProgress 가 예외를 던져도 답변은 그대로 나온다', async () => {
+  await withEnv(async () => {
+    const { impl } = fakeModel([toolCallMessage('stubStockout'), answerMessage(GOOD_ANSWER)]);
+    const result = await runAgent({
+      question: 'ITEM012 언제 떨어져?',
+      user: USER,
+      fetchImpl: impl,
+      onProgress: () => {
+        throw new Error('화면이 끊겼습니다');
+      },
+    });
+
+    assert.equal(result.error, null);
+    assert.equal(result.answer?.risk, 'CRITICAL');
   });
 });

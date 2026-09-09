@@ -42,6 +42,20 @@ export type ToolTraceEntry = {
   reason: string | null;
 };
 
+/**
+ * 진행 상황 이벤트 — 화면의 "생각 중" 표시가 이것을 그대로 그립니다.
+ *
+ * ★ 여기로 나가는 것은 **어떤 단계를 지나는 중인가** 뿐입니다. 검증되지 않은 답변 문장은
+ *   한 글자도 내보내지 않습니다. 사람이 보는 본문은 Guardrail 을 통과한 뒤에만 나갑니다.
+ */
+export type AgentProgress =
+  | { type: 'planning' }
+  | { type: 'tool_start'; name: string }
+  | { type: 'tool_end'; name: string; ok: boolean; ms: number; reason: string | null }
+  | { type: 'answering' }
+  | { type: 'verifying' }
+  | { type: 'regenerating' };
+
 export type GuardrailTrace = {
   ok: boolean;
   offending: string[];
@@ -138,8 +152,18 @@ export async function runAgent(input: {
   question: string;
   user: AgentUser;
   fetchImpl?: typeof fetch;
+  /** 있으면 단계마다 부릅니다. 없으면 지금까지와 똑같이 동작합니다 */
+  onProgress?: (event: AgentProgress) => void;
 }): Promise<RunAgentResult> {
   const question = input.question.trim();
+  // 진행 표시가 실패해도 답변은 만들어져야 합니다 — 그래서 통째로 감싸 둡니다.
+  const report = (event: AgentProgress) => {
+    try {
+      input.onProgress?.(event);
+    } catch {
+      // 화면 쪽 사정입니다. Agent 는 계속 갑니다.
+    }
+  };
   const empty: RunAgentResult = {
     configured: true,
     answer: null,
@@ -185,6 +209,7 @@ export async function runAgent(input: {
     let raw: string | null = null;
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+      report(round === 0 ? { type: 'planning' } : { type: 'answering' });
       const result = await chatCompletion({
         messages,
         tools: openAiTools,
@@ -214,6 +239,7 @@ export async function runAgent(input: {
       for (const call of result.toolCalls) {
         const args = argsOf(call.arguments);
         const started = Date.now();
+        report({ type: 'tool_start', name: call.name });
         const tool = findTool(call.name);
         // 2차 방어 — 목록에 없거나 이 역할이 부를 수 없는 툴이면 실행하지 않습니다.
         // LLM 의 실수여도 서버가 거절해야 합니다 (슬라이드 46).
@@ -242,13 +268,15 @@ export async function runAgent(input: {
           }
         }
 
-        toolTrace.push({
+        const entry: ToolTraceEntry = {
           name: call.name,
           args,
           ok: outcome.ok,
           ms: Date.now() - started,
           reason: outcome.reason ?? null,
-        });
+        };
+        toolTrace.push(entry);
+        report({ type: 'tool_end', name: entry.name, ok: entry.ok, ms: entry.ms, reason: entry.reason });
         toolResults.push(outcome);
         if (outcome.dataAsOf) dataAsOf.push(outcome.dataAsOf);
 
@@ -273,11 +301,13 @@ export async function runAgent(input: {
     }
 
     // ── Guardrail ────────────────────────────────────────────
+    report({ type: 'verifying' });
     let check = verifyAnswer(answer, allowed, { question });
     let regenerated = false;
 
     if (!check.ok) {
       regenerated = true;
+      report({ type: 'regenerating' });
       messages.push({ role: 'assistant', content: raw });
       messages.push({ role: 'user', content: offendingMessage(check.offending) });
 

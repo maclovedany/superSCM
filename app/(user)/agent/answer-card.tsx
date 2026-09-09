@@ -2,6 +2,9 @@
 //
 // 업무 사용자가 먼저 봐야 할 것은 판단 · 근거 · 기준시각입니다. Tool Trace 는 접어 두고
 // 검토자만 펼칩니다. 여기서는 계산하지 않습니다 — 값을 그리기만 합니다.
+//
+// ★ 본문은 bodyText 로 받습니다. 한 글자씩 찍히는 동안에도 카드는 같은 모양을 유지하고,
+//   근거 · 기준시각 · 툴 호출은 다 찍힌 뒤에 함께 나타납니다 (showDetails).
 
 import Badge from '@/components/ui/badge';
 import EmptyValue from '@/components/ui/empty-value';
@@ -19,20 +22,24 @@ export default function AnswerCard({
   toolTrace,
   guardrail,
   error,
+  bodyText,
+  showDetails = true,
 }: {
   answer: AgentAnswer | null;
   toolTrace: ToolTraceEntry[];
   guardrail: GuardrailTrace | null;
   error: string | null;
+  /** 화면에 그릴 본문. 타이핑 중에는 앞부분만 들어옵니다 */
+  bodyText?: string;
+  /** 근거 · 기준시각 · 툴 호출을 보일지. 타이핑이 끝나면 true 가 됩니다 */
+  showDetails?: boolean;
 }) {
   if (error && !answer) {
-    return (
-      <div className="chat-answer">
-        <p className="text-danger">{error}</p>
-      </div>
-    );
+    return <p className="chat-error">{error}</p>;
   }
   if (!answer) return null;
+
+  const body = bodyText ?? answer.answer;
 
   return (
     <div className="chat-answer">
@@ -41,52 +48,59 @@ export default function AnswerCard({
         {answer.verdict ? <strong>{answer.verdict}</strong> : null}
       </div>
 
-      <p className="chat-answer-body">{answer.answer}</p>
-
-      {answer.cannot_answer ? (
-        <p className="chat-reason">
-          산출 불가 사유 <EmptyValue reasonCode={answer.cannot_answer_reason ?? 'CALCULATION_UNAVAILABLE'} />
-        </p>
-      ) : null}
-
-      {answer.evidence.length > 0 ? (
-        <ul className="chat-evidence">
-          {answer.evidence.map((item, index) => (
-            <li key={`${item.label}-${index}`}>
-              <span className="chat-evidence-label">{item.label}</span>
-              <span className="chat-evidence-value">{valueLabel(item.value, item.unit)}</span>
-              {item.source_tool ? <span className="chat-evidence-tool">{item.source_tool}</span> : null}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-
-      {answer.recommended_action ? (
-        <p className="chat-action">권고 · {answer.recommended_action}</p>
-      ) : null}
-
-      <p className="chat-foot">
-        데이터 기준시각 {answer.data_as_of ? answer.data_as_of : <EmptyValue reasonCode="NO_DATA_AS_OF" />}
-        {guardrail ? (
-          <span className="muted">
-            {' · '}수치 검사 {guardrail.checked}건{guardrail.regenerated ? ' · 재생성 1회' : ''}
-          </span>
-        ) : null}
+      <p className="chat-answer-body">
+        {body}
+        {showDetails ? null : <span className="chat-caret" aria-hidden="true" />}
       </p>
 
-      {toolTrace.length > 0 ? (
-        <details className="chat-trace">
-          <summary>툴 호출 {toolTrace.length}건</summary>
-          <ul>
-            {toolTrace.map((entry, index) => (
-              <li key={`${entry.name}-${index}`}>
-                <code>{entry.name}</code>
-                <span className="muted"> {JSON.stringify(entry.args)} · {entry.ms}ms</span>
-                {entry.ok ? <span className="tag green">성공</span> : <span className="tag gray">{entry.reason ?? '실패'}</span>}
-              </li>
-            ))}
-          </ul>
-        </details>
+      {showDetails ? (
+        <>
+          {answer.cannot_answer ? (
+            <p className="chat-reason">
+              산출 불가 사유 <EmptyValue reasonCode={answer.cannot_answer_reason ?? 'CALCULATION_UNAVAILABLE'} />
+            </p>
+          ) : null}
+
+          {answer.evidence.length > 0 ? (
+            <ul className="chat-evidence">
+              {answer.evidence.map((item, index) => (
+                <li key={`${item.label}-${index}`}>
+                  <span className="chat-evidence-label">{item.label}</span>
+                  <span className="chat-evidence-value">{valueLabel(item.value, item.unit)}</span>
+                  {item.source_tool ? <span className="chat-evidence-tool">{item.source_tool}</span> : null}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          {answer.recommended_action ? (
+            <p className="chat-action">권고 · {answer.recommended_action}</p>
+          ) : null}
+
+          <p className="chat-foot">
+            데이터 기준시각 {answer.data_as_of ? answer.data_as_of : <EmptyValue reasonCode="NO_DATA_AS_OF" />}
+            {guardrail ? (
+              <span className="muted">
+                {' · '}수치 검사 {guardrail.checked}건{guardrail.regenerated ? ' · 재생성 1회' : ''}
+              </span>
+            ) : null}
+          </p>
+
+          {toolTrace.length > 0 ? (
+            <details className="chat-trace">
+              <summary>툴 호출 {toolTrace.length}건</summary>
+              <ul>
+                {toolTrace.map((entry, index) => (
+                  <li key={`${entry.name}-${index}`}>
+                    <code>{entry.name}</code>
+                    <span className="muted"> {JSON.stringify(entry.args)} · {entry.ms}ms</span>
+                    {entry.ok ? <span className="tag green">성공</span> : <span className="tag gray">{entry.reason ?? '실패'}</span>}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
+        </>
       ) : null}
     </div>
   );
