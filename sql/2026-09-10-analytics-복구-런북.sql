@@ -43,6 +43,31 @@ select to_regclass('raw.usage_history')    as usage_history,
 --       4회차 CSV 임포트부터 다시 해야 합니다 (적용방법.md).
 
 
+-- ── 단계 1-b. 원본에 실데이터가 있는지 셉니다 (읽기 전용) ─────────
+--
+-- 테이블이 있는 것과 데이터가 든 것은 다릅니다. 여기서 0 이 나오면 뒤 단계를
+-- 다 해도 화면은 빈 표입니다 — 그때는 CSV 임포트부터 다시 해야 합니다.
+-- ★ 이번 복구는 raw 의 행을 하나도 건드리지 않습니다. 세어 보기만 합니다.
+
+select 'usage_history'   as 테이블, count(*) as 행수 from raw.usage_history
+union all select 'shipment_log',    count(*) from raw.shipment_log
+union all select 'item_master',     count(*) from raw.item_master
+union all select 'supplier_master', count(*) from raw.supplier_master
+union all select 'purchase_order',  count(*) from raw.purchase_order
+union all select 'inventory',       count(*) from raw.inventory
+order by 테이블;
+
+-- 기대 (SCHEMA.md 기준)
+--   usage_history 7,038 · shipment_log 2,864 · purchase_order 92
+--   inventory 43 · item_master 23 · supplier_master 13
+--   숫자가 크게 다르거나 0 이면 임포트 상태부터 확인해야 합니다.
+
+-- 수요 기간도 함께 봅니다. 단계 10 에서 학습/검증 기간을 이 범위로 잡습니다.
+select min(use_date) as 처음, max(use_date) as 마지막,
+       count(distinct item_id) as 품목수
+  from raw.usage_history;
+
+
 -- ── 단계 2. (조건부) 빠진 raw 테이블만 만듭니다 ────────────────────
 --
 -- 단계 1 에서 goods_receipt 또는 forecast 가 null 일 때만 실행합니다.
