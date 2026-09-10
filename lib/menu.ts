@@ -1,7 +1,16 @@
 import type { LucideIcon } from 'lucide-react';
 import { BarChart3, Boxes, Database, Gauge, LineChart, Settings2, Users, Workflow, Bot } from 'lucide-react';
 
-export type MenuItem = { href: string; label: string; description: string; icon: LucideIcon };
+import type { Permission, PermissionSet } from './permission';
+
+export type MenuItem = {
+  href: string;
+  label: string;
+  description: string;
+  icon: LucideIcon;
+  /** 이 중 하나라도 있으면 보입니다. 없으면 로그인만으로 보입니다 */
+  anyOf?: Permission[];
+};
 
 export const USER_MENU: MenuItem[] = [
   { href: '/dashboard', label: '전체 현황', description: '월간 발주계획 요약', icon: Gauge },
@@ -14,6 +23,7 @@ export const USER_MENU: MenuItem[] = [
 
 export const ADMIN_MENU: MenuItem[] = [
   { href: '/admin/master', label: '마스터', description: '해외법인 · 공급처 · 출항일 · 품목 정책', icon: Boxes },
+  { href: '/admin/permissions', label: '권한', description: '부서 · 직책 · 업무 권한', icon: Users },
   { href: '/admin/users', label: '사용자 관리', description: '계정 권한과 활성 상태 관리', icon: Users },
   { href: '/admin/workflow', label: '발주계획 관리', description: '레거시 업무 플로우', icon: Workflow },
   { href: '/admin/demand', label: '수요 관리', description: '수요 데이터 관리', icon: BarChart3 },
@@ -29,4 +39,14 @@ export type AppRole = 'ADMIN' | 'USER';
 
 export function menuForRole(role: AppRole): MenuItem[] {
   return role === 'ADMIN' ? [...USER_MENU, ...ADMIN_MENU] : USER_MENU;
+}
+
+/**
+ * 역할과 업무 권한을 함께 적용한 메뉴.
+ *
+ * ★ anyOf 가 없는 항목은 로그인만으로 보입니다. 분석 화면처럼 누구나 봐도 되는 것들입니다.
+ * ★ 이것은 1차 방어입니다. 숨긴 경로로 직접 들어오면 서버가 다시 거절합니다.
+ */
+export function menuFor(role: AppRole, permissions: PermissionSet): MenuItem[] {
+  return menuForRole(role).filter((item) => !item.anyOf || permissions.hasAny(...item.anyOf));
 }
