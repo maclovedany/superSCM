@@ -30,3 +30,6 @@ next-env.d.ts
 
 # DB 덤프 (수업용, 저장소에 두지 않습니다)
 dump.sql
+
+# 강의 자료 — 저장소에 올리지 않습니다 (로컬에만 둡니다)
+docs/lecture/
