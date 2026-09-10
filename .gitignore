@@ -42,3 +42,8 @@ stage1.md
 향후논의사항.md
 gap.md
 refactor.md
+
+# Supabase CLI 임시 파일
+supabase/.temp/
+docs/db-저장소-대조-*.md
+docs/데이터-요청목록.md

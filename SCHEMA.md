@@ -185,7 +185,7 @@ WAPE 분모가 0이거나 비교 행이 없으면 null과 reason code를 저장�
 |---|---|---|
 | shipment_log | 2,864 | 타임스탬프 7개. 진행 중 117건 포함 |
 | usage_history | 7,038 | 영업일 385일. 음수(반품) 16건 포함 |
-| supplier_master | 13 | 법인 12곳 + 중복 등록 1건 |
+| supplier_master | 13 | 법인 12곳 + 중복 등록 1건 (5회차 더미 데이터의 실제 행수. 운영 대상 법인은 5곳입니다 — AGENTS.md 참조) |
 | item_master | 23 | 품목 20개 + 표기 오염 2 + 단종 1 |
 | purchase_order | 92 | 공급업체 표기 25종 |
 | goods_receipt | 81 | |
