@@ -13,6 +13,7 @@ export const USER_MENU: MenuItem[] = [
 ];
 
 export const ADMIN_MENU: MenuItem[] = [
+  { href: '/admin/master', label: '마스터', description: '해외법인 · 공급처 · 출항일 · 품목 정책', icon: Boxes },
   { href: '/admin/users', label: '사용자 관리', description: '계정 권한과 활성 상태 관리', icon: Users },
   { href: '/admin/workflow', label: '발주계획 관리', description: '레거시 업무 플로우', icon: Workflow },
   { href: '/admin/demand', label: '수요 관리', description: '수요 데이터 관리', icon: BarChart3 },
