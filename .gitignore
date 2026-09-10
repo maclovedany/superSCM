@@ -33,3 +33,5 @@ dump.sql
 
 # 강의 자료 — 저장소에 올리지 않습니다 (로컬에만 둡니다)
 docs/lecture/
+docs/superpowers/plans/*-session-*-lecture.md
+docs/superpowers/specs/*-session-*-lecture-design.md
