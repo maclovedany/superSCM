@@ -1,7 +1,7 @@
 import Panel from '@/components/ui/panel';
 import PageHeader from '@/components/shell/page-header';
 import SubmissionStatusTable from '@/components/demand/submission-status-table';
-import { OpenPlanningCycleForm, StartSubmissionForm } from '@/components/demand/submission-form';
+import { ClosePlanningCycleForm, OpenPlanningCycleForm, StartSubmissionForm } from '@/components/demand/submission-form';
 import { getPermissions, requireAnyPermission } from '@/lib/auth';
 import { WORK_ROUTE_PERMISSIONS } from '@/lib/permission';
 import { getActivePlanningCycles, getDemandSubmissions } from '@/lib/demand/repository';
@@ -34,6 +34,19 @@ export default async function DemandSubmissionsPage() {
         {canOpenCycle ? (
           <Panel title="취합 주기 열기" description="대상월을 정해 부서 제출을 받습니다. 이미 열린 달은 다시 열 수 없습니다.">
             <OpenPlanningCycleForm />
+          </Panel>
+        ) : null}
+
+        {canOpenCycle && cycles.length > 0 ? (
+          <Panel title="열린 취합 주기" description="더 이상 받지 않을 달은 닫습니다. 닫은 뒤에도 이력은 남고, 같은 달을 다시 열 수 있습니다.">
+            <ul className="order-history">
+              {cycles.map((cycle) => (
+                <li key={cycle.cycleId} className="order-history-head">
+                  <span>{cycle.planMonth.slice(0, 7)} · 마감 {cycle.submissionDeadline}</span>
+                  <ClosePlanningCycleForm cycleId={cycle.cycleId} planMonth={cycle.planMonth.slice(0, 7)} />
+                </li>
+              ))}
+            </ul>
           </Panel>
         ) : null}
 
