@@ -24,6 +24,26 @@
 | `cannot change name of view column` | 기존 뷰 열 사이에 새 열을 삽입해 재적용 실패 | [#16](#16-cannot-change-name-of-view-column) |
 | `zsh: no matches found: app/(user)/...` | 괄호가 있는 경로를 따옴표 없이 전달 | [#17](#17-zsh-no-matches-found-appuser) |
 | `The following paths are ignored` | `.superpowers/sdd/.gitignore`가 보고서도 제외 | [#18](#18-the-following-paths-are-ignored) |
+| `Promise<{ error: ... }>` is not assignable to `Promise<void>` | 일반 form 액션이 값을 반환함 | [#19](#19-form-action은-promisevoid를-요구한다) |
+
+## #19 `<form action>`은 `Promise<void>`를 요구한다
+
+**증상**
+
+```text
+Type '(formData: FormData) => Promise<{ error: string | null; }>' is not assignable to
+type '(formData: FormData) => void | Promise<void>'.
+```
+
+**원인**
+
+React의 일반 `<form action={serverAction}>`은 서버 액션이 값을 반환하지 않는 계약입니다.
+`useActionState`용 액션처럼 상태 객체를 반환하면 TypeScript 빌드가 거절합니다.
+
+**해결**
+
+일반 form에서 직접 쓰는 읽음 처리 액션은 성공 시 반환하지 않고, 입력 또는 저장 오류는 예외로 처리했습니다.
+화면에 결과 상태를 표시해야 하는 폼은 `useActionState`를 사용하고 그 훅의 액션 계약에 맞춥니다.
 
 > **Supabase 3층 구조를 먼저 기억하면 #3·#4·#5 를 헷갈리지 않습니다.**
 >

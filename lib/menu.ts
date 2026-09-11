@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
-import { BarChart3, Boxes, Database, Gauge, LineChart, Settings2, Users, Workflow, Bot } from 'lucide-react';
+import { BarChart3, Bell, Boxes, Database, Gauge, LineChart, Settings2, Users, Workflow, Bot } from 'lucide-react';
 
 import { WORK_ROUTE_PERMISSIONS, type Permission, type PermissionSet } from './permission.ts';
 
@@ -14,6 +14,7 @@ export type MenuItem = {
 
 export const USER_MENU: MenuItem[] = [
   { href: '/dashboard', label: '전체 현황', description: '월간 발주계획 요약', icon: Gauge },
+  { href: '/notifications', label: '알림', description: '승인·배정·제출 알림', icon: Bell },
   { href: '/procurement-plans', label: '발주계획', description: '최종 발주계획 확정과 승인', icon: Workflow, anyOf: WORK_ROUTE_PERMISSIONS['/procurement-plans'] },
   { href: '/allocations', label: '배정', description: '품목별 재고 배정 처리', icon: Boxes, anyOf: WORK_ROUTE_PERMISSIONS['/allocations'] },
   { href: '/approvals', label: '승인함', description: '정책·배정·수요·발주계획 승인과 반려', icon: Workflow, anyOf: WORK_ROUTE_PERMISSIONS['/approvals'] },
@@ -29,6 +30,7 @@ export const USER_MENU: MenuItem[] = [
 ];
 
 export const ADMIN_MENU: MenuItem[] = [
+  { href: '/admin/notification-history', label: '알림 발송 이력', description: '시스템·이메일 채널별 발송 결과', icon: Bell },
   { href: '/admin/master', label: '마스터', description: '해외법인 · 공급처 · 출항일 · 품목 정책', icon: Boxes },
   { href: '/admin/permissions', label: '권한', description: '부서 · 직책 · 업무 권한', icon: Users },
   { href: '/admin/users', label: '사용자 관리', description: '계정 권한과 활성 상태 관리', icon: Users },

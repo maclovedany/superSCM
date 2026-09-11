@@ -1,0 +1,121 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+
+import { renderNotificationEmail, sendEmail } from './email.ts';
+import { normalizeNotificationRow } from './types.ts';
+
+test('알림 payload를 제목과 본문이 있는 이메일로 만든다', () => {
+  assert.deepEqual(
+    renderNotificationEmail('APPROVAL_PENDING', {
+      title: '승인 요청이 대기 중입니다',
+      message: '최종 발주계획 승인이 필요합니다.',
+      target_id: 'PLAN-2026-09',
+    }),
+    {
+      subject: '승인 요청이 대기 중입니다',
+      text: '최종 발주계획 승인이 필요합니다.\n\n대상: PLAN-2026-09',
+    },
+  );
+});
+
+test('Resend 성공 응답의 외부 메시지 식별자를 반환한다', async () => {
+  const requests: Array<{ url: string; init: RequestInit }> = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    requests.push({ url: String(url), init: init ?? {} });
+    return new Response(JSON.stringify({ id: 'email-42' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  const result = await sendEmail(
+    { to: 'planner@example.com', subject: '승인 알림', text: '확인해 주세요.' },
+    { apiKey: 'server-secret', from: 'SCM <scm@example.com>', fetchImpl },
+  );
+
+  assert.deepEqual(result, { ok: true, externalMessageId: 'email-42' });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, 'https://api.resend.com/emails');
+  assert.equal(new Headers(requests[0].init.headers).get('authorization'), 'Bearer server-secret');
+  assert.deepEqual(JSON.parse(String(requests[0].init.body)), {
+    from: 'SCM <scm@example.com>',
+    to: ['planner@example.com'],
+    subject: '승인 알림',
+    text: '확인해 주세요.',
+  });
+});
+
+test('Resend 실패는 오류 본문을 보존하며 성공으로 처리하지 않는다', async () => {
+  const result = await sendEmail(
+    { to: 'planner@example.com', subject: '승인 알림', text: '확인해 주세요.' },
+    {
+      apiKey: 'server-secret',
+      from: 'SCM <scm@example.com>',
+      fetchImpl: async () => new Response(JSON.stringify({ message: '수신 주소가 올바르지 않습니다.' }), { status: 422 }),
+    },
+  );
+
+  assert.deepEqual(result, { ok: false, error: '수신 주소가 올바르지 않습니다.' });
+});
+
+test('서버 이메일 설정이나 수신자가 없으면 외부 요청 없이 실패한다', async () => {
+  let called = false;
+  const fetchImpl: typeof fetch = async () => {
+    called = true;
+    return new Response('{}');
+  };
+
+  assert.deepEqual(
+    await sendEmail({ to: '', subject: '알림', text: '본문' }, { apiKey: 'key', from: 'from@example.com', fetchImpl }),
+    { ok: false, error: '이메일 수신자가 없습니다.' },
+  );
+  assert.deepEqual(
+    await sendEmail({ to: 'to@example.com', subject: '알림', text: '본문' }, { apiKey: '', from: '', fetchImpl }),
+    { ok: false, error: '이메일 발송 환경변수가 설정되지 않았습니다.' },
+  );
+  assert.equal(called, false);
+});
+
+test('analytics 알림 행은 읽지 않은 상태와 payload를 보존한다', () => {
+  assert.deepEqual(normalizeNotificationRow({
+    notification_id: 'notice-1',
+    template_code: 'APPROVAL_PENDING',
+    title: '승인 대기',
+    message: '승인이 필요합니다.',
+    payload: { approval_id: 'approval-1' },
+    created_at: '2026-09-11T00:00:00Z',
+    read_at: null,
+  }), {
+    notificationId: 'notice-1',
+    templateCode: 'APPROVAL_PENDING',
+    title: '승인 대기',
+    message: '승인이 필요합니다.',
+    payload: { approval_id: 'approval-1' },
+    createdAt: '2026-09-11T00:00:00Z',
+    readAt: null,
+    isRead: false,
+  });
+});
+
+test('알림 SQL 계약은 중복 방지, 원자적 claim, 채널별 이력과 승인 후속 취소를 포함한다', () => {
+  const sql = readFileSync(
+    new URL('../../supabase/migrations/20260911000400_stage1_approval_notification.sql', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(sql, /unique\s*\(dedupe_key,\s*recipient_user_id,\s*channel\)/i);
+  assert.match(sql, /create or replace function core\.claim_due_notifications/i);
+  assert.match(sql, /for update skip locked/i);
+  assert.match(sql, /create or replace function core\.finish_notification/i);
+  assert.match(sql, /create table if not exists core\.notification_delivery/i);
+  assert.match(sql, /create table if not exists core\.user_notification/i);
+  assert.match(sql, /interval '10 minutes'/i);
+  assert.match(sql, /status\s*=\s*'CANCELLED'[\s\S]+approval_id/i);
+  assert.match(sql, /create or replace function core\.schedule_demand_submission_reminder/i);
+  assert.match(sql, /template_code\s*=\s*'DEMAND_SUBMISSION_OVERDUE'/i);
+  assert.match(sql, /create or replace function core\.cancel_notification_series/i);
+  assert.match(sql, /security_invoker\s*=\s*true/i);
+  assert.match(sql, /create policy notification_outbox_read_own[\s\S]{0,180}using\s*\(\s*recipient_user_id\s*=\s*auth\.uid\(\)\s+or\s+core\.is_admin\(\)\s*\)/i);
+  assert.match(sql, /revoke all on core\.notification_outbox[\s\S]+from anon, public/i);
+});
