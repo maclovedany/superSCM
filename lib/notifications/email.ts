@@ -18,7 +18,9 @@ function errorCode(body: Record<string, unknown>): string | null {
 }
 
 function isRetryableResponse(status: number, body: Record<string, unknown>): boolean {
-  if (status === 409) return errorCode(body) === 'concurrent_idempotent_requests';
+  if (status === 409) {
+    return ['concurrent_idempotent_requests', 'resource_locked'].includes(errorCode(body) ?? '');
+  }
   return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 

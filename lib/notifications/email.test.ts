@@ -79,7 +79,7 @@ test('Resend 일시 장애는 재시도 가능 실패로 구분한다', async ()
   assert.deepEqual(result, { ok: false, error: '잠시 사용할 수 없습니다.', retryable: true });
 });
 
-test('Resend 409는 동시 중복 요청만 재시도하고 잘못된 중복 키 요청은 종료한다', async () => {
+test('Resend 409는 일시 잠금만 재시도하고 잘못된 중복 키 요청은 종료한다', async () => {
   const options = {
     apiKey: 'server-secret',
     from: 'SCM <scm@example.com>',
@@ -95,6 +95,15 @@ test('Resend 409는 동시 중복 요청만 재시도하고 잘못된 중복 키
     }), { status: 409 }),
   });
   assert.deepEqual(concurrent, { ok: false, error: '같은 요청이 처리 중입니다.', retryable: true });
+
+  const locked = await sendEmail(message, {
+    ...options,
+    fetchImpl: async () => new Response(JSON.stringify({
+      name: 'resource_locked',
+      message: '리소스가 잠겨 있습니다.',
+    }), { status: 409 }),
+  });
+  assert.deepEqual(locked, { ok: false, error: '리소스가 잠겨 있습니다.', retryable: true });
 
   const invalid = await sendEmail(message, {
     ...options,
@@ -236,6 +245,7 @@ test('반복 알림의 다음 10분 회차는 개별 채널 발송 성공 여부
   assert.doesNotMatch(sql, /greatest\(v_notice\.scheduled_at\s*\+\s*interval '10 minutes',\s*clock_timestamp\(\)\s*\+\s*interval '10 minutes'\)/i);
   assert.doesNotMatch(sql, /if\s+p_success\s+and\s+v_notice\.template_code\s*=\s*'APPROVAL_PENDING'/i);
   assert.match(sql, /attempt_count,\s*v_retry_scheduled,/i);
+  assert.match(sql, /for\s+v_exhausted\s+in[\s\S]{0,1800}v_exhausted\.template_code\s*=\s*'APPROVAL_PENDING'/i);
 });
 
 test('발송 직전 승인과 취소된 series 상태를 다시 확인하는 DB 계약이 있다', () => {

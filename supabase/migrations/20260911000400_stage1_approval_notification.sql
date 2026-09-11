@@ -633,6 +633,9 @@ language plpgsql
 security definer
 set search_path = core, public, pg_temp
 as $$
+declare
+  v_exhausted core.notification_outbox%rowtype;
+  v_exhausted_next_at timestamptz;
 begin
   if p_limit < 1 or p_limit > 50 then
     raise exception '한 번에 처리할 알림 수는 1~50건이어야 합니다.' using errcode = '22023';
@@ -642,7 +645,7 @@ begin
   end if;
 
   -- 임대시간이 끝났고 최대 시도 횟수에 도달한 작업은 최종 실패 이력을 남깁니다.
-  with exhausted as (
+  for v_exhausted in
     update core.notification_outbox as o
        set status = 'FAILED',
            finished_at = clock_timestamp(),
@@ -653,16 +656,43 @@ begin
      where o.status = 'PROCESSING'
        and o.claim_expires_at <= clock_timestamp()
        and o.attempt_count >= o.max_attempts
-    returning o.notification_id, o.recipient_user_id, o.channel, o.attempt_count, o.last_error
-  )
-  insert into core.notification_delivery (
-    notification_id, recipient_user_id, recipient_email, channel,
-    status, attempt_number, retryable, error_message
-  )
-  select e.notification_id, e.recipient_user_id, nullif(btrim(u.email), ''),
-         e.channel, 'FAILED', e.attempt_count, false, e.last_error
-    from exhausted e
-    left join core.app_user u on u.user_id = e.recipient_user_id;
+    returning o.*
+  loop
+    insert into core.notification_delivery (
+      notification_id, recipient_user_id, recipient_email, channel,
+      status, attempt_number, retryable, error_message
+    )
+    select v_exhausted.notification_id, v_exhausted.recipient_user_id,
+           nullif(btrim(u.email), ''), v_exhausted.channel,
+           'FAILED', v_exhausted.attempt_count, false, v_exhausted.last_error
+      from core.app_user u
+     where u.user_id = v_exhausted.recipient_user_id;
+
+    -- 작업자 중단이 최대 횟수에 도달해도 반복 series 자체는 끊지 않습니다.
+    v_exhausted_next_at := date_bin(
+      interval '10 minutes', clock_timestamp(), timestamptz '2000-01-01 00:00:00+00'
+    ) + interval '10 minutes';
+    if v_exhausted.template_code = 'APPROVAL_PENDING'
+       and exists (
+         select 1 from core.approval_request r
+          where r.approval_id::text = v_exhausted.payload ->> 'approval_id'
+            and r.status = 'PENDING'
+       ) then
+      perform core.enqueue_notification(
+        'approval:' || (v_exhausted.payload ->> 'approval_id') || ':pending:'
+          || extract(epoch from v_exhausted_next_at)::bigint,
+        'APPROVAL_PENDING', v_exhausted.recipient_user_id, v_exhausted.channel,
+        v_exhausted_next_at, v_exhausted.payload
+      );
+    elsif v_exhausted.template_code = 'DEMAND_SUBMISSION_OVERDUE' then
+      perform core.enqueue_notification(
+        'demand:' || (v_exhausted.payload ->> 'series_id') || ':overdue:'
+          || extract(epoch from v_exhausted_next_at)::bigint,
+        'DEMAND_SUBMISSION_OVERDUE', v_exhausted.recipient_user_id, v_exhausted.channel,
+        v_exhausted_next_at, v_exhausted.payload
+      );
+    end if;
+  end loop;
 
   -- 작업자가 중단한 PROCESSING 행은 임대 만료 뒤 같은 알림 ID로 다시 처리합니다.
   update core.notification_outbox as o
