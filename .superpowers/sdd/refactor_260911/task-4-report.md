@@ -511,3 +511,103 @@ STEP4·STEP7 비-멱등 정책 선처리)로 재구성했다. Task 4 마이그�
   은 timestamptz라 시각까지 있을 수 있다 — 같은 날 안에서 스냅샷과 입고의 선후 관계가
   달력일 단위로만 비교된다(자정 기준). 이 정밀도 차이는 raw 스키마 자체의 한계이며 이번
   라운드에서 손대지 않았다.
+
+---
+
+## fix round 3 (재리뷰 반영)
+
+라운드 2 재리뷰에서 라운드 2 항목 두 개는 모두 해결로 확인됐고, 라운드 2의 diff 자체가 새로
+만든 Important 결함 두 건이 나왔다. 둘 다 고쳤다.
+
+### 1) 수량 0인 완료 입고가 배치 전체를 롤백시키던 문제
+
+`core.apply_stock_receipts_from_batch`의 `completed` CTE가 `receipt_status='COMPLETED'` ·
+입고일 존재 · 입고수량 존재만 걸렀고 수량이 0인지는 보지 않았다. `lib/import/validate.ts`는
+음수만 `NEGATIVE_QUANTITY`로 막고 0은 통과시키므로, 검증을 통과한 수량 0 COMPLETED 행이
+그대로 `core.stock_receipt_ledger`에 들어가려다 그 표의 `check (qty > 0)`에 걸려 예외가
+났다. `commit_import_batch`는 배치 전체가 한 트랜잭션이라, 이 예외 하나가 같은 배치의
+다른 정상 입고 행까지 전부 롤백시키고 배치는 `VALIDATED`에 멈춘 채 남았다.
+
+**수정** — `completed` CTE의 WHERE 절에 `and nullif(g."입고수량", '')::numeric > 0`을
+추가했다. 수량 0인 완료 입고는 잔액을 바꾸지 않는 게 맞으므로, 원장에 아예 넣지 않는 것이
+정확한 동작이다(원장의 `qty > 0` 체크는 그대로 둬서 향후 다른 경로로 0이 들어오는 것도
+계속 막는다).
+
+### 2) 같은 입고번호에 품목이 여러 줄이면 두 번째 품목부터 사라지던 문제
+
+`core.stock_receipt_ledger`의 유니크 인덱스가 `source_record_id` 단독이었다. 입고 한 건
+(입고번호)에 품목이 여러 줄로 딸린 ERP 문서가 흔한데, 그 경우 같은 배치 안에서 두 번째
+품목부터 `on conflict (source_record_id) do nothing`에 걸려 영원히 원장에 들어가지 못했다
+— 잔액도, 향후 Task 6의 `core.allocate_new_stock(p_item_id, p_receipt_id)`도 그 품목의
+입고를 볼 수 없었다.
+
+**수정** — 유니크 인덱스를 `source_record_id` 단독에서 `(source_record_id, item_id)` 조합으로
+바꿨다(`drop index if exists ... ; create unique index if not exists
+stock_receipt_ledger_source_item_uq ...`). `INSERT ... ON CONFLICT` 대상과 관련 코멘트도
+모두 맞춰 고쳤다. 원장 행 자체(`ledger_id`)는 여전히 단일 대리키이므로 스키마 변경은
+인덱스 교체만으로 끝난다.
+
+**STEP 4 raw 키잉에 대한 확인 (리뷰 지시대로 조사만 하고 손대지 않음)**
+
+지시대로 STEP 4의 `core.commit_import_batch`가 `raw.goods_receipt`를 어떻게 적재하는지
+스크래치 DB에서 직접 확인했다.
+
+- **`import_mode = 'append'`** (첫 업로드의 기본값) — 행마다 그냥 INSERT만 하고 삭제하지
+  않는다. 같은 `입고번호`(source_record_id)에 품목이 여러 줄이어도 `raw.goods_receipt`에
+  둘 다 그대로 남는다. 확인: `GR-DOC-1`에 ITEMA 5 · ITEMB 7을 append로 커밋 →
+  `raw.goods_receipt`에 두 행 모두 존재, 원장에도 둘 다 반영(A→15, B→17).
+- **`import_mode = 'upsert'`** — 배치 안에서 한 줄씩 처리하며 매번 "같은
+  `source_record_id`를 가진 기존 raw 행을 지우고 새로 넣는다"(`delete ... where
+  source_record_id=$1` 후 insert). 이 delete는 **같은 배치, 같은 트랜잭션 안에서 방금 넣은
+  형제 행까지 지운다.** 확인: `GR-DOC-UPSERT`에 ITEMA 3 · ITEMB 4를 upsert로 커밋 →
+  `raw.goods_receipt`에는 **ITEMB 한 행만** 남는다(ITEMA는 ITEMB 처리 시 삭제됨). 내 원장
+  로직은 커밋이 끝난 뒤 `raw.goods_receipt`를 읽으므로, 이 경우 원장에도 ITEMB만 반영되고
+  ITEMA는 애초에 보이지 않는다.
+
+**결론 — 이것은 내가 이번에 건드린 코드의 버그가 아니라 STEP 4(20260828000300)의 기존 동작이다.**
+`import_mode='upsert'`로 입고를 올리면서 여러 품목이 같은 `입고번호`를 공유하면, 내 Task 4
+확장과 무관하게 마지막 품목만 `raw.goods_receipt`에 남는다 — 재고 원장뿐 아니라
+Open PO 참고 열(`core.v_open_po_qty`)도 같은 영향을 받는다. 지시대로 이번 라운드에서는
+STEP 4의 raw 적재 키를 바꾸지 않았다. 이 문제는 goods_receipt의 `import_mode`로
+`upsert`가 아니라 `append`를 쓰도록 화면 안내를 남기거나, STEP 4 자체의 raw 키를
+`(source_record_id, 품목코드)` 조합으로 바꾸는 별도 Task로 넘겨야 한다.
+
+### 다시 테스트한 것
+
+TS 변경은 없었다(이번 라운드도 SQL만 수정). `npm test` 132/132, `npm run build` 성공,
+`git diff --check` 출력 없음 — 기존과 동일.
+
+**임시 PostgreSQL 검증 (새 스크래치 DB, 같은 부트스트랩 절차)**
+
+`scm_task4_fix3_<timestamp>` DB를 같은 절차로 재구성했다(stub → schema-dump → 전체
+migrations 순서 적용, STEP4·STEP7 비-멱등 정책 선처리). Task 4 마이그레이션을 두 번 연속
+적용해 재실행 안전성도 재확인했고, `stock_receipt_ledger_source_uq`(구) 인덱스는 사라지고
+`stock_receipt_ledger_source_item_uq`(신)만 남는 것을 `pg_indexes`로 확인했다.
+
+1. **finding 1 확인** — ITEM901에 정상 20 스냅샷을 반영한 뒤, 같은 goods_receipt 배치에
+   `GR-ZERO`(수량 0, COMPLETED) · `GR-FIVE`(수량 5, COMPLETED)를 함께 커밋. 결과:
+   `commit_import_batch`가 예외 없이 끝나고 배치 상태는 `IMPORTED`(멈추지 않음), 잔액은
+   정확히 25(20+5), 원장에는 `GR-FIVE`만 있고 `GR-ZERO`는 없음.
+2. **finding 2 확인** — ITEMA·ITEMB에 각각 정상 10 스냅샷을 반영한 뒤, 같은 `입고번호
+   GR-DOC-1`로 ITEMA 5 · ITEMB 7을 `append` 모드로 같은 배치에 커밋. 결과: A=15, B=17
+   (둘 다 반영). 같은 내용을 새 배치로 다시 커밋(재업로드 시나리오) → A=15, B=17 그대로,
+   `GR-DOC-1` 원장 행 수는 여전히 2행(품목당 1행, 중복 없음).
+3. **STEP 4 raw 키잉 조사** — 위 "확인" 문단 그대로. `append`는 다품목 보존, `upsert`는
+   같은 배치 안에서 형제 행을 서로 지운다(STEP 4 기존 동작, 이번 범위 밖).
+4. **회귀 확인** — 상태 미입력 → `INVENTORY_SCOPE_UNCLASSIFIED`, `analytics.v_available_stock`
+   ·`analytics.v_order_available_stock` 둘 다 `security_invoker=true` 유지, `anon`은
+   `core.stock_receipt_ledger` 조회 시도에서 `permission denied for schema core`.
+
+검증 후 스크래치 DB를 삭제했다.
+
+### 변경 파일 (fix round 3)
+
+- 수정: `supabase/migrations/20260911000500_stage1_inventory_availability.sql`
+
+### 남은 이슈 (업데이트)
+
+- **(신규, Important 수준으로 보고)** `import_mode='upsert'`로 `goods_receipt`를 올리면
+  같은 `입고번호`를 공유하는 여러 품목 줄 중 마지막 줄만 `raw.goods_receipt`에 남는다
+  (STEP 4의 기존 delete-then-insert 로직). `append` 모드는 이 문제가 없다. 화면에서
+  goods_receipt 업로드 시 `upsert`를 기본값으로 두지 않거나, STEP 4의 raw 키를
+  `(source_record_id, 품목코드)` 조합으로 바꾸는 별도 작업이 필요하다.
