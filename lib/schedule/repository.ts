@@ -26,7 +26,13 @@ function toRows<T>(data: unknown[] | null, normalize: (row: Record<string, unkno
   return (data ?? []).map((row) => normalize(row as Record<string, unknown>));
 }
 
-/** 발주 일정 전체 — 기준월 · 묶음(ISO 주차) · 품목 순 */
+/**
+ * 발주 일정 전체 — 기준월 · 묶음(ISO 주차) · 품목 순.
+ *
+ * ★ fix round 1 — 이 달의 더 최신 승인본이 대체한(superseded_at이 있는) 행은 뺀다. 그러지 않으면 같은
+ *   달을 새 승인본으로 다시 만들 때마다 옛 행이 화면에 그대로 쌓여 같은 품목이 중복돼 보인다 — "지금
+ *   유효한 일정"만 이 목록의 몫이다(옛 행 자체는 core에 남아 있으니 데이터를 잃지 않는다).
+ */
 export async function getProcurementSchedules(): Promise<Rows<ProcurementScheduleRow>> {
   try {
     const supabase = await createSupabaseServerClient();
@@ -34,6 +40,7 @@ export async function getProcurementSchedules(): Promise<Rows<ProcurementSchedul
       .schema('analytics')
       .from('v_procurement_schedule')
       .select('*')
+      .is('superseded_at', null)
       .order('plan_month', { ascending: false })
       .order('bundle_key', { ascending: true, nullsFirst: false })
       .order('item_id');

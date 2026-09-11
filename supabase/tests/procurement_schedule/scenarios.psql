@@ -337,3 +337,122 @@ select sched_test.expect_error(
   'permission denied for table procurement_schedule', 'S23 PLAN_CONFIRM이어도 직접 UPDATE는 GRANT가 없어 거절된다'
 );
 reset role;
+
+
+-- ═══ fix round 1 — 이 달의 더 최신 승인본만 허용, 옛 일정은 superseded로 남고 실제 입고일은 승계된다 ═══
+--
+-- 지금까지 11월(plan_nov, v1)이 그 달의 유일한 승인본이었다. 여기서부터 같은 달에 v2를 승인해
+-- "최신 승인본이 아니면 거절 · 옛 일정 superseded · 실제 입고일 승계 · 집계에서 제외"를 검증한다.
+-- v1은 8개 품목(T10BITM1~10 중 8개), v2는 T10BITM1만 담는다 — T10BITM9는 v2에서 빠진다(판정 2번의
+-- "item present in v1 but absent in v2" 사례).
+
+\echo '== S24 같은 달에 더 최신 승인본(v2)이 생기면 옛 승인본(v1)으로는 더 이상 발주 일정을 만들 수 없다 =='
+select sched_test.make_approved_plan('2026-11-01'::date, array['T10BITM1'], array[100]::numeric[], 2) as plan_nov_v2 \gset
+select sched_test.check(
+  (select not v.is_latest_approved from analytics.v_procurement_plan v where v.plan_id = :'plan_nov'),
+  'S24 v2가 승인되면 v1은 더 이상 이 달의 최신 승인본이 아니다'
+);
+select sched_test.check(
+  (select v.is_latest_approved from analytics.v_procurement_plan v where v.plan_id = :'plan_nov_v2'),
+  'S24 v2가 이 달의 최신 승인본이다'
+);
+set role authenticated;
+select sched_test.as_user(:'planner1') \g /dev/null
+select sched_test.expect_error(
+  format($f$select core.build_procurement_schedule(%L)$f$, :'plan_nov'),
+  '승인됐지만 이 달의 최신 승인본이 아닙니다', 'S24 옛 승인본(v1)으로 다시 만들면 거절된다(최신 승인본이 아니다)'
+);
+reset role;
+
+
+\echo '== S25 새 승인본(v2)으로 일정을 만들면 같은 품목 · 공급처의 실제 입고일이 새 행으로 승계된다 =='
+select schedule_id as s25_v1_sched from core.procurement_schedule where plan_id = :'plan_nov' and item_id = 'T10BITM1' \gset
+set role authenticated;
+select sched_test.as_user(:'planner1') \g /dev/null
+select count(*) as s25_returned from core.build_procurement_schedule(:'plan_nov_v2') \g /dev/null
+reset role;
+select schedule_id as s25_v2_sched, actual_receipt_date as s25_v2_actual, gap_days as s25_v2_gap, recorded_by_name as s25_v2_recorder
+  from analytics.v_procurement_schedule where plan_id = :'plan_nov_v2' and item_id = 'T10BITM1' \gset
+select sched_test.check(:'s25_v2_sched' <> :'s25_v1_sched', 'S25 v2의 T10BITM1은 v1과 다른 schedule_id를 가진 새 행이다');
+select sched_test.check(:'s25_v2_actual' = '2026-11-21', 'S25 v1에서 입력한 실제 입고일(11/21)이 v2 행으로 승계된다');
+select sched_test.check(:s25_v2_gap = 2, 'S25 승계된 실제 입고일로 계산한 차이도 그대로(+2)다');
+select sched_test.check(:'s25_v2_recorder' = 'SCM품목담당1', 'S25 원래 입력자 이름도 그대로 승계된다(재빌드한 사람으로 바뀌지 않는다)');
+select sched_test.check(
+  exists (select 1 from core.audit_log where target_type = 'receipt_schedule_result' and target_id = :'s25_v2_sched'
+            and action = 'RECEIPT_ACTUAL_DATE_CARRIED_OVER' and (before ->> 'carried_from_schedule_id') = :'s25_v1_sched'),
+  'S25 승계 사실이 새 schedule_id의 이력에 별도로 남는다(carried_from_schedule_id로 옛 행을 가리킨다)'
+);
+select sched_test.check(
+  exists (select 1 from core.audit_log where target_type = 'receipt_schedule_result' and target_id = :'s25_v1_sched'
+            and action = 'RECEIPT_ACTUAL_DATE_RECORDED'),
+  'S25 옛(v1) schedule_id에 원래 입력 이력(RECEIPT_ACTUAL_DATE_RECORDED)이 그대로 남아 있다(지우거나 고치지 않는다)'
+);
+
+
+\echo '== S26 v1의 일정 행은 지워지지 않고 superseded로만 표시된다 =='
+select sched_test.check(
+  (select count(*) from core.procurement_schedule where plan_id = :'plan_nov') = 8,
+  'S26 v1의 8개 행이 그대로 남아 있다(삭제되지 않았다)'
+);
+select sched_test.check(
+  (select count(*) from core.procurement_schedule where plan_id = :'plan_nov' and superseded_at is null) = 0,
+  'S26 v1의 행은 전부 superseded로 표시됐다(하나도 활성 상태로 남지 않는다)'
+);
+select sched_test.check(
+  (select bool_and(superseded_by_plan_id = :'plan_nov_v2') from core.procurement_schedule where plan_id = :'plan_nov'),
+  'S26 v1의 모든 행이 v2로 대체됐다고 정확히 기록된다(superseded_by_plan_id)'
+);
+select sched_test.check(
+  (select superseded_at is null from core.procurement_schedule where schedule_id = :'s25_v2_sched'),
+  'S26 새로 만든 v2의 행은 superseded가 아니다(지금 유효한 행)'
+);
+
+
+\echo '== S27 v2에 없는 품목(T10BITM9)은 v1의 superseded 행에만 남고, 그 실제 입고일도 보존된다 =='
+select sched_test.check(
+  not exists (select 1 from core.procurement_schedule where plan_id = :'plan_nov_v2' and item_id = 'T10BITM9'),
+  'S27 T10BITM9는 v2에 없으므로 v2 쪽에는 행 자체가 없다'
+);
+select schedule_id as s27_v1_sched, actual_receipt_date as s27_v1_actual, superseded_at as s27_v1_superseded
+  from analytics.v_procurement_schedule where plan_id = :'plan_nov' and item_id = 'T10BITM9' \gset
+select sched_test.check(:'s27_v1_actual' = '2026-11-04', 'S27 T10BITM9의 v1 행에는 실제 입고일(11/4)이 그대로 남아 있다(잃지 않았다 — 옮겨 갈 곳이 없을 뿐)');
+select sched_test.check(:'s27_v1_superseded' is not null, 'S27 다만 그 행 자체는 superseded로 표시돼 지금은 유효하지 않다');
+
+
+\echo '== S28 집계 뷰는 superseded 행을 빼고, 같은 원천에서 나눈 합은 여전히 서로 같다 =='
+select sched_test.check(
+  (select n_total from analytics.v_receipt_gap_month where target_month = '2026-11-01') = 1,
+  'S28 11월 집계는 이제 v2의 T10BITM1 한 건뿐이다(v1의 2건은 superseded라 빠진다)'
+);
+select coalesce(sum(n_total), 0) as s28_entity_sum from analytics.v_receipt_gap_entity \gset
+select coalesce(sum(n_total), 0) as s28_item_sum from analytics.v_receipt_gap_item \gset
+select coalesce(sum(n_total), 0) as s28_month_sum from analytics.v_receipt_gap_month \gset
+select (select count(*) from core.procurement_schedule where calculation_status = 'SCHEDULED' and superseded_at is null) as s28_active_total \gset
+select sched_test.check(:s28_entity_sum = :s28_active_total, 'S28 법인별 합 = 지금 유효한 SCHEDULED 전체 건수');
+select sched_test.check(:s28_item_sum = :s28_active_total, 'S28 품목별 합도 같다');
+select sched_test.check(:s28_month_sum = :s28_active_total, 'S28 월별 합도 같다(모두 동일 원천에서 나눴을 뿐이다)');
+select sched_test.check(
+  not exists (select 1 from analytics.v_receipt_gap_item where item_id = 'T10BITM9'),
+  'S28 T10BITM9는 superseded라 품목별 집계에 더 이상 나타나지 않는다'
+);
+
+
+\echo '== S29 v2를 재실행해도(idempotent) 승계가 중복되거나 v1이 다시 손대지지 않는다 =='
+select superseded_at as s29_v1_superseded_before from core.procurement_schedule where plan_id = :'plan_nov' and item_id = 'T10BITM1' \gset
+set role authenticated;
+select sched_test.as_user(:'planner1') \g /dev/null
+select count(*) as s29_returned from core.build_procurement_schedule(:'plan_nov_v2') \g /dev/null
+reset role;
+select sched_test.check(
+  (select count(*) from core.procurement_schedule where plan_id = :'plan_nov_v2') = 1,
+  'S29 v2 재실행 후에도 행이 하나뿐이다(중복 생성 없음)'
+);
+select superseded_at as s29_v1_superseded_after from core.procurement_schedule where plan_id = :'plan_nov' and item_id = 'T10BITM1' \gset
+select sched_test.check(:'s29_v1_superseded_before' = :'s29_v1_superseded_after', 'S29 v1의 superseded_at 시각이 재실행으로 다시 바뀌지 않는다');
+select actual_receipt_date as s29_actual, gap_days as s29_gap from analytics.v_procurement_schedule where schedule_id = :'s25_v2_sched' \gset
+select sched_test.check(:'s29_actual' = '2026-11-21' and :s29_gap = 2, 'S29 재실행 후에도 승계된 실제 입고일 · 차이가 그대로다');
+select sched_test.check(
+  (select count(*) from core.audit_log where target_type = 'receipt_schedule_result' and target_id = :'s25_v2_sched'
+     and action = 'RECEIPT_ACTUAL_DATE_CARRIED_OVER') = 1,
+  'S29 재실행해도 승계 이력이 중복 기록되지 않는다(이 행에 이미 실제 입고일이 있으면 승계 조회 자체를 건너뛴다)'
+);

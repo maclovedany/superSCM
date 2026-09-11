@@ -296,7 +296,7 @@ test('normalizeScheduleRow — analytics.v_procurement_schedule 컬럼명', () =
     planned_receipt_date: '2026-11-20', confirmed_receipt_date: '2026-11-19',
     bundle_iso_year: 2026, bundle_iso_week: 47, bundle_key: '2026-W47',
     calculation_status: 'SCHEDULED', reason_code: null, actual_receipt_date: null, gap_days: null,
-    gap_reason_code: 'ACTUAL_RECEIPT_UNSET',
+    gap_reason_code: 'ACTUAL_RECEIPT_UNSET', superseded_at: null, superseded_by_plan_id: null,
   });
   assert.equal(row.scheduleId, 'sch-1');
   assert.equal(row.itemId, 'T10BITM1');
@@ -305,6 +305,16 @@ test('normalizeScheduleRow — analytics.v_procurement_schedule 컬럼명', () =
   assert.equal(row.calculationStatus, 'SCHEDULED');
   assert.equal(row.actualReceiptDate, null);
   assert.equal(row.gapReasonCode, 'ACTUAL_RECEIPT_UNSET');
+  assert.equal(row.supersededAt, null);
+});
+
+test('normalizeScheduleRow — fix round 1: superseded_at · superseded_by_plan_id를 그대로 옮긴다', () => {
+  const row = normalizeScheduleRow({
+    schedule_id: 'sch-1', calculation_status: 'SCHEDULED',
+    superseded_at: '2026-11-05T00:00:00Z', superseded_by_plan_id: 'plan-2',
+  });
+  assert.equal(row.supersededAt, '2026-11-05T00:00:00Z');
+  assert.equal(row.supersededByPlanId, 'plan-2');
 });
 
 test('normalizeScheduleRow — 알 수 없는 상태는 EXCLUDED로 안전하게 처리한다', () => {

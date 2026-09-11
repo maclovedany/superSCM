@@ -35,7 +35,7 @@ PGOPTIONS="-c timezone=America/Los_Angeles" bash supabase/tests/procurement_sche
 | `run-all.sh` | 전체 실행과 요약, 종료 시 임시 DB 삭제(`trap`) |
 | `bootstrap.sh` | 클러스터 역할 확인 → `createdb` → `auth-stub.psql` → `schema-dump/2026-09-11.sql` → STEP 4 · 7 정책 선삭제 → 전체 마이그레이션(대상 마이그레이션은 자기 순서 자리에서 곧바로 한 번 더 적용 — 재실행 안전성) |
 | `lib.sh` · `guard.psql` · `auth-stub.psql` | 다른 스위트와 동일(로컬 대상 확인 · 안전장치 · 최소 auth 스텁) |
-| `fixtures.psql` | SCM 품목담당자 1명 · SCM팀장 1명 · 권한 없는 사용자 1명, 검증 전용 해외법인 2곳(T10B·T10B2, JP는 STEP 18 시드값 그대로 사용) · 공급처 7곳(정상 · 규칙 없음 · 규칙 중복 · 기간 만료 · JP 준비기간 미확인 · 법인2 · 매월 31일) · KR 영업일 달력 준비 상태(10~12월 준비, 8월은 의도적으로 미준비) · 공휴일 1건(2026-11-20) · 품목 10개(`raw.item_master`) · 승인된 발주계획 3건(11월 · 8월 · 12월) + 미승인 계획 2건(DRAFT · PENDING_APPROVAL). 계획은 Task 9b 확정 · 승인 함수와 같은 최종 상태를 직접 만든다(그 파이프라인 자체는 `supabase/tests/procurement_plan`이 검증한다) |
+| `fixtures.psql` | SCM 품목담당자 1명 · SCM팀장 1명 · 권한 없는 사용자 1명, 검증 전용 해외법인 2곳(T10B·T10B2, JP는 STEP 18 시드값 그대로 사용) · 공급처 7곳(정상 · 규칙 없음 · 규칙 중복 · 기간 만료 · JP 준비기간 미확인 · 법인2 · 매월 31일) · KR 영업일 달력 준비 상태(10~12월 준비, 8월은 의도적으로 미준비) · 공휴일 1건(2026-11-20) · 품목 10개(`raw.item_master`) · 승인된 발주계획 3건(11월 · 8월 · 12월) + 미승인 계획 2건(DRAFT · PENDING_APPROVAL). `sched_test.make_approved_plan(...)`이 버전 번호(`p_version`, fix round 1)를 받아 같은 달에 승인본을 여러 개 만들 수 있다. 계획은 Task 9b 확정 · 승인 함수와 같은 최종 상태를 직접 만든다(그 파이프라인 자체는 `supabase/tests/procurement_plan`이 검증한다) |
 | `scenarios.psql` | 아래 표 |
 
 ## 시나리오
@@ -65,6 +65,12 @@ PGOPTIONS="-c timezone=America/Los_Angeles" bash supabase/tests/procurement_sche
 | S21 | 월별 집계는 확정 계획 입고일 기준이다 |
 | S22 | RLS — 권한 없는 사용자는 테이블 · 뷰 모두 0건 |
 | S23 | 하드 쓰기 금지 — `authenticated`는 함수 없이 테이블을 직접 쓸 수 없다 |
+| S24 (fix round 1) | 같은 달의 v2가 승인되면 v1은 더 이상 최신 승인본이 아니다 — v1으로 다시 만들면 거절 |
+| S25 (fix round 1) | v2로 일정을 만들면 v1의 같은 품목 · 공급처 실제 입고일이 새 행으로 승계된다(입력자 · 이력 그대로) |
+| S26 (fix round 1) | v1의 일정 행은 지워지지 않고 전부 superseded로 표시된다 |
+| S27 (fix round 1) | v2에 없는 품목은 v1의 superseded 행에만 남고, 그 실제 입고일도 잃지 않는다 |
+| S28 (fix round 1) | 집계 뷰는 superseded 행을 빼며, 같은 원천에서 나눈 합은 여전히 서로 같다 |
+| S29 (fix round 1) | v2 재실행(idempotent) — 승계·이력 중복 없음, v1의 superseded 시각도 다시 바뀌지 않는다 |
 
 ## 안전장치
 

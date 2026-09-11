@@ -437,6 +437,9 @@ export type ProcurementScheduleRow = {
   actualReceiptDate: string | null;
   gapDays: number | null;
   gapReasonCode: string | null;
+  /** fix round 1 — null이 아니면 이 달의 더 최신 승인본이 이 행을 대체했다(행은 지워지지 않는다) */
+  supersededAt: string | null;
+  supersededByPlanId: string | null;
 };
 
 /** analytics.v_procurement_schedule 한 행 */
@@ -469,6 +472,8 @@ export function normalizeScheduleRow(row: Record<string, unknown>): ProcurementS
     actualReceiptDate: text(value(row, ['actual_receipt_date'])),
     gapDays: numberOrNull(value(row, ['gap_days'])),
     gapReasonCode: text(value(row, ['gap_reason_code'])),
+    supersededAt: text(value(row, ['superseded_at'])),
+    supersededByPlanId: text(value(row, ['superseded_by_plan_id'])),
   };
 }
 

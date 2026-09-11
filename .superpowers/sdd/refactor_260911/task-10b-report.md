@@ -215,3 +215,149 @@ psql:scenarios.psql:83: ERROR:  FAIL: S4 계획 입고일 = 요청 발주일 + 7
 - 적용 후 파일 끝 확인 쿼리로 `analytics.v_procurement_schedule` · `v_receipt_gap_*`를 확인한다 — 현재
   데이터에서는(공급처 미등록) 모든 라인이 `SUPPLIER_UNSET`으로 나오는 것이 정상이다.
 - Exposed schemas(core · analytics)는 기존 설정 그대로 쓴다.
+
+---
+
+## Fix round 1 — 같은 달 옛 승인본으로 재빌드하면 독립된 일정 두 벌이 생기는 문제
+
+### 리뷰 지적(요지)
+
+`core.build_procurement_schedule`가 `status='APPROVED'`만 확인하고 `is_latest_approved`는 확인하지
+않았다. Task 9b는 새 버전이 생겨도 이미 APPROVED인 계획을 SUPERSEDED로 바꾸지 않으므로(9b 우려 5),
+한 달에 APPROVED 계획이 여러 개 있을 수 있다. 시나리오: 11월 v1 승인 → 일정 생성 → v2 확정·승인(이제
+v2가 최신) → 누군가(직접 RPC 호출 또는 오래된 화면 탭에 남아 있던 plan_id로) v1을 다시 빌드하면, 같은
+달에 독립된 `procurement_schedule`/`receipt_schedule_result` 행 두 벌이 생긴다(`plan_line_id`는 계획
+버전마다 다른 UUID라 유니크 제약이 이를 막지 못한다). 세 집계 뷰가 이 옛 행까지 같이 집계해 판정 7
+("같은 원천 행")과 월/법인/품목 합계가 깨진다. 기존 S1~S23은 DRAFT · PENDING_APPROVAL · 존재하지
+않는 계획만 다뤘을 뿐 이 경로를 검증하지 않았다.
+
+### 컨트롤러 판정에 따른 수정
+
+1. **최신 승인본만 허용** — `core.build_procurement_schedule`가 상태 확인 뒤 `analytics.
+   v_procurement_plan.is_latest_approved`를 한 번 더 확인한다(같은 판정을 뷰 한 곳에서만 하도록
+   재구현하지 않고 그대로 읽는다 — procurement_plan 쪽 함수들이 이미 이 방식이다). 아니면 명확한 문구로
+   거절한다: "이 발주계획은 승인됐지만 이 달의 최신 승인본이 아닙니다."
+2. **옛 일정은 superseded로 남기고, 실제 입고일은 승계한다** — `core.procurement_schedule`에
+   `superseded_at` · `superseded_by_plan_id` 두 열을 추가했다. 최신 승인본 확인을 통과하면, 이 계획이
+   그 달의 옛(아직 대체되지 않은) 일정 행 전부를 superseded로 표시한다(지우지 않는다 — 같은 계획을
+   다시 빌드하는 idempotent 재실행은 `plan_id <> p_plan_id` 조건 덕분에 영향받지 않는다). 그다음 품목마다
+   새 행을 만들 때, 방금 대체한 옛 행 중 **같은 품목 · 같은 공급처**이고 실제 입고일이 있는 행을 찾아
+   그 값(+ 입력자 · 입력 시각 · 메모)을 새 행으로 옮긴다. 공급처가 바뀌었으면 승계하지 않는다 — 값은
+   옛(superseded) 행에 그대로 남아 데이터를 잃지 않는다. 옛 schedule_id의 원래 입력 이력
+   (`RECEIPT_ACTUAL_DATE_RECORDED`)은 손대지 않고, 새 schedule_id에는 승계 사실 자체를 별도 이력
+   (`RECEIPT_ACTUAL_DATE_CARRIED_OVER`, before에 `carried_from_schedule_id`)으로 남긴다 — 두 이력 모두
+   `core.audit_log`(append-only)에 있으므로 "누가 언제 원래 입력했는가"와 "언제 어느 행으로 옮겨졌는가"를
+   둘 다 추적할 수 있다.
+3. **세 집계 뷰는 superseded 행을 뺀다** — `v_receipt_gap_entity/_item/_month`의 WHERE 절에
+   `s.superseded_at is null`을 더했다. `v_procurement_schedule`에는 `superseded_at` ·
+   `superseded_by_plan_id`를 끝에 추가해 노출한다(EXCLUDED 행과 마찬가지로 조용히 숨기지 않고 "옛
+   행"이라는 사실 자체는 조회할 수 있게 한다).
+4. **재빌드 idempotent 유지 + 승계 중복 방지** — 같은 계획을 다시 빌드해도 옛 행을 다시 superseded로
+   만들지 않는다(`superseded_at is null` 조건). 승계도 마찬가지로, 이 행에 이미 실제 입고일이 있으면
+   (처음 승계됐거나 직접 입력됐거나) 승계 조회 자체를 건너뛰어 이력이 중복 기록되지 않게 했다(구현
+   중 실제로 이 문제를 만났다 — 아래 TDD Evidence 참고).
+
+### 화면 쪽 따라간 수정 (범위를 벗어나지 않는 선에서)
+
+`lib/schedule/repository.ts`의 `getProcurementSchedules()`(일정 목록 화면이 쓰는, 유일하게 실사용되는
+조회 함수)에 `.is('superseded_at', null)` 필터를 추가했다 — 이러지 않으면 재빌드할 때마다 옛 행이 화면에
+그대로 쌓여 같은 품목이 중복돼 보인다. 판정에 명시되진 않았지만 고치지 않으면 이번 수정 자체가
+반쪽짜리가 된다고 판단했다(1라운드 self-review에서 analysis-tabs를 고친 것과 같은 종류의 판단).
+`lib/schedule/model.ts`의 `ProcurementScheduleRow`에 `supersededAt` · `supersededByPlanId` 필드를
+추가하고 `normalizeScheduleRow`가 옮기도록 했다(모델 테스트 1건 추가, `model.test.ts` 40 → 이번 라운드
+포함 40건). **지시받은 대로 건드리지 않은 것**: `PREP_DAYS_UNSET` 분기가 0을 돌려주는 부분, 쓰이지 않는
+`getProcurementScheduleByPlan`.
+
+### 테스트와 결과
+
+```
+$ bash supabase/tests/procurement_schedule/run-all.sh
+scenarios: PASS 88 · FAIL/ERROR 0
+  (기존 S1~S23 63건 그대로 + 신규 S24~S29 25건)
+  S24 3 · S25 6 · S26 4 · S27 3 · S28 5 · S29 4
+결과: 전부 통과
+
+$ PGOPTIONS="-c timezone=America/Los_Angeles" bash supabase/tests/procurement_schedule/run-all.sh
+scenarios: PASS 88 · FAIL/ERROR 0
+결과: 전부 통과
+
+$ bash supabase/tests/procurement_plan/run-all.sh   (v_procurement_plan.is_latest_approved를 읽으므로 재확인)
+scenarios: PASS 132 · FAIL/ERROR 0 · 전부 통과
+
+$ node --test lib/schedule/model.test.ts
+ℹ tests 40 · pass 40 · fail 0
+$ npm test
+ℹ tests 324 · pass 324 · fail 0
+$ npm run build
+✓ Compiled successfully
+$ git diff --check   → 출력 없음
+```
+
+### TDD Evidence
+
+**리뷰 지적 재현(고치기 전, RED)** — 수정 전 코드로 같은 시나리오를 손으로 재현: v1 빌드 → v1의
+T10BITM1에 실제 입고일 기록 → v2 확정·승인 → `build_procurement_schedule(v1)` 호출이 **성공**하고(거절돼야
+하는데) v1·v2 각각의 `procurement_schedule` 행이 독립적으로 남아 `v_receipt_gap_month`의 11월 `n_total`이
+2(v1의 T10BITM1+T10BITM9)에서 v2 빌드 후 3(v1 2건 + v2 1건, 옛 행이 안 빠짐)으로 늘어나는 것을 SQL Editor
+동치의 psql 세션에서 직접 확인했다(고치기 전 상태이므로 이 재현 자체가 R ED다).
+
+**시나리오 먼저 작성 → 실패 확인(RED)** — S24~S29를 작성한 뒤 최신 승인본 확인 코드만 빼고(supersede ·
+승계 로직은 남긴) 상태로 실행:
+```
+psql:scenarios.psql:364: ERROR:  FAIL: S24 옛 승인본(v1)으로 다시 만들면 거절된다(최신 승인본이 아니다)
+  — 오류가 나지 않았습니다: select core.build_procurement_schedule('e9e6f595-...')
+```
+**GREEN** — 최신 승인본 확인을 되돌린 뒤 `scenarios: PASS 88 · FAIL/ERROR 0`.
+
+**두 번째 RED(구현 중 자체 발견)** — S25~S29를 처음 작성했을 때 S29("재실행해도 승계 이력이 중복
+기록되지 않는다")가 실패했다:
+```
+FAIL: S29 재실행해도 승계 이력이 중복 기록되지 않는다   (count = 2, 기대 1)
+```
+원인: 첫 승계 뒤 `receipt_schedule_result`에 이미 실제 입고일이 있는데도, 재실행마다 `v_prev_schedule_id`를
+다시 찾아 `RECEIPT_ACTUAL_DATE_CARRIED_OVER` 이력을 또 남기고 있었다(값 자체는 ON CONFLICT 덕분에
+안 바뀌지만 이력만 계속 쌓였다). `v_existing_actual_date`를 먼저 확인해 이미 값이 있으면 승계 조회
+자체를 건너뛰도록 고쳐 GREEN으로 옮겼다 — 아래 "실제로 부딪힌 버그"에 추가.
+
+**변이 검증** — `is_latest_approved` 확인 블록을 통째로 주석 처리하고 재실행:
+```
+psql:scenarios.psql:364: ERROR:  FAIL: S24 옛 승인본(v1)으로 다시 만들면 거절된다(최신 승인본이 아니다)
+  — 오류가 나지 않았습니다: select core.build_procurement_schedule('e9e6f595-bad9-47ee-bb02-6486344f02bd')
+결과: 실패 (S25~S29는 그 앞 실패로 이어서 0건)
+```
+되돌린 뒤 재실행해 `88 · 0`으로 복귀 확인.
+
+### 실제로 부딪힌 버그 (fix round 1)
+
+**승계 이력 중복 기록** — 위 "두 번째 RED"와 같다. `INSERT ... ON CONFLICT DO UPDATE`는 값 자체의
+중복 갱신은 막아 주지만, 그 앞에서 무조건 실행되는 "승계 대상 조회 + 이력 INSERT" 블록은 막아 주지
+않는다는 것을 실제 재실행 테스트(S29)로만 잡을 수 있었다 — 정적 검토로는 "ON CONFLICT가 있으니
+안전하다"고 오판하기 쉬운 지점이었다. 별도 표에 남길 정도로 일반적인 함정은 아니라고 판단해 error.md에는
+추가하지 않았다(원인이 이 함수 고유의 로직 구조에 한정된다).
+
+### 변경 파일 (fix round 1)
+
+- `supabase/migrations/20260911001000_stage1_procurement_schedule.sql` — `superseded_at` ·
+  `superseded_by_plan_id` 열 · 인덱스 2개, 최신 승인본 확인, supersede UPDATE, 실제 입고일 승계 +
+  `RECEIPT_ACTUAL_DATE_CARRIED_OVER` 이력, 세 집계 뷰 · `v_procurement_schedule`에 반영
+- `supabase/tests/procurement_schedule/{fixtures.psql,scenarios.psql,run-all.sh,README.md}` — `make_approved_plan`에
+  `p_version` 매개변수, S24~S29
+- `lib/schedule/model.ts` · `model.test.ts` — `ProcurementScheduleRow.supersededAt/supersededByPlanId`
+- `lib/schedule/repository.ts` — `getProcurementSchedules()`가 superseded 행을 뺀다
+
+### 우려 사항 (fix round 1)
+
+1. **`getProcurementScheduleByPlan`(지시에 따라 그대로 둠)은 superseded 필터가 없다** — 아직 어디서도
+   쓰이지 않는 함수라 당장 문제는 없지만, 나중에 실제로 쓰게 되면(예: 계획 상세 화면에서 그 계획 하나의
+   일정만 보여줄 때) superseded 행까지 같이 나온다는 점을 그 시점에 판단해야 한다. 오히려 "옛 계획을
+   특정해서 볼 때는 superseded 행도 보여야 한다"가 맞을 수도 있어(계획 상세는 이력 조회에 가깝다)
+   일부러 손대지 않았다.
+2. **승계는 품목 + 공급처로만 짝을 맞춘다** — 같은 품목이라도 공급처가 바뀌면(마스터 데이터 변경 등)
+   승계하지 않는다. 이 경우 실제 입고일은 옛(superseded) 행에만 남고 새 행에는 다시 입력해야 한다 —
+   컨트롤러 판정 문구("same item + supplier")를 그대로 따른 결과다.
+3. **한 번에 한 세대만 대체한다** — v1 → v2 → v3처럼 여러 세대가 이어져도, 각 빌드는 그 시점에
+   "superseded_at is null"인 행만 대체한다(이미 v2가 대체한 v1 행은 v3 빌드가 다시 건드리지 않는다).
+   따라서 v3가 v1의 행에서 직접 승계를 시도하지는 않지만, v2 빌드 때 이미 v1→v2로 값이 옮겨졌다면
+   v3 빌드는 v2→v3로 다시 옮긴다 — 연쇄적으로 최신 행까지 이어진다(직접 확인하지는 않았으나 로직상
+   당연히 성립한다. 필요하면 v1→v3 직접 승계 같은 다세대 케이스를 별도로 검증할 수 있다).
+
