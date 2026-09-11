@@ -50,17 +50,19 @@ test('route access denies USER admin routes with 403', async () => {
 
 test('업무 메뉴 직접 URL은 해당 anyOf 권한이 없으면 403이다', async () => {
   const { routeAccessDecision } = await import('./auth-policy.ts');
+  // 세 번째 열은 이 경로와 무관한 권한입니다. /inventory는 Task 4부터 ATP_VIEW(영업)도
+  // 허용 목록에 들어가므로 다른 경로의 "무관한 권한"인 ATP_VIEW를 쓰지 않습니다.
   const routes = [
-    ['/procurement-plans', 'PLAN_CONFIRM'],
-    ['/allocations', 'ALLOC_MANUAL'],
-    ['/approvals', 'PLAN_APPROVE'],
-    ['/orders', 'ORDER_CREATE'],
-    ['/allocations/priorities', 'ALLOC_PRIORITY_EDIT'],
-    ['/inventory', 'STOCK_VIEW_PAPER'],
-    ['/demand-submissions', 'DEMAND_SUBMIT'],
+    ['/procurement-plans', 'PLAN_CONFIRM', 'ATP_VIEW'],
+    ['/allocations', 'ALLOC_MANUAL', 'ATP_VIEW'],
+    ['/approvals', 'PLAN_APPROVE', 'ATP_VIEW'],
+    ['/orders', 'ORDER_CREATE', 'ATP_VIEW'],
+    ['/allocations/priorities', 'ALLOC_PRIORITY_EDIT', 'ATP_VIEW'],
+    ['/inventory', 'STOCK_VIEW_PAPER', 'DEMAND_SUBMIT'],
+    ['/demand-submissions', 'DEMAND_SUBMIT', 'ATP_VIEW'],
   ] as const;
 
-  for (const [pathname, permissionCode] of routes) {
+  for (const [pathname, permissionCode, unrelatedPermissionCode] of routes) {
     assert.deepEqual(
       routeAccessDecision({ pathname, authenticated: true, active: true, role: 'USER', permissionCodes: [permissionCode] }),
       { kind: 'ALLOW' },
@@ -72,11 +74,19 @@ test('업무 메뉴 직접 URL은 해당 anyOf 권한이 없으면 403이다', a
       `${pathname}가 빈 권한으로 열렸습니다.`,
     );
     assert.deepEqual(
-      routeAccessDecision({ pathname, authenticated: true, active: true, role: 'USER', permissionCodes: ['ATP_VIEW'] }),
+      routeAccessDecision({ pathname, authenticated: true, active: true, role: 'USER', permissionCodes: [unrelatedPermissionCode] }),
       { kind: 'FORBIDDEN' },
       `${pathname}가 관계없는 권한으로 열렸습니다.`,
     );
   }
+});
+
+test('영업담당자의 ATP_VIEW는 /inventory를 열지만 다른 재고 권한과는 다른 화면 문맥이다', async () => {
+  const { routeAccessDecision } = await import('./auth-policy.ts');
+  assert.deepEqual(
+    routeAccessDecision({ pathname: '/inventory', authenticated: true, active: true, role: 'USER', permissionCodes: ['ATP_VIEW'] }),
+    { kind: 'ALLOW' },
+  );
 });
 
 test('배정 우선순위 직접 URL은 부모 배정 권한으로 열리지 않는다', async () => {

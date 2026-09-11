@@ -6,4 +6,4 @@ export type ImportRow = Record<string, unknown>;
 export type ValidationIssue = { rowNumber: number; fieldName: string; code: string; message: string; severity: Exclude<Severity, 'SUCCESS'>; originalValue: unknown };
 export type ValidatedRow = { rowNumber: number; data: ImportRow; issues: ValidationIssue[] };
 export type ValidationResult = { rows: ValidatedRow[]; issues: ValidationIssue[]; summary: { totalRows: number; successRows: number; warningRows: number; errorRows: number } };
-export type ImportReferences = { itemIds: Set<string>; supplierIds: Set<string> };
+export type ImportReferences = { itemIds: Set<string>; supplierIds: Set<string>; inventoryStatuses: Set<string> };

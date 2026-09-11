@@ -74,7 +74,8 @@ test('STEP 19의 실제 전체 직책 권한으로 업무 메뉴를 노출한다
   const expected: Record<JobRole, string[]> = {
     SCM_PLANNER: ['발주계획', '배정', '재고'],
     SCM_LEAD: ['발주계획', '승인함', '재고'],
-    SALES_REP: ['주문'],
+    // Task 4 — 영업은 ATP_VIEW로 /inventory에 들어가 실제 주문 가능 수량을 봅니다.
+    SALES_REP: ['주문', '재고'],
     BIZ_DEV: ['배정 우선순위'],
     MARKETING: ['재고', '수요 제출'],
     SERVICE: ['재고', '수요 제출'],

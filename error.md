@@ -26,6 +26,91 @@
 | `The following paths are ignored` | `.superpowers/sdd/.gitignore`가 보고서도 제외 | [#18](#18-the-following-paths-are-ignored) |
 | `Promise<{ error: ... }>` is not assignable to `Promise<void>` | 일반 form 액션이 값을 반환함 | [#19](#19-form-action은-promisevoid를-요구한다) |
 | `column reference "notification_id" is ambiguous` | 반환 테이블 함수의 출력 열과 SQL 열 이름이 충돌 | [#20](#20-column-reference-notification_id-is-ambiguous) |
+| `permission denied for table purchase_order` (security_invoker 뷰) | `analytics` 뷰가 `raw` 테이블을 직접 참조함 | [#22](#22-permission-denied-for-table-purchase_order-security_invoker-뷰에서) |
+| 임시 DB에 `supabase/schema-dump/*.sql`을 복원하면 여러 오류가 연쇄로 남 | 스텁이 불완전하고 일부 마이그레이션이 정책 재적용에 취약함 | [#21](#21-schema-dumpsql-복원-임시-db-부트스트랩) |
+
+## #22 `permission denied for table purchase_order` (security_invoker 뷰에서)
+
+**증상**
+
+```text
+ERROR:  permission denied for table purchase_order
+```
+
+`analytics.v_available_stock`(security_invoker=true)이 `raw.purchase_order` · `raw.goods_receipt`를
+상관 서브쿼리로 직접 읽자, SCM_PLANNER 권한으로 로그인한 세션에서도 이 오류가 났습니다.
+
+**원인**
+
+`security_invoker=true` 뷰는 뷰 소유자가 아니라 **호출자의 권한**으로 모든 참조 테이블을 읽습니다.
+SCHEMA.md 규칙상 `authenticated`는 `raw` 테이블에 직접 GRANT가 없으므로(`core` 뷰를 한 번 거쳐야
+합니다), security_invoker 뷰가 `raw`를 바로 참조하면 거의 항상 이 오류가 납니다.
+
+**해결**
+
+`raw.purchase_order` · `raw.goods_receipt` 집계를 `core.v_open_po_qty`(소유자 권한, 일반 뷰)로 빼고
+`analytics.v_available_stock`은 그 결과만 `left join`으로 읽도록 고쳤습니다. `core.v_inbound_qty` ·
+`core.v_stock_on_hand`와 같은 자리입니다.
+
+**예방** 새 `security_invoker` analytics 뷰를 만들 때 `raw.*`를 직접 참조하는 줄이 있는지
+`grep -n 'from raw\.\|join raw\.' <migration>.sql`로 확인합니다. 있으면 소유자 권한 `core` 뷰로
+한 번 감싼 뒤 그 뷰를 참조합니다.
+
+## #21 `schema-dump/*.sql` 복원 임시 DB 부트스트랩
+
+**증상.** Task 4에서 `supabase/schema-dump/2026-09-11.sql`을 임시 PostgreSQL에 복원해 새
+마이그레이션을 검증하려 하자, 아래 오류가 순서대로 났습니다.
+
+```text
+ERROR: schema "public" already exists
+ERROR: schema "auth" does not exist
+ERROR: column "raw_user_meta_data" of relation "users" does not exist
+ERROR: column "created_at" does not exist  -- auth.users
+ERROR: role "postgres" does not exist
+ERROR: policy "upload_batch_active_select" for table "upload_batch" already exists
+```
+
+**원인.** `schema-dump/*.sql`은 `pg_dump` 스키마 전용 덤프라 `DROP SCHEMA` 없이 바로
+`CREATE SCHEMA public;`으로 시작하고, `auth.users` FK · `auth.uid()` 기본값 · `raw_user_meta_data` ·
+`created_at` 컬럼을 이미 있는 것으로 가정하며, `postgres`·`supabase_admin` 롤에 대한 GRANT도
+들어 있습니다. 또한 STEP 4 · STEP 7 마이그레이션의 RLS 정책 생성 블록(`do $$ ... create policy ...`)에
+`drop policy if exists`가 없어, 덤프에 이미 그 정책이 있는 상태로 마이그레이션을 재실행하면
+"정책이 이미 있다" 오류로 멈춥니다(이 두 마이그레이션 자체의 기존 버그이며 Task 4 범위 밖입니다).
+
+**해결.** 부트스트랩 순서를 고정합니다.
+
+```sql
+-- 1) 기본 public 스키마는 그대로 두고 auth 스텁만 먼저 만든다 (error.md #14 · #15)
+create extension if not exists pgcrypto;
+create schema if not exists auth;
+create table if not exists auth.users (
+  id uuid primary key default gen_random_uuid(),
+  email text,
+  raw_user_meta_data jsonb,
+  created_at timestamptz not null default now()
+);
+create or replace function auth.uid() returns uuid language sql stable as $$
+  select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
+$$;
+grant usage on schema auth to anon, authenticated, service_role;
+grant select on auth.users to anon, authenticated, service_role;
+```
+
+```bash
+# 2) postgres · supabase_admin 롤이 없으면 만든다 (클러스터 공용 — error.md #14 참고)
+psql ... -c "create role postgres superuser;" -c "create role supabase_admin superuser;"
+
+# 3) 덤프의 "CREATE SCHEMA public;" 한 줄만 걸러내고 복원한다 (기본 public을 이미 썼으므로)
+sed '/^CREATE SCHEMA public;$/d' supabase/schema-dump/2026-09-11.sql | psql ...
+
+# 4) supabase/migrations/*.sql을 파일명 순서대로 전부 적용한다.
+#    STEP 4 · STEP 7에서 "policy ... already exists"가 나면 그 파일이 만드는 정책만
+#    drop policy if exists로 지운 뒤 같은 파일을 다시 실행한다.
+```
+
+**예방.** 이 스텁과 순서를 다음 Task도 그대로 재사용합니다. 검증이 끝나면 `drop database`로
+지우고, 이번에 새로 만든 `postgres`·`supabase_admin` 롤은 클러스터에 남겨두거나 지워도
+무방합니다(둘 다 로그인 불가 · 데이터 없음). 지웠다면 다음 Task가 2)를 다시 실행해야 합니다.
 
 ## #20 반환 테이블 함수에서 `notification_id`가 모호하다는 오류
 

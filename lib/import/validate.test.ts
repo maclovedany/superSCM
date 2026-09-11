@@ -2,7 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { validateRows } from './validate.ts';
 
-const references = { itemIds: new Set(['ITEM001']), supplierIds: new Set(['SUP001']) };
+const references = {
+  itemIds: new Set(['ITEM001']),
+  supplierIds: new Set(['SUP001']),
+  inventoryStatuses: new Set(['정상', '검사대기', '이동중', '불량', '서비스센터', '파트너']),
+};
 
 test('usage history의 잘못된 품목, 날짜, 필수 수량을 오류 행으로 보존한다', () => {
   const result = validateRows('usage_history', [
@@ -22,6 +26,19 @@ test('같은 source record와 비정상 음수 수량을 별도 reason code로 �
 
   assert.ok(result.issues.some((issue) => issue.code === 'NEGATIVE_QUANTITY'));
   assert.ok(result.issues.some((issue) => issue.code === 'DUPLICATE_RECORD'));
+});
+
+test('재고 스냅샷은 재고상태·창고·스냅샷일자가 모두 있어야 하며 등록되지 않은 상태는 거절한다', () => {
+  const result = validateRows('inventory', [
+    { item_id: 'ITEM001', current_stock: 20, inventory_status: '정상', warehouse_code: 'MAIN', snapshot_at: '2026-09-01' },
+    { item_id: 'ITEM001', current_stock: 5, inventory_status: '알수없음', warehouse_code: 'MAIN', snapshot_at: '2026-09-01' },
+    { item_id: 'ITEM001', current_stock: 5, inventory_status: null, warehouse_code: null, snapshot_at: null },
+  ], references);
+
+  assert.equal(result.summary.successRows, 1);
+  assert.ok(result.issues.some((issue) => issue.code === 'UNKNOWN_INVENTORY_STATUS' && issue.fieldName === 'inventory_status'));
+  assert.ok(result.issues.some((issue) => issue.code === 'REQUIRED_VALUE' && issue.fieldName === 'warehouse_code'));
+  assert.ok(result.issues.some((issue) => issue.code === 'REQUIRED_VALUE' && issue.fieldName === 'snapshot_at'));
 });
 
 test('오류와 경고 행만 원본 값과 함께 CSV로 내보낸다', async () => {

@@ -1,12 +1,14 @@
 import type { ImportType } from './types.ts';
 
-export type FieldRule = { field: string; required?: boolean; kind?: 'number' | 'date'; reference?: 'item' | 'supplier'; quantity?: boolean };
+export type FieldRule = { field: string; required?: boolean; kind?: 'number' | 'date'; reference?: 'item' | 'supplier' | 'inventory_status'; quantity?: boolean };
 export type ImportSchema = { fields: FieldRule[]; aliases: Record<string, string[]> };
 
 const common = { item_id: ['item_id', 'item code', '품목코드'], supplier_id: ['supplier_id', 'supplier code', '공급업체코드'], source_record_id: ['source_record_id', 'id', '번호'] };
 export const IMPORT_SCHEMAS: Record<ImportType, ImportSchema> = {
   usage_history: { fields: [{ field: 'item_id', required: true, reference: 'item' }, { field: 'use_date', required: true, kind: 'date' }, { field: 'qty', required: true, kind: 'number', quantity: true }], aliases: { ...common, use_date: ['use_date', 'usage date', '출고일', '사용일'], qty: ['qty', 'quantity', '출고수량', '사용수량'] } },
-  inventory: { fields: [{ field: 'item_id', required: true, reference: 'item' }, { field: 'current_stock', required: true, kind: 'number', quantity: true }], aliases: { ...common, current_stock: ['current_stock', 'stock', '현재고'], reference_date: ['reference_date', '기준일자'] } },
+  // Task 4 — 정상 창고재고 분류에 필요한 재고상태 · 창고 · 스냅샷 시각을 필수값으로 둔다.
+  // 운영 값 누락은 ERROR로 막고, 등록되지 않은 임의 상태 텍스트는 UNKNOWN_INVENTORY_STATUS로 거절한다.
+  inventory: { fields: [{ field: 'item_id', required: true, reference: 'item' }, { field: 'current_stock', required: true, kind: 'number', quantity: true }, { field: 'inventory_status', required: true, reference: 'inventory_status' }, { field: 'warehouse_code', required: true }, { field: 'snapshot_at', required: true, kind: 'date' }], aliases: { ...common, current_stock: ['current_stock', 'stock', '현재고'], reference_date: ['reference_date', '기준일자'], inventory_status: ['inventory_status', 'status', '재고상태'], warehouse_code: ['warehouse_code', 'warehouse', '창고', '창고코드'], snapshot_at: ['snapshot_at', 'snapshot_date', '스냅샷일자', '스냅샷시각'] } },
   item_master: { fields: [{ field: 'item_id', required: true }], aliases: { ...common, item_name: ['item_name', '품목명'], item_type: ['item_type', '품목구분'] } },
   supplier_master: { fields: [{ field: 'supplier_id', required: true }], aliases: { ...common, supplier_name: ['supplier_name', '공급업체명'] } },
   purchase_order: { fields: [{ field: 'item_id', required: true, reference: 'item' }, { field: 'supplier_id', reference: 'supplier' }, { field: 'order_date', required: true, kind: 'date' }, { field: 'qty', required: true, kind: 'number', quantity: true }], aliases: { ...common, order_date: ['order_date', '발주일'], qty: ['qty', 'quantity', '발주수량'] } },

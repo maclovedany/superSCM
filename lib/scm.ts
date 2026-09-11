@@ -97,6 +97,10 @@ export async function getOlAccuracyFy(): Promise<{ rows: OlAccuracyFy[]; error: 
   }
 }
 
+// Task 4 — 정상 창고재고와 가용재고. 실제 구현은 lib/inventory/repository.ts에 있습니다.
+// 화면과 (앞으로 추가될) Agent 툴이 같은 조회 함수를 쓰도록 여기서도 다시 내보냅니다.
+export { getAvailableStock } from './inventory/repository';
+
 /** BOM 소요 — 기종 1대를 팔려면 무엇이 몇 개 필요한가 */
 export async function getBomRequirements(modelBase: string): Promise<{ rows: BomRequirement[]; error: string | null }> {
   try {

@@ -37,7 +37,7 @@ export const WORK_ROUTE_PERMISSIONS = {
   '/approvals': ['ITEM_POLICY_APPROVE', 'ALLOC_PRIORITY_APPROVE', 'EVENT_ORDER_APPROVE', 'PLAN_APPROVE'],
   '/orders': ['ORDER_CREATE', 'ORDER_REVIEW_REQUEST'],
   '/allocations/priorities': ['ALLOC_PRIORITY_EDIT'],
-  '/inventory': ['STOCK_VIEW_ALL', 'STOCK_VIEW_PAPER', 'STOCK_VIEW_SUPPLY'],
+  '/inventory': ['STOCK_VIEW_ALL', 'STOCK_VIEW_PAPER', 'STOCK_VIEW_SUPPLY', 'ATP_VIEW'],
   '/demand-submissions': ['DEMAND_SUBMIT'],
 } as const satisfies Record<string, readonly Permission[]>;
 
