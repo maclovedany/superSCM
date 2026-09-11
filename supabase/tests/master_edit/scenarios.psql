@@ -1,0 +1,258 @@
+-- Task 10a 관리자 마스터 편집 — 검증 시나리오. 로컬 임시 DB(scm_test_*) 전용, fixtures.psql 적용 뒤 실행.
+-- 구조는 supabase/tests/item_policy/scenarios.psql과 같다: 사용자 컨텍스트가 필요한 구간은
+-- `set role authenticated`(진짜 RLS·GRANT 적용) 안에서 as_user()로 auth.uid()를 지정하고,
+-- 결과 확인은 `reset role`(슈퍼유저) 뒤 원본 테이블/뷰를 직접 읽어 판정한다.
+\set ON_ERROR_STOP 1
+\ir guard.psql
+\pset tuples_only on
+\pset format unaligned
+
+\set admin1 '00000000-0000-4000-8000-000000000401'
+\set user1 '00000000-0000-4000-8000-000000000402'
+
+
+\echo '== S1 해외법인 편집 — 권한 없는 사용자(USER)는 거절된다 =='
+set role authenticated;
+select masteredit_test.as_user(:'user1') \g /dev/null
+select masteredit_test.expect_error(
+  $f$select core.upsert_supply_entity('JP','일본','JP',7,true,null,null,null,'사유')$f$,
+  '관리자 권한이 필요합니다', 'S1 USER는 해외법인을 편집할 수 없다'
+);
+select masteredit_test.expect_error(
+  $f$select core.upsert_supplier('SUP-T10-1','T10 검증 공급처1','T10',10,true,null,null,null,'사유')$f$,
+  '관리자 권한이 필요합니다', 'S1 USER는 공급처를 편집할 수 없다'
+);
+select masteredit_test.expect_error(
+  $f$select core.set_supplier_departure_rule(null,'SUP-T10-1',1,null,null,null,null,null,'사유')$f$,
+  '관리자 권한이 필요합니다', 'S1 USER는 출항일 규칙을 만들 수 없다'
+);
+select masteredit_test.expect_error(
+  $f$select core.add_business_holiday('KR','2026-09-25','추석','사유')$f$,
+  '관리자 권한이 필요합니다', 'S1 USER는 공휴일을 추가할 수 없다'
+);
+select masteredit_test.expect_error(
+  $f$select core.set_calendar_month_ready('KR',2026,9,true,'사유')$f$,
+  '관리자 권한이 필요합니다', 'S1 USER는 달력 준비 상태를 표시할 수 없다'
+);
+reset role;
+
+
+\echo '== S2 해외법인 편집 — 입력 검증(ADMIN) =='
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
+select masteredit_test.expect_error(
+  $f$select core.upsert_supply_entity('','일본','JP',7,true,null,null,null,'사유')$f$,
+  '법인 코드는 필수', 'S2 법인 코드가 없으면 거절된다'
+);
+select masteredit_test.expect_error(
+  $f$select core.upsert_supply_entity('JP','일본','JP',-1,true,null,null,null,'사유')$f$,
+  '출항 준비기간은 0 이상', 'S2 준비기간 음수는 거절된다'
+);
+select masteredit_test.expect_error(
+  $f$select core.upsert_supply_entity('JP','일본','JP',7,false,null,null,null,'사유')$f$,
+  '종료일을 입력해야', 'S2 종료일 없이 비활성 전환은 거절된다'
+);
+select masteredit_test.expect_error(
+  $f$select core.upsert_supply_entity('JP','일본','JP',7,true,null,null,null,'')$f$,
+  '변경 사유는 필수', 'S2 변경 사유가 없으면 거절된다'
+);
+reset role;
+
+
+\echo '== S3 해외법인 편집 — 정상 변경은 화면 조회값과 이력에 남는다 =='
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
+select core.upsert_supply_entity('JP','일본','JP',7,true,'2026-01-01',null,'현업 확인 완료','현업 확인 결과 7일로 확정') as s3_id \gset
+reset role;
+select masteredit_test.check(:'s3_id' = 'JP', 'S3 upsert는 entity_id를 돌려준다');
+select prep_days as s3_prep_days from analytics.v_supply_entity where entity_id = 'JP' \gset
+select masteredit_test.check(:s3_prep_days = 7, 'S3 화면 조회(v_supply_entity)에 새 준비기간이 보인다');
+select masteredit_test.check(
+  (select reason_code is null from analytics.v_supply_entity where entity_id = 'JP'),
+  'S3 준비기간을 채우면 PREP_DAYS_UNSET 사유가 사라진다'
+);
+select masteredit_test.check(
+  exists (select 1 from analytics.v_master_change_history
+           where target_type = 'supply_entity' and target_id = 'JP' and action = 'SUPPLY_ENTITY_UPDATED'
+             and (after ->> 'reason') = '현업 확인 결과 7일로 확정' and (after ->> 'prep_days')::int = 7
+             and (before ->> 'prep_days')::int = 0),
+  'S3 변경 이력에 before(0, STEP 18 시드값)/after(7)/reason이 함께 남는다'
+);
+select masteredit_test.check(
+  (select actor from core.audit_log where target_type = 'supply_entity' and target_id = 'JP' order by at desc limit 1) = :'admin1'::uuid,
+  'S3 변경 이력의 actor가 실제 처리자다'
+);
+
+
+\echo '== S4 해외법인 편집 — 새 법인을 추가할 수 있다(stage1 §8) =='
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
+select core.upsert_supply_entity('TH','태국','TH',5,true,null,null,null,'신규 법인 등록') as s4_id \gset
+reset role;
+select masteredit_test.check(:'s4_id' = 'TH', 'S4 새 법인 코드로 등록된다');
+select count(*) as s4_count from analytics.v_supply_entity where entity_id = 'TH' \gset
+select masteredit_test.check(:s4_count = 1, 'S4 새 법인이 화면 조회에 나타난다');
+select masteredit_test.check(
+  (select action from analytics.v_master_change_history where target_type = 'supply_entity' and target_id = 'TH' order by at desc limit 1) = 'SUPPLY_ENTITY_CREATED',
+  'S4 신규 법인은 CREATED로 기록된다'
+);
+
+
+\echo '== S5 공급처 편집 — 소속 법인 변경과 퇴출(종료일 없는 비활성화는 거절) =='
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
+select masteredit_test.expect_error(
+  $f$select core.upsert_supplier('SUP-T10-1','T10 검증 공급처1','T10',10,false,null,null,null,'거래 종료')$f$,
+  '종료일을 입력해야', 'S5 종료일 없는 공급처 비활성화는 거절된다'
+);
+select core.upsert_supplier('SUP-T10-1','T10 검증 공급처1','TH',10,false,'2026-01-01','2026-09-30','거래 종료','거래 종료 — TH로 이관 후 퇴출') as s5_id \gset
+reset role;
+select masteredit_test.check(:'s5_id' = 'SUP-T10-1', 'S5 공급처 upsert는 supplier_id를 돌려준다');
+select active as s5_active, valid_to as s5_valid_to, entity_name as s5_entity_name
+  from analytics.v_supplier where supplier_id = 'SUP-T10-1' \gset
+select masteredit_test.check(:'s5_active' = 'f', 'S5 퇴출한 공급처는 비활성으로 표시된다');
+select masteredit_test.check(:'s5_valid_to' = '2026-09-30', 'S5 종료일이 저장된다');
+select masteredit_test.check(:'s5_entity_name' = '태국', 'S5 소속 법인이 바뀐 채로 계속 조회된다(삭제되지 않았다)');
+
+
+\echo '== S6 출항일 규칙 — 요일 · 매월 일자 · 주차(week_of_month) 세 가지 인코딩 =='
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
+select masteredit_test.expect_error(
+  $f$select core.set_supplier_departure_rule(null,'SUP-T10-1',1,null,15,null,null,null,'사유')$f$,
+  '요일 규칙과 매월 일자 규칙 중 하나만', 'S6 요일·매월 일자를 동시에 채우면 거절된다'
+);
+select masteredit_test.expect_error(
+  $f$select core.set_supplier_departure_rule(null,'SUP-T10-1',null,3,15,null,null,null,'사유')$f$,
+  '주차 규칙은 요일과 함께', 'S6 주차만 있고 요일이 없으면 거절된다'
+);
+select core.set_supplier_departure_rule(null,'SUP-T10-1',3,null,null,null,null,null,'매주 수요일 출항') as s6_weekday_id \gset
+select core.set_supplier_departure_rule(null,'SUP-T10-1',2,2,null,null,null,null,'매월 둘째 화요일 출항') as s6_week_id \gset
+select core.set_supplier_departure_rule(null,'SUP-T10-1',null,null,15,null,null,null,'매월 15일 출항') as s6_month_id \gset
+reset role;
+select masteredit_test.check(
+  (select weekday = 3 and week_of_month is null from analytics.v_supplier_departure where departure_id = :s6_weekday_id),
+  'S6 요일 규칙이 저장되고 week_of_month는 비어 있다'
+);
+select weekday as s6_b_weekday, week_of_month as s6_b_week from analytics.v_supplier_departure where departure_id = :s6_week_id \gset
+select masteredit_test.check(:s6_b_weekday = 2 and :s6_b_week = 2, 'S6 주차 규칙(매월 2번째 화요일)이 저장된다');
+select day_of_month as s6_c_day from analytics.v_supplier_departure where departure_id = :s6_month_id \gset
+select masteredit_test.check(:s6_c_day = 15, 'S6 매월 일자 규칙이 저장된다');
+
+
+\echo '== S7 출항일 규칙 — 교체(replace)와 비활성화(deactivate)는 행을 지우지 않는다 =='
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
+select core.set_supplier_departure_rule(:s6_weekday_id,'SUP-T10-1',5,null,null,null,null,'변경됨','수요일에서 금요일로 변경') as s7_replaced_id \gset
+select core.deactivate_supplier_departure_rule(:s6_month_id, '매월 15일 규칙 중단') \g /dev/null
+reset role;
+select masteredit_test.check(:s7_replaced_id = :s6_weekday_id, 'S7 replace는 같은 departure_id를 유지한다');
+select weekday as s7_new_weekday from analytics.v_supplier_departure where departure_id = :s6_weekday_id \gset
+select masteredit_test.check(:s7_new_weekday = 5, 'S7 규칙 내용이 바뀐다(수요일→금요일)');
+select active as s7_month_active from analytics.v_supplier_departure where departure_id = :s6_month_id \gset
+select masteredit_test.check(:'s7_month_active' = 'f', 'S7 비활성화된 규칙도 행은 남는다(삭제하지 않는다)');
+select masteredit_test.check(
+  (select count(*) from analytics.v_master_change_history where target_type = 'supplier_departure' and target_id = :'s6_weekday_id') >= 2,
+  'S7 생성과 교체가 모두 이력에 남는다'
+);
+
+
+\echo '== S8 previous_business_day — 주말이면 이전 금요일(달력 행 없이) =='
+select core.previous_business_day('2026-09-13'::date, 'C1') as s8 \gset
+select masteredit_test.check(:'s8' = '2026-09-11', 'S8 일요일→금요일');
+
+
+\echo '== S9 previous_business_day — 금요일 공휴일 + 주말이면 그 전 목요일 =='
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
+select core.add_business_holiday('C2','2026-09-11','임시공휴일','S9 검증용') \g /dev/null
+reset role;
+select core.previous_business_day('2026-09-13'::date, 'C2') as s9 \gset
+select masteredit_test.check(:'s9' = '2026-09-10', 'S9 금요일 공휴일 + 주말 → 목요일');
+
+
+\echo '== S10 previous_business_day — 월 경계(공휴일 없이 순수 주말) =='
+select core.previous_business_day('2026-03-01'::date, 'C3') as s10 \gset
+select masteredit_test.check(:'s10' = '2026-02-27', 'S10 3/1(일)→2/27(금), 2월 마지막 주말도 건너뛴다');
+
+
+\echo '== S11 previous_business_day — 연 경계(새해 공휴일 + 주말) =='
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
+select core.add_business_holiday('C4','2027-01-01','신정','S11 검증용') \g /dev/null
+reset role;
+select core.previous_business_day('2027-01-03'::date, 'C4') as s11 \gset
+select masteredit_test.check(:'s11' = '2026-12-31', 'S11 신정(금) + 주말 → 작년 12/31(목)로 넘어간다');
+
+
+\echo '== S12 previous_business_day — 연속 공휴일(3일) =='
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
+select core.add_business_holiday('C5','2026-09-14','임시연휴1','S12 검증용') \g /dev/null
+select core.add_business_holiday('C5','2026-09-15','임시연휴2','S12 검증용') \g /dev/null
+select core.add_business_holiday('C5','2026-09-16','임시연휴3','S12 검증용') \g /dev/null
+reset role;
+select core.previous_business_day('2026-09-16'::date, 'C5') as s12 \gset
+select masteredit_test.check(:'s12' = '2026-09-11', 'S12 연휴 3일 + 주말 → 그 전 금요일까지 거슬러 올라간다');
+
+
+\echo '== S13 공휴일 제거 — 지우면 previous_business_day가 되돌아온다 =='
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
+select masteredit_test.expect_error(
+  $f$select core.remove_business_holiday('C2','2026-09-25','사유')$f$,
+  '등록된 공휴일이 없습니다', 'S13 등록되지 않은 날짜 제거는 거절된다'
+);
+select core.remove_business_holiday('C2','2026-09-11','착오 등록 정정') \g /dev/null
+reset role;
+select core.previous_business_day('2026-09-13'::date, 'C2') as s13 \gset
+select masteredit_test.check(:'s13' = '2026-09-11', 'S13 공휴일을 지우면 금요일이 다시 영업일로 판정된다');
+
+
+\echo '== S14 달력 월 준비 상태 — 표시·해제와 준비 안 된 달의 기본값 =='
+select masteredit_test.check(
+  not exists (select 1 from analytics.v_calendar_readiness where country_code = 'C9' and cal_year = 2026 and cal_month = 9),
+  'S14 선언 전에는 행 자체가 없다(준비 안 됨으로 취급)'
+);
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
+select core.set_calendar_month_ready('C9',2026,9,true,'2026년 9월 공휴일 입력 완료') \g /dev/null
+reset role;
+select ready as s14_after, n_holidays as s14_holidays from analytics.v_calendar_readiness where country_code = 'C9' and cal_year = 2026 and cal_month = 9 \gset
+select masteredit_test.check(:'s14_after' = 't', 'S14 준비 완료로 표시된다');
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
+select core.set_calendar_month_ready('C9',2026,9,false,'착오 표시 취소') \g /dev/null
+reset role;
+select ready as s14_toggled from analytics.v_calendar_readiness where country_code = 'C9' and cal_year = 2026 and cal_month = 9 \gset
+select masteredit_test.check(:'s14_toggled' = 'f', 'S14 다시 미완료로 되돌릴 수 있다');
+
+
+\echo '== S15 직접 테이블 쓰기 — RLS가 비관리자의 직접 UPDATE를 막는다 =='
+set role authenticated;
+select masteredit_test.as_user(:'user1') \g /dev/null
+update core.supply_entity set prep_days = 999 where entity_id = 'JP';
+select masteredit_test.check((select prep_days from core.supply_entity where entity_id = 'JP') = 7, 'S15 USER의 직접 UPDATE는 RLS에 막혀 값이 바뀌지 않는다');
+reset role;
+
+
+\echo '== S16 마이그레이션 재실행 — 같은 값으로 다시 호출해도 오류 없다(idempotent upsert) =='
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
+select core.upsert_supply_entity('JP','일본','JP',7,true,'2026-01-01',null,'현업 확인 완료','같은 값 재적용') as s16_id \gset
+reset role;
+select masteredit_test.check(:'s16_id' = 'JP', 'S16 같은 값으로 다시 호출해도 오류 없이 성공한다');
+
+
+\echo '== S17 하드 삭제 금지 — ADMIN이어도 직접 DELETE는 GRANT 자체가 없어 거절된다(gap 6.1) =='
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
+select masteredit_test.expect_error(
+  $f$delete from core.supply_entity where entity_id = 'TH'$f$,
+  'permission denied for table supply_entity', 'S17 ADMIN도 core.supply_entity를 직접 DELETE할 수 없다'
+);
+select masteredit_test.expect_error(
+  $f$delete from core.supplier where supplier_id = 'SUP-T10-1'$f$,
+  'permission denied for table supplier', 'S17 ADMIN도 core.supplier를 직접 DELETE할 수 없다'
+);
+reset role;

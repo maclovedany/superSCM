@@ -8,49 +8,23 @@ import DataTable, { type Column } from '@/components/ui/data-table';
 import EmptyValue from '@/components/ui/empty-value';
 import KpiCard from '@/components/ui/kpi-card';
 import Badge from '@/components/ui/badge';
-import { departureLabel, type ItemPolicy, type Supplier, type SupplierDeparture, type SupplyEntity } from '@/lib/master-model';
-import { getItemPolicies, getMasterReadiness, getSupplierDepartures, getSuppliers, getSupplyEntities } from '@/lib/master';
+import SupplyEntitySection from '@/components/admin/master/supply-entity-section';
+import SupplierSection from '@/components/admin/master/supplier-section';
+import DepartureRuleSection from '@/components/admin/master/departure-rule-section';
+import CalendarSection from '@/components/admin/master/calendar-section';
+import ChangeHistoryTable from '@/components/admin/master/change-history-table';
+import type { ItemPolicy } from '@/lib/master-model';
+import {
+  getCalendarReadiness,
+  getItemPolicies,
+  getMasterHistory,
+  getMasterReadiness,
+  getSupplierDepartures,
+  getSuppliers,
+  getSupplyEntities,
+} from '@/lib/master';
 
 export const dynamic = 'force-dynamic';
-
-function period(from: string | null, to: string | null) {
-  if (!from && !to) return <span className="muted">제한 없음</span>;
-  return <span className="muted">{from ?? '—'} ~ {to ?? '—'}</span>;
-}
-
-const entityColumns: Column<SupplyEntity>[] = [
-  { key: 'entityId', label: '법인', render: (row) => <><b>{row.entityName}</b><br /><span className="muted">{row.entityId} · {row.countryCode}</span></> },
-  {
-    key: 'prepDays', label: '출항 준비기간', align: 'right',
-    render: (row) => row.reasonCode === 'PREP_DAYS_UNSET'
-      ? <EmptyValue reasonCode="PREP_DAYS_UNSET" />
-      : <>{row.prepDays}<span className="muted"> 일</span></>,
-  },
-  { key: 'activeSupplierCount', label: '활성 공급처', align: 'right', render: (row) => row.activeSupplierCount.toLocaleString('ko-KR') },
-  { key: 'validFrom', label: '적용 기간', render: (row) => period(row.validFrom, row.validTo) },
-  { key: 'active', label: '상태', align: 'center', render: (row) => row.active ? <Badge status="SAFE">활성</Badge> : <span className="muted">비활성</span> },
-];
-
-const supplierColumns: Column<Supplier>[] = [
-  { key: 'supplierId', label: '공급처', render: (row) => <><b>{row.supplierName}</b><br /><span className="muted">{row.supplierId}</span></> },
-  { key: 'entityName', label: '소속 법인', render: (row) => row.entityName ?? <EmptyValue reasonCode="ENTITY_UNSET" /> },
-  {
-    key: 'leadTimeDays', label: '리드타임', align: 'right',
-    render: (row) => row.leadTimeDays === null
-      ? <EmptyValue reasonCode="LEADTIME_UNSET" />
-      : <>{row.leadTimeDays}<span className="muted"> 일</span></>,
-  },
-  { key: 'departureRuleCount', label: '출항일 규칙', align: 'right', render: (row) => row.departureRuleCount === 0 ? <EmptyValue reasonCode="NO_DEPARTURE_RULE" /> : `${row.departureRuleCount}건` },
-  { key: 'validFrom', label: '적용 기간', render: (row) => period(row.validFrom, row.validTo) },
-  { key: 'active', label: '상태', align: 'center', render: (row) => row.active ? <Badge status="SAFE">활성</Badge> : <span className="muted">비활성</span> },
-];
-
-const departureColumns: Column<SupplierDeparture>[] = [
-  { key: 'supplierName', label: '공급처', render: (row) => <><b>{row.supplierName}</b><br /><span className="muted">{row.supplierId}</span></> },
-  { key: 'weekday', label: '출항 규칙', render: (row) => departureLabel(row) },
-  { key: 'validFrom', label: '적용 기간', render: (row) => period(row.validFrom, row.validTo) },
-  { key: 'note', label: '비고', render: (row) => row.note ?? <span className="muted">—</span> },
-];
 
 const policyColumns: Column<ItemPolicy>[] = [
   { key: 'itemId', label: '품목' },
@@ -82,10 +56,12 @@ const policyColumns: Column<ItemPolicy>[] = [
 ];
 
 export default async function MasterPage() {
-  const [entities, suppliers, departures, policies, readiness] = await Promise.all([
+  const [entities, suppliers, departures, policies, readiness, calendarReadiness, history] = await Promise.all([
     getSupplyEntities(), getSuppliers(), getSupplierDepartures(), getItemPolicies(), getMasterReadiness(),
+    getCalendarReadiness(), getMasterHistory(),
   ]);
-  const failure = entities.error ?? suppliers.error ?? departures.error ?? policies.error ?? readiness.error;
+  const failure = entities.error ?? suppliers.error ?? departures.error ?? policies.error ?? readiness.error
+    ?? calendarReadiness.error ?? history.error;
 
   if (failure) {
     return (
@@ -115,24 +91,14 @@ export default async function MasterPage() {
         <div className="grid grid-4">
           <KpiCard label="해외법인" value={r?.entities ?? 0} foot={r && r.prepDaysUnset > 0 ? `준비기간 미입력 ${r.prepDaysUnset}곳` : '준비기간 모두 입력됨'} status={r && r.prepDaysUnset > 0 ? 'WARNING' : 'SAFE'} />
           <KpiCard label="활성 공급처" value={r?.suppliers ?? 0} foot={r && r.leadtimeUnset > 0 ? `리드타임 미입력 ${r.leadtimeUnset}곳` : '리드타임 모두 입력됨'} status={r && r.leadtimeUnset > 0 ? 'WARNING' : 'SAFE'} />
-          <KpiCard label="영업일 달력" value={r?.calendarDays ?? 0} foot={r && r.calendarDays === 0 ? '공휴일 자료 없음 — 주말만 판정' : '공휴일 반영 중'} status={r && r.calendarDays === 0 ? 'CALCULATION_UNAVAILABLE' : 'SAFE'} />
+          <KpiCard label="영업일 달력" value={r?.calendarDays ?? 0} foot={r && r.calendarDays === 0 ? '공휴일 자료 없음 — 주말만 판정' : `준비된 달 ${r?.calendarMonthsReady ?? 0}개`} status={r && r.calendarDays === 0 ? 'CALCULATION_UNAVAILABLE' : 'SAFE'} />
           <KpiCard label="발주 확정 차단" value={r?.targetDosUnset ?? 0} foot={`목표 DoS 미설정 (전체 ${r?.itemPolicies ?? 0})`} status={r && r.targetDosUnset > 0 ? 'CRITICAL' : 'SAFE'} />
         </div>
 
-        <div className="section card">
-          <div className="card-title"><div><h3>해외법인</h3><span>발주일 = 공급처 출항일 − 출항 준비기간</span></div></div>
-          <DataTable columns={entityColumns} rows={entities.rows} rowKey={(row) => row.entityId} empty="법인이 없습니다." />
-        </div>
-
-        <div className="section card">
-          <div className="card-title"><div><h3>공급처</h3><span>리드타임은 예측 조정 범위의 시작 월을 정합니다</span></div></div>
-          <DataTable columns={supplierColumns} rows={suppliers.rows} rowKey={(row) => row.supplierId} empty="공급처가 없습니다. 현업 자료를 받아 등록하세요." />
-        </div>
-
-        <div className="section card">
-          <div className="card-title"><div><h3>출항일 규칙</h3><span>출항일을 주차별로 묶어 발주합니다</span></div></div>
-          <DataTable columns={departureColumns} rows={departures.rows} rowKey={(row) => String(row.departureId)} empty="출항일 규칙이 없습니다." />
-        </div>
+        <SupplyEntitySection entities={entities.rows} />
+        <SupplierSection suppliers={suppliers.rows} entities={entities.rows} />
+        <DepartureRuleSection departures={departures.rows} suppliers={suppliers.rows} />
+        <CalendarSection readiness={calendarReadiness.rows} />
 
         <div className="section card">
           <div className="card-title">
@@ -143,6 +109,11 @@ export default async function MasterPage() {
             </div>
           </div>
           <DataTable columns={policyColumns} rows={policies.rows} rowKey={(row) => row.itemId} empty="품목 정책이 없습니다." />
+        </div>
+
+        <div className="section card">
+          <div className="card-title"><div><h3>변경 이력</h3><span>법인 · 공급처 · 출항일 규칙 · 달력 변경 최근 {history.rows.length}건(before · after · 처리자 · 사유)</span></div></div>
+          <ChangeHistoryTable rows={history.rows} />
         </div>
       </div>
     </section>

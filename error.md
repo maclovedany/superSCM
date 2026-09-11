@@ -30,6 +30,8 @@
 | 임시 DB에 `supabase/schema-dump/*.sql`을 복원하면 여러 오류가 연쇄로 남 | 스텁이 불완전하고 일부 마이그레이션이 정책 재적용에 취약함 | [#21](#21-schema-dumpsql-복원-임시-db-부트스트랩) |
 | 도메인별 승인 결과 알림이 예상한 template_code로 저장되지 않음(값은 있는데 내용이 일반 문구) | 같은 dedupe_key를 쓰는 다른 AFTER UPDATE 트리거가 이름 알파벳 순서상 먼저 실행되어 `on conflict do nothing`에 먼저 이김 | [#23](#23-승인-결과-알림이-일반-문구로만-남고-도메인-상세-알림이-안-보인다) |
 | `cannot drop columns from view` (앞 마이그레이션 재적용) | 뒤 마이그레이션이 같은 뷰 끝에 열을 덧붙인 뒤 앞 마이그레이션의 좁은 뷰 정의를 다시 실행 | [#24](#24-cannot-drop-columns-from-view) |
+| `function core.xxx(unknown, unknown, integer, ...) does not exist` (smallint 인자) | 정수 리터럴(int4)이 `smallint` 파라미터로 암시적 변환되지 않아 오버로드 해석 실패 | [#25](#25-function-corexxx-does-not-exist-smallint-인자) |
+| psql 스크립트에서 `syntax error at or near ":"` 또는 `column "f" does not exist` (`\gset` 뒤) | `\gset`은 NULL·빈 결과 컬럼의 변수를 **설정하지 않고**, bare(따옴표 없는) boolean 변수는 `f`/`t`로 치환돼 컬럼명처럼 파싱됨 | [#26](#26-gset-뒤-syntax-error-또는-column-f-does-not-exist) |
 
 ## #24 `cannot drop columns from view`
 
@@ -675,3 +677,51 @@ The following paths are ignored by one of your .gitignore files:
 
 **예방.** `.superpowers/sdd/` 아래 산출물을 커밋해야 하는 작업은 먼저 `git check-ignore -v <경로>`로
 적용 규칙을 확인하고, 사용자 지정 파일만 좁게 강제 추가합니다.
+
+---
+
+## #25 `function core.xxx(unknown, unknown, integer, ...) does not exist`(smallint 인자)
+
+**증상.** Task 10a의 `core.set_supplier_departure_rule(p_departure_id bigint, p_supplier_id text,
+p_weekday smallint, ...)`를 리터럴 인자로 호출하자 다음 오류가 났습니다.
+
+```text
+ERROR:  function core.set_supplier_departure_rule(unknown, unknown, integer, unknown, unknown, unknown, unknown, unknown, unknown) does not exist
+```
+
+**원인.** SQL에 `1`처럼 그냥 숫자를 쓰면 PostgreSQL은 그것을 `integer`(int4)로 취급합니다.
+`integer → smallint`(int2) 캐스트는 `assignment` 수준이라 함수 오버로드 해석(요구하는 건 `implicit`
+캐스트)에서는 쓰이지 않습니다. `null`은 `unknown`이라 아무 타입에나 맞지만, 리터럴 정수는 맞지 않아
+"그런 함수가 없다"로 보입니다 — 실제로는 타입 불일치입니다.
+
+**해결.** RPC로 호출되는 함수(화면 · 테스트가 리터럴 인자로 부르는 함수)의 파라미터 타입을
+`smallint` 대신 `integer`로 넓혔습니다. 테이블 컬럼 자체는 `smallint`로 남겨도 괜찮습니다(INSERT/UPDATE
+문맥의 대입 캐스트는 정상 동작합니다) — 문제는 오직 "함수 인자 타입 해석"에서만 생깁니다.
+
+**예방.** ADMIN 명령 함수 등 SQL 리터럴로 직접 호출될 함수는 `smallint`를 파라미터 타입으로 쓰지
+않습니다. 저장 컬럼이 `smallint`이어도 함수 시그니처는 `integer`로 받고 내부에서 컬럼에 대입합니다.
+
+## #26 `\gset` 뒤 syntax error 또는 `column "f" does not exist`
+
+**증상.** Task 10a 검증 스위트(`supabase/tests/master_edit/scenarios.psql`)에서 `\gset`으로 컬럼값을
+psql 변수에 담은 뒤 참조하자 두 가지 오류가 났습니다.
+
+```text
+ERROR:  syntax error at or near ":"
+ERROR:  column "f" does not exist
+```
+
+**원인.** 두 가지가 겹쳤습니다.
+1. `\gset`은 컬럼값이 NULL이거나 결과행이 0건이면 해당 변수를 **설정하지 않고 비워 둡니다**(빈
+   문자열로 설정하는 게 아닙니다). 그 뒤 `:'그변수'`를 쓰면 psql이 치환할 값이 없어 `:'` 가 SQL에
+   그대로 남아 구문 오류가 됩니다.
+2. boolean 컬럼값을 `:변수`(따옴표 없이)로 참조하면 `false`가 리터럴 `f`로 치환되어
+   `... = 'f'`가 아니라 `f = 'f'`처럼 **컬럼 참조**로 파싱됩니다.
+
+**해결.** NULL이 될 수 있는 컬럼이나 행이 없을 수 있는 조회는 `\gset`으로 변수에 담지 않고,
+`masteredit_test.check((select ... is null from ...), '설명')`처럼 조건 전체를 서브쿼리 안에서
+판정했습니다(item_policy 스위트가 이미 쓰던 방식). boolean 변수를 비교할 때는 반드시 `:'변수' = 't'`
+처럼 따옴표로 감쌌습니다.
+
+**예방.** psql 검증 스크립트에서 `\gset`은 "항상 값이 있는(NOT NULL이고 행이 반드시 존재하는)" 컬럼에만
+쓰고, boolean·nullable 컬럼은 따옴표로 감싸거나 존재/조건 자체를 서브쿼리로 확인합니다.
