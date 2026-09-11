@@ -1,0 +1,94 @@
+-- 월말 재고 성과(Task 12) 검증 fixture — 로컬 임시 DB(scm_test_*) 전용. 운영 마이그레이션에 넣지 않는다.
+-- 구조는 supabase/tests/item_policy와 같다(같은 사용자 · 헬퍼 스키마 패턴).
+\set ON_ERROR_STOP 1
+\ir guard.psql
+
+create schema if not exists invkpi_test;
+grant usage on schema invkpi_test to anon, authenticated;
+
+create or replace function invkpi_test.as_user(p_user uuid) returns text language sql as $$
+  select set_config('request.jwt.claim.sub', p_user::text, false)
+$$;
+
+create or replace function invkpi_test.check(p_ok boolean, p_label text) returns text language plpgsql as $$
+begin
+  if p_ok is distinct from true then
+    raise exception 'FAIL: %', p_label;
+  end if;
+  return 'PASS: ' || p_label;
+end $$;
+
+create or replace function invkpi_test.expect_error(p_sql text, p_pattern text, p_label text) returns text language plpgsql as $$
+declare
+  v_state text;
+  v_message text;
+begin
+  begin
+    execute p_sql;
+  exception when others then
+    get stacked diagnostics v_state = returned_sqlstate, v_message = message_text;
+    if v_message !~ p_pattern then
+      raise exception 'FAIL: % — 다른 오류: % (%)', p_label, v_message, v_state;
+    end if;
+    return 'PASS: ' || p_label || ' → ' || v_state || ' ' || v_message;
+  end;
+  raise exception 'FAIL: % — 오류가 나지 않았습니다: %', p_label, p_sql;
+end $$;
+
+grant execute on all functions in schema invkpi_test to anon, authenticated;
+
+insert into auth.users (id, email) values
+  ('00000000-0000-4000-8000-000000000401', 't12-planner1@example.test'),
+  ('00000000-0000-4000-8000-000000000402', 't12-lead1@example.test'),
+  ('00000000-0000-4000-8000-000000000403', 't12-marketing1@example.test'),
+  ('00000000-0000-4000-8000-000000000404', 't12-admin1@example.test')
+on conflict (id) do nothing;
+
+insert into core.app_user (user_id, email, name, department, role, active, job_role) values
+  ('00000000-0000-4000-8000-000000000401', 't12-planner1@example.test', 'SCM품목담당1', 'SCM', 'USER', true, 'SCM_PLANNER'),
+  ('00000000-0000-4000-8000-000000000402', 't12-lead1@example.test', 'SCM팀장1', 'SCM', 'USER', true, 'SCM_LEAD'),
+  ('00000000-0000-4000-8000-000000000403', 't12-marketing1@example.test', '마케팅1', 'MARKETING', 'USER', true, 'MARKETING'),
+  ('00000000-0000-4000-8000-000000000404', 't12-admin1@example.test', '관리자1', null, 'ADMIN', true, null)
+on conflict (user_id) do update
+  set job_role = excluded.job_role, department = excluded.department, role = excluded.role, name = excluded.name, active = true;
+
+-- 품목 4개 — 각각 다른 사유 코드 시나리오 전용.
+--   ITEMT1201  한 번도 분류된 적 없음(core.stock_balance 행 자체가 없다) → INVENTORY_SCOPE_UNCLASSIFIED
+--   ITEMT1202  분류는 되지만(과거 스냅샷 있음) 승인 단가·목표재고 흐름 검증 전용
+--   ITEMT1203  분류는 되지만(core.stock_balance 행 있음) 검증 대상 달(2026-09)에는 스냅샷이 없음 → MONTH_END_SNAPSHOT_MISSING
+--   ITEMT1204  core.apply_month_end_inventory_snapshot_from_batch 함수 자체(raw.inventory → 분류 → upsert) 검증 전용
+--   ITEMT1205  월 경계 timezone 검증 전용(세션 timezone과 무관하게 'Asia/Seoul' 벽시계로 달을 정하는지)
+insert into raw.item_master ("품목코드", "품목명", "품목구분") values
+  ('ITEMT1201', 'T12 미분류 품목', '소모품'),
+  ('ITEMT1202', 'T12 승인 흐름 품목', '소모품'),
+  ('ITEMT1203', 'T12 이달 스냅샷 없음', '소모품'),
+  ('ITEMT1204', 'T12 배치 함수 검증', '소모품'),
+  ('ITEMT1205', 'T12 월 경계 timezone 검증', '소모품')
+on conflict do nothing;
+
+insert into core.item_policy (item_id, moq, pack_size, item_grade, service_level) values
+  ('ITEMT1201', null, null, 'A', 0.95),
+  ('ITEMT1202', null, null, 'A', 0.95),
+  ('ITEMT1203', null, null, 'A', 0.95),
+  ('ITEMT1204', null, null, 'A', 0.95),
+  ('ITEMT1205', null, null, 'A', 0.95)
+on conflict (item_id) do update set moq = excluded.moq;
+
+-- ITEMT1202 · ITEMT1203은 "한 번은 NORMAL로 분류된 적 있다"는 사실만 필요하므로
+-- core.stock_balance에 슈퍼유저로 직접 행을 넣는다(procurement_plan 테스트 스위트와 같은 방식).
+insert into core.stock_balance (item_id, snapshot_qty, normal_qty, snapshot_at) values
+  ('ITEMT1202', 120, 120, '2026-09-28T00:00:00Z'),
+  ('ITEMT1203', 80, 80, '2026-08-30T00:00:00Z')
+on conflict (item_id) do update set snapshot_qty = excluded.snapshot_qty, normal_qty = excluded.normal_qty, snapshot_at = excluded.snapshot_at;
+
+-- ITEMT1202의 2026-09 월말 스냅샷 — v_inventory_performance가 그대로 읽을 값.
+insert into core.month_end_inventory_snapshot (plan_month, item_id, normal_qty, snapshot_at) values
+  ('2026-09-01', 'ITEMT1202', 120, '2026-09-28T00:00:00Z')
+on conflict (plan_month, item_id) do update set normal_qty = excluded.normal_qty, snapshot_at = excluded.snapshot_at;
+
+-- ITEMT1203은 2026-08에는 스냅샷이 있지만(위 stock_balance와 짝) 2026-09에는 없다 — 의도된 결측.
+insert into core.month_end_inventory_snapshot (plan_month, item_id, normal_qty, snapshot_at) values
+  ('2026-08-01', 'ITEMT1203', 80, '2026-08-30T00:00:00Z')
+on conflict (plan_month, item_id) do update set normal_qty = excluded.normal_qty, snapshot_at = excluded.snapshot_at;
+
+select 'fixtures ok';

@@ -65,6 +65,9 @@ export const WORK_ROUTE_PERMISSIONS = {
   // (URGENT_ORDER_VIEW)만(컨트롤러 판정 1). SCM팀장이 가진 STOCK_VIEW_ALL만으로는 이 메뉴가
   // 열리지 않는다 — stage1 §2의 부서별 화면 범위표에 SCM팀장의 긴급발주 화면은 없다.
   '/urgent-orders': ['ALLOC_MANUAL', 'URGENT_ORDER_VIEW'],
+  // Task 12 — 월말 재고금액은 원가 정보다. analysis/* 중 receipt-gap과 같은 이유로 이 하위
+  // 경로만 STOCK_VIEW_ALL(SCM팀)로 좁힌다 — analytics.v_inventory_performance의 RLS와 같은 권한이다.
+  '/analysis/inventory-performance': ['STOCK_VIEW_ALL'],
 } as const satisfies Record<string, readonly Permission[]>;
 
 export function requiredPermissionsForPath(pathname: string): readonly Permission[] | null {

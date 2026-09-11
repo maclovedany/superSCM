@@ -26,6 +26,7 @@ export const USER_MENU: MenuItem[] = [
   { href: '/urgent-orders', label: '긴급발주', description: '소모품 긴급발주 등록 · 상태 관리(SCM) · 현황 조회(서비스부)', icon: Boxes, anyOf: WORK_ROUTE_PERMISSIONS['/urgent-orders'] },
   { href: '/demand-submissions', label: '수요 제출', description: '부서별 월간 수요 제출', icon: BarChart3, anyOf: WORK_ROUTE_PERMISSIONS['/demand-submissions'] },
   { href: '/analysis/receipt-gap', label: '입고 차이', description: '계획 입고일과 실제 입고일의 차이 — 법인 · 품목 · 월별', icon: BarChart3, anyOf: WORK_ROUTE_PERMISSIONS['/analysis/receipt-gap'] },
+  { href: '/analysis/inventory-performance', label: '월말 재고 성과', description: '승인된 목표재고 · 단가 대비 월말 재고수량 · 금액', icon: Boxes, anyOf: WORK_ROUTE_PERMISSIONS['/analysis/inventory-performance'] },
   { href: '/analysis/demand-profile', label: '수요 패턴', description: '출고 실적 기반 수요 성격 분류', icon: BarChart3 },
   { href: '/analysis/model-comparison', label: 'OL 예측 정확도', description: '영업 OL · SCM OL 의 WAPE 와 Bias', icon: LineChart },
   { href: '/analysis/leadtime', label: '리드타임 격차', description: '실데이터 대기 — 공급처별 Lead time 필요', icon: LineChart },

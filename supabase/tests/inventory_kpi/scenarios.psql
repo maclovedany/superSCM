@@ -1,0 +1,307 @@
+-- Task 12 월말 재고 성과 · 운영 기준월 — 검증 시나리오. 로컬 임시 DB(scm_test_*) 전용,
+-- fixtures.psql 적용 뒤 실행. 구조는 supabase/tests/item_policy와 같다: 사용자 컨텍스트가
+-- 필요한 구간은 `set role authenticated` 안에서 as_user()로 auth.uid()를 지정하고, 결과 확인은
+-- `reset role`(슈퍼유저) 뒤 원본 테이블을 직접 읽어 판정한다. RLS 자체를 검증하는 구간은 확인도
+-- authenticated 롤 안에서 한다.
+\set ON_ERROR_STOP 1
+\ir guard.psql
+\pset tuples_only on
+\pset format unaligned
+
+\set planner1 '00000000-0000-4000-8000-000000000401'
+\set lead1 '00000000-0000-4000-8000-000000000402'
+\set marketing1 '00000000-0000-4000-8000-000000000403'
+\set admin1 '00000000-0000-4000-8000-000000000404'
+\set item_unclassified 'ITEMT1201'
+\set item_approve_flow 'ITEMT1202'
+\set item_month_missing 'ITEMT1203'
+\set item_batch 'ITEMT1204'
+
+
+\echo '== S1 RLS — STOCK_VIEW_ALL이 없는 사용자(마케팅)는 0행이다(오류가 아니다) =='
+set role authenticated;
+select invkpi_test.as_user(:'marketing1') \g /dev/null
+select count(*) as s1_perf_count from analytics.v_inventory_performance where plan_month = '2026-09-01' \gset
+select count(*) as s1_kpi_count from analytics.v_inventory_performance_kpi where plan_month = '2026-09-01' \gset
+reset role;
+select invkpi_test.check(:'s1_perf_count' = '0', 'S1 마케팅은 v_inventory_performance에서 0행(권한 없음)');
+select invkpi_test.check(:'s1_kpi_count' = '0', 'S1 마케팅은 v_inventory_performance_kpi에서도 0행');
+
+
+\echo '== S1b RLS — ADMIN도 STOCK_VIEW_ALL이 없으면 0행이다(관리자 자동 우회 없음, AGENTS.md) =='
+set role authenticated;
+select invkpi_test.as_user(:'admin1') \g /dev/null
+select count(*) as s1b_perf_count from analytics.v_inventory_performance where plan_month = '2026-09-01' \gset
+reset role;
+select invkpi_test.check(:'s1b_perf_count' = '0', 'S1b ADMIN은 업무 권한을 자동으로 받지 않는다 — 0행');
+
+
+-- error.md #26 — 값이 null일 수 있는 열은 \gset으로 담지 않고(NULL이면 변수 자체가 설정되지 않아
+-- 뒤에서 ":'변수'"가 리터럴로 남아 구문 오류가 난다), 조건 전체를 서브쿼리 안에서 판정한다.
+\echo '== S2 품목이 한 번도 분류된 적 없으면 INVENTORY_SCOPE_UNCLASSIFIED(수량 · 금액 · 차이 모두) =='
+set role authenticated;
+select invkpi_test.as_user(:'planner1') \g /dev/null
+select invkpi_test.check(
+  (select actual_qty is null and qty_reason_code = 'INVENTORY_SCOPE_UNCLASSIFIED'
+     from analytics.v_inventory_performance
+    where plan_month = '2026-09-01' and item_id = :'item_unclassified'),
+  'S2 미분류 품목은 수량 null + INVENTORY_SCOPE_UNCLASSIFIED'
+);
+select invkpi_test.check(
+  (select value_reason_code = 'INVENTORY_SCOPE_UNCLASSIFIED'
+     from analytics.v_inventory_performance
+    where plan_month = '2026-09-01' and item_id = :'item_unclassified'),
+  'S2 금액 사유도 동일(수량 사유가 우선)'
+);
+select invkpi_test.check(
+  (select diff_reason_code = 'INVENTORY_SCOPE_UNCLASSIFIED'
+     from analytics.v_inventory_performance
+    where plan_month = '2026-09-01' and item_id = :'item_unclassified'),
+  'S2 차이 사유도 동일'
+);
+reset role;
+
+
+\echo '== S3 분류는 되지만(과거 스냅샷 있음) 이 달(2026-09) 스냅샷이 없으면 MONTH_END_SNAPSHOT_MISSING =='
+set role authenticated;
+select invkpi_test.as_user(:'planner1') \g /dev/null
+select invkpi_test.check(
+  (select actual_qty is null and qty_reason_code = 'MONTH_END_SNAPSHOT_MISSING'
+     from analytics.v_inventory_performance
+    where plan_month = '2026-09-01' and item_id = :'item_month_missing'),
+  'S3 이 달 스냅샷 없음 → 수량 null + MONTH_END_SNAPSHOT_MISSING(분류 불가와 다르다)'
+);
+select invkpi_test.check(
+  (select value_reason_code = 'MONTH_END_SNAPSHOT_MISSING'
+     from analytics.v_inventory_performance
+    where plan_month = '2026-09-01' and item_id = :'item_month_missing'),
+  'S3 금액 사유도 동일'
+);
+select invkpi_test.check(
+  (select diff_reason_code = 'MONTH_END_SNAPSHOT_MISSING'
+     from analytics.v_inventory_performance
+    where plan_month = '2026-09-01' and item_id = :'item_month_missing'),
+  'S3 차이 사유도 동일'
+);
+reset role;
+
+
+\echo '== S4 활성 취합 주기가 없으면 v_current_planning_cycle은 null + PLANNING_CYCLE_NOT_OPEN(1행) =='
+select count(*) as s4_row_count from analytics.v_current_planning_cycle \gset
+select invkpi_test.check(:'s4_row_count' = '1', 'S4 활성 주기가 없어도 정확히 1행이다');
+select invkpi_test.check(
+  (select plan_month is null and reason_code = 'PLANNING_CYCLE_NOT_OPEN' from analytics.v_current_planning_cycle),
+  'S4 기준월은 null이고 사유는 PLANNING_CYCLE_NOT_OPEN'
+);
+
+
+\echo '== S5 취합 주기를 열면 그 달이 운영 기준월이 된다 =='
+set role authenticated;
+select invkpi_test.as_user(:'planner1') \g /dev/null
+select core.open_planning_cycle('2026-09-01') as s5_cycle_id \gset
+reset role;
+select plan_month as s5_plan_month, status as s5_status from analytics.v_current_planning_cycle \gset
+select invkpi_test.check(:'s5_plan_month' = '2026-09-01', 'S5 기준월 = 2026-09-01');
+select invkpi_test.check(:'s5_status' = 'OPEN', 'S5 상태 = OPEN');
+select invkpi_test.check((select reason_code is null from analytics.v_current_planning_cycle), 'S5 사유 없음');
+
+
+\echo '== S6 여러 달이 동시에 활성이면 기준월 내림차순으로 더 최근 달을 고른다 =='
+set role authenticated;
+select invkpi_test.as_user(:'planner1') \g /dev/null
+select core.open_planning_cycle('2026-10-01') as s6_cycle_id \gset
+reset role;
+select plan_month as s6_plan_month from analytics.v_current_planning_cycle \gset
+select invkpi_test.check(:'s6_plan_month' = '2026-10-01', 'S6 2026-09 · 2026-10이 동시에 열려 있으면 더 최근인 2026-10을 고른다');
+
+
+\echo '== S7 승인 전에는 UNIT_PRICE_UNSET · TARGET_STOCK_UNSET, 승인 즉시 값이 나타난다 =='
+set role authenticated;
+select invkpi_test.as_user(:'planner1') \g /dev/null
+select invkpi_test.check(
+  (select unit_price is null and value_reason_code = 'UNIT_PRICE_UNSET'
+     from analytics.v_inventory_performance
+    where plan_month = '2026-09-01' and item_id = :'item_approve_flow'),
+  'S7 승인 전 단가는 null + UNIT_PRICE_UNSET'
+);
+select invkpi_test.check(
+  (select target_stock_qty is null and target_stock_reason_code = 'TARGET_STOCK_UNSET'
+     from analytics.v_inventory_performance
+    where plan_month = '2026-09-01' and item_id = :'item_approve_flow'),
+  'S7 승인 전 목표재고는 null + TARGET_STOCK_UNSET'
+);
+select invkpi_test.check(
+  (select diff_qty is null and diff_reason_code = 'TARGET_STOCK_UNSET'
+     from analytics.v_inventory_performance
+    where plan_month = '2026-09-01' and item_id = :'item_approve_flow'),
+  'S7 승인 전 차이는 null(수량은 있으므로 목표재고 사유가 그대로 나온다)'
+);
+reset role;
+
+set role authenticated;
+select invkpi_test.as_user(:'planner1') \g /dev/null
+select core.request_item_policy_change(:'item_approve_flow', null, 'AUTO', 100, 500, null, null, null, '월말 재고 KPI 검증용 단가 · 목표재고 승인')
+  as s7_revision_id \gset
+reset role;
+select approval_id as s7_approval_id from core.item_policy_revision where revision_id = :'s7_revision_id' \gset
+select invkpi_test.check(:'s7_approval_id' is not null, 'S7 변경 요청과 동시에 승인 요청이 연결된다');
+
+set role authenticated;
+select invkpi_test.as_user(:'lead1') \g /dev/null
+select core.decide_approval(:'s7_approval_id', 'APPROVED', 'Task 12 검증 승인');
+select unit_price as s7_after_price, actual_value as s7_after_value,
+       target_stock_qty as s7_after_target, diff_qty as s7_after_diff
+  from analytics.v_inventory_performance
+ where plan_month = '2026-09-01' and item_id = :'item_approve_flow' \gset
+select invkpi_test.check(
+  (select value_reason_code is null and diff_reason_code is null
+     from analytics.v_inventory_performance
+    where plan_month = '2026-09-01' and item_id = :'item_approve_flow'),
+  'S7 승인 뒤에는 금액 · 차이 사유가 사라진다'
+);
+reset role;
+select invkpi_test.check(:'s7_after_price' = '500', 'S7 승인 즉시 승인 단가 = 500');
+select invkpi_test.check(:'s7_after_value' = '60000', 'S7 월말 재고금액 = 120 EA × 500원 = 60000원');
+select invkpi_test.check(:'s7_after_target' = '100', 'S7 승인 목표재고 = 100');
+select invkpi_test.check(:'s7_after_diff' = '20', 'S7 차이 = 실제(120) − 목표(100) = 20');
+
+
+\echo '== S8 core.apply_month_end_inventory_snapshot_from_batch — 그 달 안 최신 스냅샷만 남긴다 =='
+insert into core.upload_batch (batch_id, file_name, import_type, import_mode, status, uploaded_by)
+values (gen_random_uuid(), 't12-batch-a.csv', 'inventory', 'upsert', 'IMPORTED', :'admin1') returning batch_id as s8_batch_a \gset
+insert into core.upload_batch (batch_id, file_name, import_type, import_mode, status, uploaded_by)
+values (gen_random_uuid(), 't12-batch-b.csv', 'inventory', 'upsert', 'IMPORTED', :'admin1') returning batch_id as s8_batch_b \gset
+insert into core.upload_batch (batch_id, file_name, import_type, import_mode, status, uploaded_by)
+values (gen_random_uuid(), 't12-batch-c.csv', 'inventory', 'upsert', 'IMPORTED', :'admin1') returning batch_id as s8_batch_c \gset
+
+-- 배치 A — 09-05 스냅샷 200개.
+insert into raw.inventory ("품목코드", "창고", "현재고", batch_id, warehouse_code, inventory_status, snapshot_at, source_record_id)
+values (:'item_batch', 'WH1', '200', :'s8_batch_a', 'WH1', 'NORMAL', '2026-09-05T00:00:00Z', 't12-a-1');
+select core.apply_stock_balance_from_batch(:'s8_batch_a');
+select core.apply_month_end_inventory_snapshot_from_batch(:'s8_batch_a') as s8_a_count \gset
+select invkpi_test.check(:'s8_a_count' = '1', 'S8 배치 A는 품목 1개를 반영한다');
+select normal_qty as s8_a_qty, snapshot_at as s8_a_at from core.month_end_inventory_snapshot
+ where plan_month = '2026-09-01' and item_id = :'item_batch' \gset
+select invkpi_test.check(:'s8_a_qty' = '200', 'S8 배치 A 직후 09월 스냅샷 = 200');
+
+-- 배치 B — 09-20 스냅샷 250개(더 최근) → 갱신되어야 한다.
+insert into raw.inventory ("품목코드", "창고", "현재고", batch_id, warehouse_code, inventory_status, snapshot_at, source_record_id)
+values (:'item_batch', 'WH1', '250', :'s8_batch_b', 'WH1', 'NORMAL', '2026-09-20T00:00:00Z', 't12-b-1');
+select core.apply_month_end_inventory_snapshot_from_batch(:'s8_batch_b') as s8_b_count \gset
+select invkpi_test.check(:'s8_b_count' = '1', 'S8 배치 B는 더 최근 스냅샷이라 갱신된다');
+select normal_qty as s8_b_qty from core.month_end_inventory_snapshot
+ where plan_month = '2026-09-01' and item_id = :'item_batch' \gset
+select invkpi_test.check(:'s8_b_qty' = '250', 'S8 배치 B 직후 09월 스냅샷 = 250');
+
+-- 배치 C — 09-10 스냅샷(배치 B보다 이르다) 999개 → 무시되어야 한다(늦게 들어온 옛 스냅샷).
+insert into raw.inventory ("품목코드", "창고", "현재고", batch_id, warehouse_code, inventory_status, snapshot_at, source_record_id)
+values (:'item_batch', 'WH1', '999', :'s8_batch_c', 'WH1', 'NORMAL', '2026-09-10T00:00:00Z', 't12-c-1');
+select core.apply_month_end_inventory_snapshot_from_batch(:'s8_batch_c') as s8_c_count \gset
+select invkpi_test.check(:'s8_c_count' = '0', 'S8 배치 C는 더 이른 스냅샷이라 반영되지 않는다(영향 0건)');
+select normal_qty as s8_c_qty from core.month_end_inventory_snapshot
+ where plan_month = '2026-09-01' and item_id = :'item_batch' \gset
+select invkpi_test.check(:'s8_c_qty' = '250', 'S8 배치 C 이후에도 09월 스냅샷은 여전히 250(다운그레이드되지 않는다)');
+
+
+\echo '== S8b 다른 달 스냅샷은 별도 행이고, NORMAL이 아닌 달은 행 자체가 생기지 않는다 =='
+insert into core.upload_batch (batch_id, file_name, import_type, import_mode, status, uploaded_by)
+values (gen_random_uuid(), 't12-batch-d.csv', 'inventory', 'upsert', 'IMPORTED', :'admin1') returning batch_id as s8_batch_d \gset
+insert into core.upload_batch (batch_id, file_name, import_type, import_mode, status, uploaded_by)
+values (gen_random_uuid(), 't12-batch-e.csv', 'inventory', 'upsert', 'IMPORTED', :'admin1') returning batch_id as s8_batch_e \gset
+
+-- 배치 D — 10월 스냅샷 300개(9월과 별개 행).
+insert into raw.inventory ("품목코드", "창고", "현재고", batch_id, warehouse_code, inventory_status, snapshot_at, source_record_id)
+values (:'item_batch', 'WH1', '300', :'s8_batch_d', 'WH1', 'NORMAL', '2026-10-05T00:00:00Z', 't12-d-1');
+select core.apply_month_end_inventory_snapshot_from_batch(:'s8_batch_d');
+select normal_qty as s8_d_sep_qty from core.month_end_inventory_snapshot
+ where plan_month = '2026-09-01' and item_id = :'item_batch' \gset
+select normal_qty as s8_d_oct_qty from core.month_end_inventory_snapshot
+ where plan_month = '2026-10-01' and item_id = :'item_batch' \gset
+select invkpi_test.check(:'s8_d_sep_qty' = '250', 'S8b 10월 반영이 9월 스냅샷을 건드리지 않는다');
+select invkpi_test.check(:'s8_d_oct_qty' = '300', 'S8b 10월은 별도 행으로 300');
+
+-- 배치 E — 11월: 불량(비-NORMAL) 1건 + 창고 미상(분류 시도조차 안 함) 1건 → 11월 행이 생기지 않아야 한다.
+insert into raw.inventory ("품목코드", "창고", "현재고", batch_id, warehouse_code, inventory_status, snapshot_at, source_record_id)
+values
+  (:'item_batch', 'WH1', '999', :'s8_batch_e', 'WH1', 'DEFECT', '2026-11-05T00:00:00Z', 't12-e-1'),
+  (:'item_batch', null,  '999', :'s8_batch_e', null,   'NORMAL', '2026-11-06T00:00:00Z', 't12-e-2');
+select core.apply_month_end_inventory_snapshot_from_batch(:'s8_batch_e') as s8_e_count \gset
+select invkpi_test.check(:'s8_e_count' = '0', 'S8b 불량 · 창고미상만 있는 배치는 반영 건수 0');
+select count(*) as s8_e_nov_rows from core.month_end_inventory_snapshot
+ where plan_month = '2026-11-01' and item_id = :'item_batch' \gset
+select invkpi_test.check(:'s8_e_nov_rows' = '0', 'S8b 11월은 NORMAL 스냅샷이 없으므로 행 자체가 없다(MONTH_END_SNAPSHOT_MISSING으로 보인다)');
+
+
+\echo '== S8c core.refresh_stock_balance가 정상 창고재고와 월말 스냅샷을 함께 갱신한다 =='
+insert into core.upload_batch (batch_id, file_name, import_type, import_mode, status, uploaded_by)
+values (gen_random_uuid(), 't12-batch-g.csv', 'inventory', 'upsert', 'VALIDATED', :'admin1') returning batch_id as s8_batch_g \gset
+insert into raw.inventory ("품목코드", "창고", "현재고", batch_id, warehouse_code, inventory_status, snapshot_at, source_record_id)
+values (:'item_batch', 'WH1', '270', :'s8_batch_g', 'WH1', 'NORMAL', '2026-09-26T00:00:00Z', 't12-g-1');
+
+set role authenticated;
+select invkpi_test.as_user(:'marketing1') \g /dev/null
+select invkpi_test.expect_error(
+  format($f$select core.refresh_stock_balance(%L)$f$, :'s8_batch_g'),
+  '정상 창고재고 반영 권한이 없습니다', 'S8c STOCK_VIEW_ALL이 없는 사용자는 refresh_stock_balance를 쓸 수 없다'
+);
+reset role;
+
+set role authenticated;
+select invkpi_test.as_user(:'planner1') \g /dev/null
+select core.refresh_stock_balance(:'s8_batch_g');
+reset role;
+select normal_qty as s8_g_balance from core.stock_balance where item_id = :'item_batch' \gset
+select normal_qty as s8_g_snapshot from core.month_end_inventory_snapshot
+ where plan_month = '2026-09-01' and item_id = :'item_batch' \gset
+select invkpi_test.check(:'s8_g_balance' = '270', 'S8c refresh_stock_balance가 core.stock_balance도 270으로 갱신한다');
+select invkpi_test.check(:'s8_g_snapshot' = '270', 'S8c refresh_stock_balance가 월말 스냅샷도 함께 270으로 갱신한다');
+
+
+\echo '== S9 요약 뷰 — 값이 있는 품목만 합치고, 없는 품목은 0이 아니라 제외 건수로 보고한다 =='
+set role authenticated;
+select invkpi_test.as_user(:'planner1') \g /dev/null
+select
+  n_items, n_qty_available, n_month_end_snapshot_missing, n_inventory_scope_unclassified, total_actual_qty,
+  n_value_available, n_unit_price_unset, total_actual_value,
+  n_target_available, n_target_stock_unset, total_target_stock_qty, total_diff_qty, n_diff_available
+  from analytics.v_inventory_performance_kpi
+ where plan_month = '2026-09-01' \gset s9_
+reset role;
+-- ★ fixture에는 품목 5개가 있다(ITEMT1205는 아래 S10 timezone 검증 전용). S9 시점에는 아직
+--   ITEMT1205에 어떤 재고 사실도 반영되지 않았으므로 1201과 마찬가지로 미분류로 잡힌다.
+select invkpi_test.check(:'s9_n_items' = '5', 'S9 이 달의 전체 품목 수 = 5(fixture 5개, S10 전용 1205 포함)');
+select invkpi_test.check(:'s9_n_qty_available' = '2', 'S9 수량이 있는 품목 = 2(1202 · 1204)');
+select invkpi_test.check(:'s9_n_month_end_snapshot_missing' = '1', 'S9 이 달 스냅샷 없음 = 1(1203)');
+select invkpi_test.check(:'s9_n_inventory_scope_unclassified' = '2', 'S9 미분류 = 2(1201 · 아직 반영 전인 1205)');
+select invkpi_test.check(:'s9_total_actual_qty' = '390', 'S9 총 수량 = 120(1202) + 270(1204, S8c refresh_stock_balance 이후 최종값)');
+select invkpi_test.check(:'s9_n_value_available' = '1', 'S9 금액이 있는 품목 = 1(1202, 승인된 단가)');
+select invkpi_test.check(:'s9_n_unit_price_unset' = '1', 'S9 단가 미승인으로 제외 = 1(1204 — 수량은 있지만 단가가 없다)');
+select invkpi_test.check(:'s9_total_actual_value' = '60000', 'S9 총 금액 = 120 × 500 = 60000(단가 없는 1204는 0으로 세지 않고 제외)');
+select invkpi_test.check(:'s9_n_target_available' = '1', 'S9 목표재고가 있는 품목 = 1(1202)');
+-- ★ target_stock_reason_code는 diff_reason_code와 달리 이 달의 수량 유무와 무관하게 "승인된
+--   목표재고 자체가 있는가"만 본다(analytics.v_item_policy.target_stock_reason_code와 같은 값 —
+--   품목 단위 사실이라 월과 무관하다). 1201 · 1203 · 1204 · 1205 모두 승인된 목표재고가 없다.
+select invkpi_test.check(:'s9_n_target_stock_unset' = '4', 'S9 목표재고 미승인 품목 = 4(1201 · 1203 · 1204 · 1205 — 월과 무관한 품목 단위 사실)');
+select invkpi_test.check(:'s9_total_target_stock_qty' = '100', 'S9 총 목표재고 = 100');
+select invkpi_test.check(:'s9_total_diff_qty' = '20', 'S9 총 차이 = 20(값 있는 품목만)');
+select invkpi_test.check(:'s9_n_diff_available' = '1', 'S9 차이가 있는 품목 = 1');
+
+
+\echo '== S10 월 경계 스냅샷은 세션 timezone과 무관하게 Asia/Seoul 벽시계 기준으로 달이 정해진다 =='
+-- 2026-09-30T15:30:00Z = 2026-10-01T00:30:00+09:00(서울 자정 30분 뒤) — date_trunc를 세션
+-- timezone 그대로 쓰면 UTC 세션에서는 9월로, 다른 timezone 세션에서는 또 다르게 잘못 묶일 수 있다
+-- (Task 7 submission_deadline과 같은 클래스의 버그). 이 스위트를 UTC와 America/Los_Angeles
+-- 양쪽에서 돌려도 항상 10월로 잡혀야 한다.
+insert into core.upload_batch (batch_id, file_name, import_type, import_mode, status, uploaded_by)
+values (gen_random_uuid(), 't12-batch-tz.csv', 'inventory', 'upsert', 'IMPORTED', :'admin1') returning batch_id as s10_batch \gset
+insert into raw.inventory ("품목코드", "창고", "현재고", batch_id, warehouse_code, inventory_status, snapshot_at, source_record_id)
+values ('ITEMT1205', 'WH1', '77', :'s10_batch', 'WH1', 'NORMAL', '2026-09-30T15:30:00Z', 't12-tz-1');
+select core.apply_month_end_inventory_snapshot_from_batch(:'s10_batch');
+select invkpi_test.check(
+  (select count(*) = 0 from core.month_end_inventory_snapshot where plan_month = '2026-09-01' and item_id = 'ITEMT1205'),
+  'S10 서울 자정을 넘긴 스냅샷은 9월 행을 만들지 않는다(현재 세션 timezone: ' || current_setting('timezone') || ')'
+);
+select invkpi_test.check(
+  (select normal_qty = 77 from core.month_end_inventory_snapshot where plan_month = '2026-10-01' and item_id = 'ITEMT1205'),
+  'S10 서울 벽시계로는 10월 1일이므로 10월 행에 77이 잡힌다(현재 세션 timezone: ' || current_setting('timezone') || ')'
+);
