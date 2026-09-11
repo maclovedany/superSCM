@@ -166,3 +166,62 @@ $ git diff --check
 2. 파일 끝 확인 쿼리 (a)~(g)로 뷰 보안 옵션, 초과 배정 0행, 줄 합계 일치, 만료일 변경 거절을 확인한다.
 3. Exposed schemas는 이미 `core`, `analytics`면 추가 설정이 없다.
 4. 실데이터에 분류된 재고가 아직 없으므로 적용 직후 `/orders/new`의 주문 가능 수량은 모두 `INVENTORY_SCOPE_UNCLASSIFIED`이고, 검토 요청은 그 사유로 거절된다 — 0으로 배정하지 않는 의도된 동작이다.
+
+---
+
+## pre-review fix — 확정 전 주문 취소 (커밋 `c8ee7dd`)
+
+컨트롤러 판정: 우려 2(확정 전 주문 취소 부재)는 확정된 gap(stage1 §2 96행). 우려 3은 Task 6, 5는 Task 8로 넘김, 4는 그대로 수용, 1은 리뷰 판단.
+
+### 변경
+
+- **`core.cancel_sales_order(p_order_id uuid, p_reason text) returns uuid`** (공개, authenticated 실행)
+  - `auth.uid()` 활성 사용자 + `ORDER_CREATE` + 주문 등록자 본인(수주 확정과 같은 소유 규칙), 사유 필수(`CANCEL_REASON_REQUIRED`).
+  - 잠금: `core.lock_stock_balance_items`로 주문 전 품목의 재고 행을 품목코드 순으로 잠근 뒤 주문 행 `FOR UPDATE`.
+  - 거절: `CONFIRMED` → `ORDER_ALREADY_CONFIRMED`, `CANCELLED/EXPIRED` → `ORDER_ALREADY_CLOSED`, FIRM 배정이 하나라도 있으면 해제 전에 `FIRM_ALLOCATION_EXISTS`(확정배정 취소 경로 안내).
+  - 처리: 임시배정 · 승인대기 확보 전부 RELEASED(원인 `ORDER_CANCELLED`) → 확보에 연결된 PENDING `ALLOC_PRIORITY` 요청을 기존 `core.cancel_alloc_priority_approval`로 CANCELLED(승인 이력 · 감사로그, Task 3 트리거가 반복 알림 취소) → 주문 CANCELLED(취소 시각 · 취소자 · 사유) → 줄 합계 갱신(대기열에서 빠짐) → 만료 예고 series 취소 → 주문 이력 `CANCELLED`(`kind=ORDER_CANCELLED`, 해제 목록 · 해제 수량 · 취소한 승인 요청 수).
+  - 작성 중(DRAFT) 주문도 취소할 수 있게 상태 전환표에 `DRAFT → CANCELLED`를 추가했다. 취소 주문은 기존대로 `copy_cancelled_order`로 재등록한다.
+- **`core.release_order_allocations(p_order_id, p_actor, p_reason, p_cause) returns jsonb`** (내부 전용) — 활성 배정 해제 + 확보 승인 요청 취소 루프를 한 곳으로 모았다. `core.cancel_firm_allocation`도 이 함수를 쓰도록 바꿨고(동작 동일, 이력 payload에 `kind=FIRM_CANCELLED` 추가), S4 · S6 재검증으로 회귀 없음을 확인했다.
+- 앱: `validateCancelOrder`, `orderActionsFor(...).canCancel`(DRAFT · 검토 단계이고 확정배정 0일 때), 이력 문장 `영업담당자 주문 취소 · 해제 수량 N`, `cancelSalesOrder` 저장소, `cancelSalesOrderAction`(첫 줄 `requirePermission('ORDER_CREATE')` → 형식 검증 → DB 결과만), 주문 상세에 등록자용 `CancelOrderForm` 카드.
+
+### 덮는 테스트
+
+- 모델 · SQL 계약(`lib/orders/model.test.ts`): 취소 입력 검증, `canCancel`(확정배정 20이면 false, CONFIRMED · CANCELLED · null false), 이력 문장, 공개 명령 권한 목록 · 재고 행 → 주문 행 잠금 순서 목록에 `cancel_sales_order` 추가, 본인 · 사유 · 확정/종료/FIRM 거절이 해제보다 먼저, 해제 함수가 승인 요청을 취소, `cancel_firm_allocation`이 같은 해제 함수 사용, DRAFT → CANCELLED 전환.
+- 임시 DB 시나리오 S8(신규 품목 ITEMT07 · 08 · 09, 각 재고 100):
+  - 임시 60 / 재고 100 → 남의 주문(42501 본인) · ORDER_CREATE 없는 품목담당자(42501) · 빈 사유(CANCEL_REASON_REQUIRED) 거절 → 취소 → 주문 가능 40 → **100**, 주문 CANCELLED · 사유 · 취소자, 배정 RELEASED + 해제 이력(ORDER_CANCELLED), 주문 이력(해제 수량 60 · 이전 상태 REVIEW_REQUESTED), 대기열 0행, 만료 예고 PENDING 0 → 재취소 `ORDER_ALREADY_CLOSED` → 재등록 가능, 재등록한 DRAFT 주문도 취소됨.
+  - 승인대기 확보: 다품목 주문(ITEMT08 50 + ITEMT07 10)에 순서 건너뜀 확보 30 + 팀장 대기 알림 존재 → 등록자가 취소 → ITEMT08 주문 가능 **30**(130-100), ITEMT07 **100**, 요청 `PENDING → CANCELLED` + 승인 취소 이력 1건, APPROVAL_PENDING PENDING/PROCESSING 행 **0**, 이후 팀장 승인 `이미 처리되었거나 취소된`, 다른 주문 영향 없음.
+  - 확정배정 있음: 확정 전 주문에 정상 순서 수동 FIRM 20 → 취소 `FIRM_ALLOCATION_EXISTS`, 수주 확정 주문 → `ORDER_ALREADY_CONFIRMED`, 거절 뒤 주문 상태 · 배정 2건 그대로.
+- 불변식 파일의 "검토 요청된 주문" 조건을 `status <> 'DRAFT'`에서 `first_review_requested_at is not null`로 고쳤다. 이제 DRAFT에서 바로 CANCELLED가 되는 주문이 있어 오래된 조건이 실패했다(코드 결함 아님, 수정 뒤 새 DB에서 전체 재실행).
+
+### 명령과 결과
+
+```
+$ node --test lib/orders/model.test.ts        # 테스트 먼저 추가
+SyntaxError: The requested module './model.ts' does not provide an export named 'validateCancelOrder'
+ℹ pass 0 · fail 1                               # RED — 구현 전 기대한 실패
+
+$ node --test lib/orders/model.test.ts        # 구현 후
+ℹ tests 28 · pass 28 · fail 0
+
+# 새 임시 DB scm_task5_fix_20260912010637 (부트스트랩 → 0600 재적용 exit 0 · ERROR 0 → fixture)
+scenarios exit=0 pass=141 s8=25
+concurrency exit=0
+재고 행 잠금을 기다리는 검토 요청 수: 2 (기대 2)   · C1 60+60 → 합계 100, 60/0 · 40/20
+재고 행 잠금을 기다리는 검토 요청 수: 10 (기대 10)  · C2 합계 정확히 100, 실패 0
+다른 품목 ITEMC02 요청: exit=0, 소요 0초          · C3 같은 품목은 statement timeout, DRAFT 유지
+C4 게이트 없는 10건: 30,30,30,10,0×6 · 합계 100
+불변식 8/8 PASS
+dropped scm_task5_fix_20260912010637 (scm_task5% 0개)
+
+$ npm test
+ℹ tests 160 · pass 160 · fail 0
+$ npm run build
+✓ Compiled successfully … ƒ /orders/[orderId] 180 B · ƒ /orders 165 B · ƒ /orders/new 163 B
+$ git diff --check
+(출력 없음)
+```
+
+### 남은 우려
+
+- 확보가 걸린 주문을 영업담당자가 취소하면 승인 요청의 `decided_by`가 영업담당자로 기록된다(요청 취소 처리자 = 주문 취소자). 승인 결정이 아니라 CANCELLED이므로 자기 승인 규칙과는 무관하다.
+- 마이그레이션은 이 수정으로 2,393줄이 됐다(우려 1, 리뷰 판단).
