@@ -16,7 +16,7 @@ export const USER_MENU: MenuItem[] = [
   { href: '/dashboard', label: '전체 현황', description: '월간 발주계획 요약', icon: Gauge },
   { href: '/procurement-plans', label: '발주계획', description: '최종 발주계획 확정과 승인', icon: Workflow, anyOf: WORK_ROUTE_PERMISSIONS['/procurement-plans'] },
   { href: '/allocations', label: '배정', description: '품목별 재고 배정 처리', icon: Boxes, anyOf: WORK_ROUTE_PERMISSIONS['/allocations'] },
-  { href: '/approvals', label: '승인함', description: '정책·배정·수요·발주계획 승인', icon: Workflow, anyOf: WORK_ROUTE_PERMISSIONS['/approvals'] },
+  { href: '/approvals', label: '승인함', description: '정책·배정·수요·발주계획 승인과 반려', icon: Workflow, anyOf: WORK_ROUTE_PERMISSIONS['/approvals'] },
   { href: '/orders', label: '주문', description: '영업 주문 등록과 검토 요청', icon: Workflow, anyOf: WORK_ROUTE_PERMISSIONS['/orders'] },
   { href: '/allocations/priorities', label: '배정 우선순위', description: '주문 대기 순서와 우선순위 관리', icon: Workflow, anyOf: WORK_ROUTE_PERMISSIONS['/allocations/priorities'] },
   { href: '/inventory', label: '재고', description: '업무 범위별 가용재고 조회', icon: Boxes, anyOf: WORK_ROUTE_PERMISSIONS['/inventory'] },

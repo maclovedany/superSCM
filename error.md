@@ -19,6 +19,11 @@
 | `supabase db lint --local` connection refused | 로컬 Supabase DB가 실행되지 않음 | [#9](#9-supabase-db-lint---local-connection-refused) |
 | `ERROR: 42P01: relation "core.policy_config" does not exist` | STEP 5를 STEP 3보다 먼저 또는 단독 실행 | [#10](#10-error-42p01-relation-corepolicy_config-does-not-exist) |
 | `ERR_MODULE_NOT_FOUND: Cannot find module '.../lib/permission'` | Node ESM 테스트가 확장자 없는 런타임 import를 해석하지 못함 | [#13](#13-err_module_not_found-libpermission) |
+| `ERROR: role "anon" already exists` | 임시 PostgreSQL DB 검증에서 클러스터 공용 역할을 다시 생성함 | [#14](#14-error-role-anon-already-exists) |
+| `ERROR: function auth.uid() does not exist` | 일반 PostgreSQL 검증 DB에 Supabase Auth 함수가 없음 | [#15](#15-error-function-authuid-does-not-exist) |
+| `cannot change name of view column` | 기존 뷰 열 사이에 새 열을 삽입해 재적용 실패 | [#16](#16-cannot-change-name-of-view-column) |
+| `zsh: no matches found: app/(user)/...` | 괄호가 있는 경로를 따옴표 없이 전달 | [#17](#17-zsh-no-matches-found-appuser) |
+| `The following paths are ignored` | `.superpowers/sdd/.gitignore`가 보고서도 제외 | [#18](#18-the-following-paths-are-ignored) |
 
 > **Supabase 3층 구조를 먼저 기억하면 #3·#4·#5 를 헷갈리지 않습니다.**
 >
@@ -381,3 +386,100 @@ drop table core.agent_message_legacy_<시각>, core.agent_conversation_legacy_<�
 
 **예방.** 타입 전용 import에 런타임 값을 추가할 때는 해당 모듈이 `node --test`에서도 직접
 로드되는지 확인하고, 그렇다면 `.ts` 확장자를 함께 명시합니다.
+
+---
+
+## #14 `ERROR: role "anon" already exists`
+
+**증상.** 별도 로컬 PostgreSQL 데이터베이스에서 마이그레이션을 검증하려고 `anon`과
+`authenticated` 역할을 준비하는 명령을 실행하자 `anon` 생성에서 중단됐습니다.
+
+**원인.** PostgreSQL 역할은 데이터베이스별 객체가 아니라 클러스터 공용 객체입니다. 새 검증
+데이터베이스를 만들었더라도 같은 클러스터에 Supabase용 `anon` 역할이 이미 있으면 다시 만들 수 없습니다.
+
+**해결.** `pg_roles`에서 역할 존재 여부를 먼저 확인하고 기존 `anon`·`authenticated` 역할을
+재사용했습니다. 임시 데이터베이스에는 `auth.users`처럼 마이그레이션이 참조하는 객체만 만듭니다.
+
+**예방.** 임시 DB 검증 준비에서 클러스터 공용 역할은 무조건 생성하지 말고 다음 조회로 확인합니다.
+
+```sql
+select rolname from pg_roles where rolname in ('anon', 'authenticated');
+```
+
+---
+
+## #15 `ERROR: function auth.uid() does not exist`
+
+**증상.** 일반 로컬 PostgreSQL 임시 DB에 RBAC 마이그레이션을 적용하자 `auth.uid()` 기본값을
+정의하는 위치에서 중단됐습니다.
+
+**원인.** `auth.uid()`는 Supabase가 제공하는 함수라서 빈 PostgreSQL 데이터베이스에는 없습니다.
+애플리케이션 마이그레이션은 Supabase 환경을 전제로 하므로 정상이며, 임시 검증 환경만 불완전했습니다.
+
+**해결.** 임시 DB의 `auth` 스키마에 세션 설정 `request.jwt.claim.sub`를 UUID로 읽는 최소
+`auth.uid()` 함수를 만든 뒤 마이그레이션을 다시 검증했습니다. 실제 마이그레이션 파일에는 스텁을 넣지 않습니다.
+
+```sql
+create function auth.uid() returns uuid language sql stable as $$
+  select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
+$$;
+```
+
+---
+
+## #16 `cannot change name of view column`
+
+**증상.** 이미 생성된 뷰에 이름 열을 추가한 마이그레이션을 다시 실행하자 다음 오류가 났습니다.
+
+```text
+ERROR: cannot change name of view column "requested_at" to "requester_name"
+HINT: Use ALTER VIEW ... RENAME COLUMN ... to change name of view column instead.
+```
+
+**원인.** PostgreSQL의 `create or replace view`는 기존 열의 이름과 순서를 유지해야 합니다. 기존
+`requested_by, requested_at` 사이에 `requester_name`을 넣자 두 번째 열을 새로 삽입한 것이 아니라
+기존 `requested_at`의 이름을 바꾸려는 것으로 해석했습니다.
+
+**해결.** 기존 13개 열의 이름과 순서를 그대로 두고 `requester_name`, `decider_name`을 SELECT
+목록 끝에 추가했습니다. 새 열을 뒤에 붙이는 변경은 기존 뷰를 삭제하지 않고 재적용할 수 있습니다.
+
+**예방.** 배포된 뷰를 `create or replace`로 확장할 때는 기존 열 사이에 끼워 넣지 말고 항상 끝에
+추가합니다. 열 순서 자체를 바꿔야 한다면 의존 객체를 확인한 뒤 별도 마이그레이션으로 처리합니다.
+
+---
+
+## #17 `zsh: no matches found: app/(user)/...`
+
+**증상.** App Router 경로를 지정해 diff를 확인하려 하자 zsh가 명령 실행 전에 다음 오류를 냈습니다.
+
+```text
+zsh: no matches found: app/(user)/approvals/page.tsx
+```
+
+**원인.** zsh는 따옴표 없는 괄호를 glob 패턴으로 해석합니다. Next.js의 route group 경로에 있는
+`(user)`가 파일 경로가 아니라 패턴으로 처리되어 일치 항목을 찾지 못했습니다.
+
+**해결.** `git diff -- 'app/(user)/approvals/page.tsx'`처럼 경로 전체를 작은따옴표로 감쌌습니다.
+
+**예방.** 괄호·대괄호가 포함된 App Router 경로는 모든 셸 명령에서 항상 따옴표로 감쌉니다.
+
+---
+
+## #18 `The following paths are ignored`
+
+**증상.** Task 보고서를 다른 구현 파일과 함께 staging하려 하자 다음 안내가 출력되고 보고서만
+staging되지 않았습니다.
+
+```text
+The following paths are ignored by one of your .gitignore files:
+.superpowers/sdd/refactor_260911
+```
+
+**원인.** 저장소 루트 `.gitignore`가 아니라 `.superpowers/sdd/.gitignore`의 `*` 규칙이 SDD
+산출물 전체를 제외합니다. 사용자가 명시적으로 요구한 보고서도 기본 `git add` 대상에서 빠집니다.
+
+**해결.** 다른 무시 파일은 건드리지 않고 요청된 `task-2-report.md` 한 파일만 `git add -f -- <경로>`로
+명시해 추적합니다.
+
+**예방.** `.superpowers/sdd/` 아래 산출물을 커밋해야 하는 작업은 먼저 `git check-ignore -v <경로>`로
+적용 규칙을 확인하고, 사용자 지정 파일만 좁게 강제 추가합니다.
