@@ -9,7 +9,8 @@
 --   core.procurement_plan_line                  품목 × 1~6개월차 계산 단계별 수량 · 입력 스냅샷 · 사유
 --   core.procurement_plan_event                 생성 · 대체 · 확정 차단 · 확정 · 승인 · 반려 · 승인 취소 이력(append-only)
 --   core.calculate_procurement_plan_month(...)  한 달 계산 순수 함수(lib/procurement/model.ts가 같은 규칙을 거울로 둔다)
---   core.procurement_forecast_source_status()   원천 게이트 — 검증된 적재 배치에서 온 학습 데이터인가
+--   core.procurement_forecast_source_status()   원천 게이트 — 검증된 적재 배치에서 온, 실행이 실제로 쓴 입력인가
+--   core.usage_input_fingerprint(split) + 트리거 Forecast Run · Backtest가 SUCCESS가 될 때 입력 지문 기록(fix round 1)
 --   core.build_procurement_plan(p_plan_month, p_forecast_run_id)
 --   core.confirm_procurement_plan(p_plan_id)
 --   core.approve_procurement_plan(p_plan_id, p_approval_id)  core.decide_approval을 부르는 얇은 포장 — 실제 반영은 훅
@@ -27,22 +28,31 @@
 --        IMPORTED usage_history 적재 배치(core.upload_batch) · FILE_UPLOAD 출처가 아니면
 --                                                                    FORECAST_SOURCE_UNVERIFIED
 --        (pre-review fix — 더미 Actual로 채점해 고른 Champion은 더미 기반 모델 선택이다)
---     ④ analytics.v_forecast_run.is_stale, 스냅샷 이후 적재된 학습 행, 스냅샷 이후 롤백된 사용 이력 배치가 있으면
---                                                                    FORECAST_RUN_STALE
+--     ④ 입력 지문(fix round 1) — Forecast Run · Backtest가 SUCCESS가 될 때 트리거가 그때의 학습 · 검증 기간 입력 행
+--        지문(행 수 · 수량 합 · 최대 loaded_at · 정렬한 (품목, 일자, 수량, 배치)의 md5)을 기록한다. 계획 생성 시 같은
+--        기간을 다시 지문 떠서 비교한다. 실행 · Champion을 채점한 Backtest에 지문이 없으면(이 마이그레이션 전 실행)
+--                                                                    FORECAST_INPUT_UNTRACED
+--        지문이 다르면(실행 뒤 더미 삭제 · 행 추가 · 수량 수정)            FORECAST_INPUT_CHANGED
+--        "지금 남은 행이 모두 검증됐다"만으로는 실행이 실제로 쓴 행을 증명하지 못하기 때문이다. STEP 6 is_stale은 보지
+--        않는다 — 수주 · 이벤트 같은 무관한 적재로도 켜진다. 사용 이력 변경은 지문이 잡는다.
 --   통과하지 못하면 그 계획의 모든 라인이 CALCULATION_UNAVAILABLE + 위 사유이고 Forecast 유래 수량은 null이다.
 --   5회차 더미 행은 batch_id가 null이므로 ③에서 걸린다 — 현재 배포 DB에서는 모든 라인이 계산 불가인 것이 정상이다.
 --
 -- ★ 계산 규칙(컨트롤러 판정 2~5)
 --   horizon 6개월, 1개월차 = 기준월(출항 준비기간 + 선적 약 1주 < 1개월, stage1 §8).
---   평균사용량 = 그 실행의 학습 시계열(core.v_train_demand)의 마지막 6개월 합 ÷ 6. 기록 없는 달은 0, 원본 null이 하나라도
---     있거나 학습 기간이 6개월보다 짧으면 null(AVG_USAGE_UNAVAILABLE). core.v_test_actual은 읽지 않는다.
+--   6개월 합 = 그 실행의 학습 시계열(core.v_train_demand)의 마지막 6개월 합, 평균사용량 = 합 ÷ 6(표시 · 스냅샷용).
+--     기록 없는 달은 0, 원본 null이 하나라도 있거나 학습 기간이 6개월보다 짧으면 null(AVG_USAGE_UNAVAILABLE).
+--     core.v_test_actual은 계산에 읽지 않는다(원천 게이트의 출처 · 지문 확인에만 쓴다).
 --   조정 후보 = 기준월 취합 주기의 AGREED 부서 제출 합계(오류 없는 줄, 해당 필요월) → 없으면 기준(Champion) Forecast.
 --   1개월차 기준 × [0.8, 1.2], 2~3개월차 × [0.7, 1.3]로 클램프, 4~6개월차 미적용. 승인 추가 수요
 --     (analytics.v_approved_demand_monthly — 확정 수주 · 승인 수급회의 · 승인 이벤트)는 클램프 뒤에 더한다.
 --   1개월차 시작재고 = 생성 시점 analytics.v_available_stock.available_qty, k개월차 = k−1개월차 예상 월말재고.
---   stockout_prevention = max(0, 수요 − 시작), dos_required = max(0, 수요 + 목표DoS × 평균사용량 ÷ 30 − 시작),
+--   stockout_prevention = max(0, 수요 − 시작), dos_required = max(0, 수요 + 목표DoS × 6개월 합 ÷ 180 − 시작),
 --   selected = 둘 중 큰 값(같으면 INVENTORY_VALUE_MIN), final = ceil(selected ÷ coalesce(MOQ,1)) × coalesce(MOQ,1),
---   예상 월말 = 시작 + final − 수요, 예상 DoS = 예상 월말 ÷ 평균사용량 × 30(소수 1자리, 평균 0이면 null + AVG_USAGE_ZERO),
+--   예상 월말 = 시작 + final − 수요, 예상 DoS = 예상 월말 × 180 ÷ 6개월 합(반올림 없이 저장, 합 0이면 null + AVG_USAGE_ZERO),
+--   ★ 정밀도(fix round 1) — 목표DoS ÷ 30 × (합 ÷ 6)을 합 ÷ 6부터 나누면 numeric 반복소수 반올림으로 정수여야 할 필요량이
+--     100.0000000000000001이 되어 올림이 한 단위를 더 붙였다. 나눗셈을 180 한 번으로 줄이고, 두 필요량은 올림 직전에
+--     소수 6자리로 반올림한다(수량 단위보다 한참 작은 오차만 지운다).
 --   예상 재고금액 = 예상 월말 × 단가. pack_size · min_order_amount는 스냅샷 · 표시만 한다(stage1 §7).
 --
 -- ★ 승인된 정책 값만(pre-review fix) — 목표 DoS · 단가 · MOQ · 목표재고는 core.item_policy 운영값이 아니라 "그 필드를
@@ -84,8 +94,9 @@ create table if not exists core.procurement_plan (
   forecast_train_start       date,
   forecast_train_end         date,
   forecast_data_snapshot_at  timestamptz,
-  source_status              text not null check (source_status in (
-                               'VERIFIED', 'FORECAST_SOURCE_UNVERIFIED', 'FORECAST_RUN_STALE', 'FORECAST_WINDOW_CHANGED'
+  source_status              text not null constraint procurement_plan_source_status_check check (source_status in (
+                               'VERIFIED', 'FORECAST_SOURCE_UNVERIFIED', 'FORECAST_WINDOW_CHANGED',
+                               'FORECAST_INPUT_UNTRACED', 'FORECAST_INPUT_CHANGED'
                              )),
   built_by                   uuid not null references auth.users(id) on delete restrict,
   built_by_name              text not null check (btrim(built_by_name) <> ''),
@@ -115,6 +126,12 @@ create table if not exists core.procurement_plan (
 create unique index if not exists procurement_plan_one_open_idx
   on core.procurement_plan (plan_month) where status in ('DRAFT', 'PENDING_APPROVAL', 'REJECTED');
 create index if not exists procurement_plan_month_idx on core.procurement_plan (plan_month desc, version desc);
+
+-- fix round 1 — 원천 판정 코드 변경(FORECAST_RUN_STALE 제거, 입력 지문 두 코드 추가). 이미 만든 표에도 재실행으로 반영한다.
+alter table core.procurement_plan drop constraint if exists procurement_plan_source_status_check;
+alter table core.procurement_plan add constraint procurement_plan_source_status_check check (source_status in (
+  'VERIFIED', 'FORECAST_SOURCE_UNVERIFIED', 'FORECAST_WINDOW_CHANGED', 'FORECAST_INPUT_UNTRACED', 'FORECAST_INPUT_CHANGED'
+));
 
 comment on table core.procurement_plan is
   'Task 9b — 월별 발주계획 버전. APPROVED만 최종본이며 변경할 수 없다. 재계산은 새 버전을 만든다';
@@ -307,17 +324,22 @@ create trigger procurement_plan_event_append_only
 
 -- ══ 3. 한 달 계산 — 순수 함수 ════════════════════════════════════
 --
--- 기준 Forecast가 null이면 아무것도 계산하지 않는다. 시작재고 · 목표 DoS · 평균사용량 · 단가 중 하나라도 null이면
+-- 기준 Forecast가 null이면 아무것도 계산하지 않는다. 시작재고 · 목표 DoS · 6개월 합 · 단가 중 하나라도 null이면
 -- 수요 쪽(후보 · Flex · 수요)만 계산하고 발주 쪽은 null로 둔다 — 호출자가 계산 불가 라인에는 시작재고를 null로 넘긴다.
+--
+-- fix round 1 — 7번째 인자를 평균사용량에서 6개월 합(p_usage_6m_total)으로 바꿨다(정밀도). 인자 이름이 바뀌면
+-- create or replace가 거절하므로 먼저 지우고 다시 만든다(plpgsql 호출부는 실행 시점에 찾으므로 의존 객체가 없다).
 
-create or replace function core.calculate_procurement_plan_month(
+drop function if exists core.calculate_procurement_plan_month(integer, numeric, numeric, numeric, numeric, numeric, numeric, numeric, numeric);
+
+create function core.calculate_procurement_plan_month(
   p_month_no integer,
   p_base_forecast_qty numeric,
   p_department_agreed_qty numeric,
   p_approved_added_qty numeric,
   p_start_stock_qty numeric,
   p_target_dos_days numeric,
-  p_avg_usage_6m numeric,
+  p_usage_6m_total numeric,
   p_moq numeric,
   p_unit_price numeric
 )
@@ -368,13 +390,15 @@ begin
   -- ★ 승인된 추가 수요는 클램프 뒤에 더한다(stage1 §5 — 이벤트성 대량 거래는 조정 범위를 벗어날 수 있다)
   demand_qty := adjusted_demand_qty + coalesce(p_approved_added_qty, 0);
 
-  if p_start_stock_qty is null or p_target_dos_days is null or p_avg_usage_6m is null or p_unit_price is null then
+  if p_start_stock_qty is null or p_target_dos_days is null or p_usage_6m_total is null or p_unit_price is null then
     return next;
     return;
   end if;
 
-  stockout_prevention_qty := greatest(0, demand_qty - p_start_stock_qty);
-  dos_required_qty := greatest(0, demand_qty + p_target_dos_days * p_avg_usage_6m / 30 - p_start_stock_qty);
+  -- ★ 정밀도 — 목표DoS ÷ 30 × (합 ÷ 6) = 목표DoS × 합 ÷ 180. 나눗셈은 한 번만 하고, 올림 직전에 소수 6자리로
+  --   반올림해 numeric 반올림 꼬리(…0000000001)가 MOQ 올림을 한 단위 넘기지 않게 한다.
+  stockout_prevention_qty := greatest(0, round(demand_qty - p_start_stock_qty, 6));
+  dos_required_qty := greatest(0, round(demand_qty + p_target_dos_days * p_usage_6m_total / 180 - p_start_stock_qty, 6));
   selected_qty := greatest(stockout_prevention_qty, dos_required_qty);
   -- 1순위 품절 방지 · 2순위 목표 DoS 충족 최소수량 · 두 기준이 같으면 그 최소수량이 곧 월말 재고금액 최소(3순위)
   selection_reason := case
@@ -385,16 +409,110 @@ begin
   -- stage1 §7 — MOQ 단위 올림(120, MOQ 50 → 150), 미설정이면 1
   final_order_qty := ceil(selected_qty / effective_moq) * effective_moq;
   projected_month_end_qty := p_start_stock_qty + final_order_qty - demand_qty;
-  -- stage1 §6 — DoS = 월말 재고 ÷ 월평균사용량 × 30
-  projected_dos_days := case when p_avg_usage_6m > 0 then round(projected_month_end_qty / p_avg_usage_6m * 30, 1) end;
-  dos_reason_code := case when p_avg_usage_6m = 0 then 'AVG_USAGE_ZERO' end;
+  -- stage1 §6 — DoS = 월말 재고 ÷ 월평균사용량 × 30 = 월말 재고 × 180 ÷ 6개월 합.
+  -- 반올림하지 않고 저장한다(fix round 1 — 표시할 때만 반올림, Task 12가 원값으로 비교한다)
+  projected_dos_days := case when p_usage_6m_total > 0 then projected_month_end_qty * 180 / p_usage_6m_total end;
+  dos_reason_code := case when p_usage_6m_total = 0 then 'AVG_USAGE_ZERO' end;
   projected_inventory_value := projected_month_end_qty * p_unit_price;
   return next;
 end;
 $$;
 
 comment on function core.calculate_procurement_plan_month(integer, numeric, numeric, numeric, numeric, numeric, numeric, numeric, numeric) is
-  'Task 9b — 한 품목 한 달의 Flex · 수요 · 선택 수량 · MOQ 올림 · 예상 월말재고 · DoS · 재고금액. 입력만 보는 순수 함수';
+  'Task 9b — 한 품목 한 달의 Flex · 수요 · 선택 수량 · MOQ 올림 · 예상 월말재고 · DoS · 재고금액. 입력만 보는 순수 함수. '
+  '7번째 인자는 학습 기간 최근 6개월 사용량 합이다(평균이 아니다)';
+
+
+-- ══ 3b. 입력 지문 — Forecast · Backtest가 실제로 쓴 사용 이력(fix round 1) ══
+--
+-- 실행 결과 행은 지우거나 덮어쓰지 않는다. STEP 6 · 7 함수도 고치지 않는다 — 두 표에 열을 덧붙이고, 실행이 SUCCESS가
+-- 되는 순간(같은 트랜잭션) 트리거가 그때 core.v_train_demand(실행) · core.v_test_actual(Backtest)의 지문을 기록한다.
+-- 이 마이그레이션 전에 끝난 실행은 지문이 없다(null) — 계획 생성이 FORECAST_INPUT_UNTRACED로 막고 재실행을 요구한다.
+
+alter table core.forecast_run add column if not exists train_input_row_count bigint;
+alter table core.forecast_run add column if not exists train_input_qty_sum numeric;
+alter table core.forecast_run add column if not exists train_input_max_loaded_at timestamptz;
+alter table core.forecast_run add column if not exists train_input_md5 text;
+alter table core.forecast_run add column if not exists train_input_fingerprinted_at timestamptz;
+
+alter table core.backtest_run add column if not exists test_input_row_count bigint;
+alter table core.backtest_run add column if not exists test_input_qty_sum numeric;
+alter table core.backtest_run add column if not exists test_input_max_loaded_at timestamptz;
+alter table core.backtest_run add column if not exists test_input_md5 text;
+alter table core.backtest_run add column if not exists test_input_fingerprinted_at timestamptz;
+
+comment on column core.forecast_run.train_input_md5 is
+  'Task 9b — 실행이 SUCCESS가 될 때 core.v_train_demand 행의 md5(정렬한 품목 · 일자 · 수량 · 배치). null이면 입력 추적 불가';
+comment on column core.backtest_run.test_input_md5 is
+  'Task 9b — Backtest가 SUCCESS가 될 때 core.v_test_actual 행의 md5(정렬한 품목 · 일자 · 수량 · 배치). null이면 입력 추적 불가';
+
+-- 지금 활성 기간의 학습(TRAIN) 또는 검증(TEST) 입력 행 지문. 일자는 세션 DateStyle · timezone에 흔들리지 않게
+-- timestamp로 바꿔 YYYY-MM-DD로 쓰고, 순서를 고정해 같은 행 집합이면 언제 떠도 같은 md5가 나온다.
+create or replace function core.usage_input_fingerprint(p_split text)
+returns table (row_count bigint, qty_sum numeric, max_loaded_at timestamptz, input_md5 text)
+language sql
+stable
+security definer
+set search_path = core, pg_temp
+as $$
+  with input_rows as (
+    select t.item_id, t.use_date, t.qty, t.batch_id, t.loaded_at from core.v_train_demand t where p_split = 'TRAIN'
+    union all
+    select t.item_id, t.use_date, t.qty, t.batch_id, t.loaded_at from core.v_test_actual t where p_split = 'TEST'
+  )
+  select count(*),
+         sum(r.qty),
+         max(r.loaded_at),
+         md5(coalesce(string_agg(
+           concat_ws('|', coalesce(r.item_id, '-'), coalesce(to_char(r.use_date::timestamp, 'YYYY-MM-DD'), '-'),
+                     coalesce(r.qty::text, '-'), coalesce(r.batch_id::text, '-')),
+           E'\n' order by r.item_id, r.use_date, r.qty, r.batch_id::text), ''))
+    from input_rows r;
+$$;
+
+create or replace function core.record_forecast_run_input_fingerprint()
+returns trigger
+language plpgsql
+security definer
+set search_path = core, pg_temp
+as $$
+begin
+  if new.status = 'SUCCESS' and new.train_input_md5 is null and (tg_op = 'INSERT' or old.status is distinct from 'SUCCESS') then
+    select f.row_count, f.qty_sum, f.max_loaded_at, f.input_md5
+      into new.train_input_row_count, new.train_input_qty_sum, new.train_input_max_loaded_at, new.train_input_md5
+      from core.usage_input_fingerprint('TRAIN') f;
+    new.train_input_fingerprinted_at := clock_timestamp();
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists forecast_run_input_fingerprint on core.forecast_run;
+create trigger forecast_run_input_fingerprint
+  before insert or update of status on core.forecast_run
+  for each row execute function core.record_forecast_run_input_fingerprint();
+
+create or replace function core.record_backtest_run_input_fingerprint()
+returns trigger
+language plpgsql
+security definer
+set search_path = core, pg_temp
+as $$
+begin
+  if new.status = 'SUCCESS' and new.test_input_md5 is null and (tg_op = 'INSERT' or old.status is distinct from 'SUCCESS') then
+    select f.row_count, f.qty_sum, f.max_loaded_at, f.input_md5
+      into new.test_input_row_count, new.test_input_qty_sum, new.test_input_max_loaded_at, new.test_input_md5
+      from core.usage_input_fingerprint('TEST') f;
+    new.test_input_fingerprinted_at := clock_timestamp();
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists backtest_run_input_fingerprint on core.backtest_run;
+create trigger backtest_run_input_fingerprint
+  before insert or update of status on core.backtest_run
+  for each row execute function core.record_backtest_run_input_fingerprint();
 
 
 -- ══ 4. 원천 게이트 ════════════════════════════════════════════════
@@ -407,17 +525,20 @@ security definer
 set search_path = core, analytics, public, pg_temp
 as $$
 declare
-  v_run analytics.v_forecast_run%rowtype;
+  -- analytics.v_forecast_run은 select r.*로 만들어져 3b에서 덧붙인 지문 열이 없다 — 원본 표를 읽는다
+  v_run core.forecast_run%rowtype;
   v_train_start date;
   v_train_end date;
   v_test_start date;
   v_test_end date;
+  v_train_print record;
+  v_test_print record;
 begin
   if p_run_id is null then
     return 'FORECAST_SOURCE_UNVERIFIED';
   end if;
 
-  select * into v_run from analytics.v_forecast_run where run_id = p_run_id;
+  select * into v_run from core.forecast_run where run_id = p_run_id;
   if not found or v_run.status <> 'SUCCESS' or v_run.granularity is distinct from 'MONTH' then
     return 'FORECAST_SOURCE_UNVERIFIED';
   end if;
@@ -461,14 +582,36 @@ begin
     return 'FORECAST_SOURCE_UNVERIFIED';
   end if;
 
-  if v_run.is_stale
-     or v_run.data_snapshot_at is null
-     or exists (select 1 from core.v_train_demand t where t.loaded_at is null or t.loaded_at > v_run.data_snapshot_at)
+  -- ④ 입력 지문(fix round 1) — 지금 남은 행이 아니라 실행 · 채점이 실제로 쓴 행과 같은지 확인한다.
+  --   STEP 6 is_stale은 보지 않는다(무관한 수주 · 이벤트 적재로도 켜진다) — 사용 이력 변경은 지문이 잡는다.
+  if v_run.train_input_md5 is null
      or exists (
-       select 1 from core.upload_batch b
-        where b.import_type = 'usage_history' and b.status = 'ROLLED_BACK' and b.rolled_back_at > v_run.data_snapshot_at
+       select 1
+         from analytics.v_champion_model c
+         join core.backtest_run br on br.backtest_run_id = c.backtest_run_id
+        where br.forecast_run_id = p_run_id and br.test_input_md5 is null
      ) then
-    return 'FORECAST_RUN_STALE';
+    return 'FORECAST_INPUT_UNTRACED';
+  end if;
+
+  select * into v_train_print from core.usage_input_fingerprint('TRAIN');
+  if (v_train_print.row_count, v_train_print.qty_sum, v_train_print.max_loaded_at, v_train_print.input_md5)
+     is distinct from
+     (v_run.train_input_row_count, v_run.train_input_qty_sum, v_run.train_input_max_loaded_at, v_run.train_input_md5) then
+    return 'FORECAST_INPUT_CHANGED';
+  end if;
+
+  select * into v_test_print from core.usage_input_fingerprint('TEST');
+  if exists (
+    select 1
+      from analytics.v_champion_model c
+      join core.backtest_run br on br.backtest_run_id = c.backtest_run_id
+     where br.forecast_run_id = p_run_id
+       and (br.test_input_row_count, br.test_input_qty_sum, br.test_input_max_loaded_at, br.test_input_md5)
+           is distinct from
+           (v_test_print.row_count, v_test_print.qty_sum, v_test_print.max_loaded_at, v_test_print.input_md5)
+  ) then
+    return 'FORECAST_INPUT_CHANGED';
   end if;
 
   return 'VERIFIED';
@@ -476,7 +619,8 @@ end;
 $$;
 
 comment on function core.procurement_forecast_source_status(uuid) is
-  'Task 9b 원천 게이트 — VERIFIED · FORECAST_SOURCE_UNVERIFIED · FORECAST_WINDOW_CHANGED · FORECAST_RUN_STALE';
+  'Task 9b 원천 게이트 — VERIFIED · FORECAST_SOURCE_UNVERIFIED · FORECAST_WINDOW_CHANGED · FORECAST_INPUT_UNTRACED · '
+  'FORECAST_INPUT_CHANGED';
 
 
 -- ══ 4b. 승인된 정책 값 — analytics.v_item_policy 확장 ══════════════
@@ -564,7 +708,7 @@ declare
   v_calc record;
   v_month_no integer;
   v_target date;
-  v_avg numeric;
+  v_total numeric;
   v_base numeric;
   v_dept numeric;
   v_confirmed numeric;
@@ -691,16 +835,17 @@ begin
       left join analytics.v_available_stock st on st.item_id = i.item_id
      order by i.item_id
   loop
-    -- 최근 6개월 월평균사용량 — 그 실행의 학습 시계열만(원천 게이트가 기간 일치를 이미 확인했다)
-    v_avg := null;
+    -- 최근 6개월 사용량 합 — 그 실행의 학습 시계열만(원천 게이트가 기간 · 지문 일치를 이미 확인했다).
+    -- 평균(합 ÷ 6)은 스냅샷 · 표시용으로만 저장하고, 계산은 합을 그대로 넘긴다(정밀도, fix round 1)
+    v_total := null;
     if v_verified then
       select case
                when date_trunc('month', v_run.train_start::timestamp) > date_trunc('month', v_run.train_end::timestamp) - interval '5 months'
                  then null
                when count(*) filter (where t.qty is null) > 0 then null
-               else coalesce(sum(t.qty), 0) / 6
+               else coalesce(sum(t.qty), 0)
              end
-        into v_avg
+        into v_total
         from core.v_train_demand t
        where t.item_id = v_item.item_id
          and t.use_date >= (date_trunc('month', v_run.train_end::timestamp) - interval '5 months')::date;
@@ -746,7 +891,7 @@ begin
           v_reasons := array_append(v_reasons, 'BASE_FORECAST_UNAVAILABLE');
           v_unavailable := true;
         end if;
-        if v_avg is null or v_avg < 0 then
+        if v_total is null or v_total < 0 then
           v_reasons := array_append(v_reasons, 'AVG_USAGE_UNAVAILABLE');
           v_unavailable := true;
         end if;
@@ -784,7 +929,7 @@ begin
         from core.calculate_procurement_plan_month(
           v_month_no, v_base, v_dept, v_added,
           case when v_unavailable then null else v_start end,
-          v_item.target_dos_days, v_avg, v_item.moq, v_item.unit_price
+          v_item.target_dos_days, v_total, v_item.moq, v_item.unit_price
         );
       if not v_unavailable and v_calc.dos_reason_code is not null then
         v_reasons := array_append(v_reasons, v_calc.dos_reason_code);
@@ -808,7 +953,7 @@ begin
         v_confirmed, v_meeting, v_event, v_added, v_calc.demand_qty,
         v_item.normal_warehouse_qty, v_item.allocated_qty, v_item.available_qty, v_item.stock_snapshot_at, v_start,
         v_item.target_dos_days, v_item.target_dos_approved, v_item.unit_price, v_item.moq, v_item.pack_size,
-        v_item.min_order_amount, v_avg,
+        v_item.min_order_amount, v_total / 6,
         v_calc.stockout_prevention_qty, v_calc.dos_required_qty, v_calc.selected_qty, v_calc.selection_reason,
         v_calc.effective_moq, v_calc.final_order_qty,
         v_calc.projected_month_end_qty, v_calc.projected_dos_days, v_calc.projected_inventory_value,
@@ -1169,8 +1314,9 @@ select
   count(*) as line_count,
   count(distinct l.item_id) as item_count,
   coalesce(array_position(array[
-    'FORECAST_SOURCE_UNVERIFIED', 'FORECAST_RUN_STALE', 'FORECAST_WINDOW_CHANGED', 'CHAMPION_UNAVAILABLE',
-    'BASE_FORECAST_UNAVAILABLE', 'AVG_USAGE_UNAVAILABLE', 'INVENTORY_SCOPE_UNCLASSIFIED', 'AVAILABLE_STOCK_UNAVAILABLE',
+    'FORECAST_SOURCE_UNVERIFIED', 'FORECAST_WINDOW_CHANGED', 'FORECAST_INPUT_UNTRACED', 'FORECAST_INPUT_CHANGED',
+    'CHAMPION_UNAVAILABLE', 'BASE_FORECAST_UNAVAILABLE', 'AVG_USAGE_UNAVAILABLE', 'INVENTORY_SCOPE_UNCLASSIFIED',
+    'AVAILABLE_STOCK_UNAVAILABLE',
     'PRIOR_MONTH_UNAVAILABLE', 'ITEM_POLICY_MISSING', 'UNIT_PRICE_UNSET', 'TARGET_DOS_UNSET'
   ]::text[], u.code), 99) as reason_rank
 from core.procurement_plan_line l
@@ -1220,6 +1366,9 @@ grant execute on function core.approve_procurement_plan(uuid, uuid, text) to aut
 revoke all on function core.calculate_procurement_plan_month(integer, numeric, numeric, numeric, numeric, numeric, numeric, numeric, numeric)
   from public, anon, authenticated;
 revoke all on function core.procurement_forecast_source_status(uuid) from public, anon, authenticated;
+revoke all on function core.usage_input_fingerprint(text) from public, anon, authenticated;
+revoke all on function core.record_forecast_run_input_fingerprint() from public, anon, authenticated;
+revoke all on function core.record_backtest_run_input_fingerprint() from public, anon, authenticated;
 revoke all on function core.guard_procurement_plan_mutation() from public, anon, authenticated;
 revoke all on function core.guard_procurement_plan_line_mutation() from public, anon, authenticated;
 revoke all on function core.reject_procurement_plan_event_mutation() from public, anon, authenticated;
@@ -1229,9 +1378,12 @@ revoke all on function core.apply_procurement_plan_decision() from public, anon,
 
 -- ══ 10. 수동 적용 후 확인 쿼리(SQL Editor 전용 — 주석을 풀어 실행) ══════
 
--- (a) 현재 Forecast Run의 원천 판정. 5회차 더미 사용 이력(batch_id null)만 있으면 FORECAST_SOURCE_UNVERIFIED가 정상이다.
--- select r.run_id, r.status, r.train_start, r.train_end, r.is_stale, core.procurement_forecast_source_status(r.run_id)
---   from analytics.v_forecast_run r order by r.started_at desc limit 5;
+-- (a) 현재 Forecast Run의 원천 판정 · 입력 지문. 5회차 더미 사용 이력(batch_id null)만 있으면 FORECAST_SOURCE_UNVERIFIED,
+--     이 마이그레이션 전에 끝난 실행은 지문이 없어(train_input_md5 null) 출처가 검증돼도 FORECAST_INPUT_UNTRACED가 정상이다.
+-- select r.run_id, r.status, r.train_start, r.train_end, r.train_input_row_count, r.train_input_md5,
+--        core.procurement_forecast_source_status(r.run_id)
+--   from core.forecast_run r order by r.started_at desc limit 5;
+-- select b.backtest_run_id, b.forecast_run_id, b.test_input_row_count, b.test_input_md5 from core.backtest_run b order by b.started_at desc limit 5;
 
 -- (b) 출처 없는 학습 · test 기간 행 수(둘 다 0이 되기 전에는 발주량이 계산되지 않는다).
 -- select split, count(*) as unverified_rows
@@ -1246,14 +1398,16 @@ revoke all on function core.apply_procurement_plan_decision() from public, anon,
 --        moq, approved_moq, approved_effective_moq, target_stock_qty, approved_target_stock_qty, target_stock_reason_code
 --   from analytics.v_item_policy order by item_id;
 
--- (c) 한 달 계산 손검산 — 필요량 120 · MOQ 50 → 150, MOQ null → 1.
+-- (c) 한 달 계산 손검산(7번째 인자는 6개월 합) — 필요량 120 · MOQ 50 → 150, MOQ null → 1, 반복소수 평균에서도 정수 필요량.
 -- select selected_qty, selection_reason, effective_moq, final_order_qty, projected_month_end_qty, projected_dos_days
---   from core.calculate_procurement_plan_month(1, 100, null, 0, 80, 30, 100, 50, 1000);
--- 기대: 120 · DOS_TARGET · 50 · 150 · 130 · 39.0
--- select effective_moq, final_order_qty from core.calculate_procurement_plan_month(1, 100, null, 0, 80, 30, 100.5, null, 1000);
+--   from core.calculate_procurement_plan_month(1, 100, null, 0, 80, 30, 600, 50, 1000);
+-- 기대: 120 · DOS_TARGET · 50 · 150 · 130 · 39
+-- select effective_moq, final_order_qty from core.calculate_procurement_plan_month(1, 100, null, 0, 80, 30, 603, null, 1000);
 -- 기대: 1 · 121
+-- select dos_required_qty, final_order_qty from core.calculate_procurement_plan_month(4, 75, null, 0, 0, 45, 100, null, 1);
+-- 기대: 100 · 100 (평균 16.666…이어도 101이 아니다)
 -- select flex_min_qty, flex_max_qty, adjusted_demand_qty, flex_applied, demand_qty
---   from core.calculate_procurement_plan_month(1, 100, 150, 50, 1000, 30, 100, null, 200);
+--   from core.calculate_procurement_plan_month(1, 100, 150, 50, 1000, 30, 600, null, 200);
 -- 기대: 80 · 120 · 120 · true · 170
 
 -- (d) 계획 목록과 확정 가능 여부(SCM 품목담당자 계정으로 로그인해 실행).

@@ -58,6 +58,13 @@ select plan_test.check(
   'S2 Champion · 재고 스냅샷 시각 · 정책 값을 라인에 스냅샷한다');
 select plan_test.check((select count(*) = 1 from core.procurement_plan_event where plan_id = :'plan_v1' and event_type = 'BUILT'),
   'S2 생성 이력(BUILT)이 남는다');
+select plan_test.check(
+  (select train_input_row_count = 24 and train_input_qty_sum = 1903 and train_input_max_loaded_at = '2026-07-01T00:00:00Z'
+      and train_input_md5 ~ '^[0-9a-f]{32}$' and train_input_fingerprinted_at is not null
+     from core.forecast_run where run_id = :'run1')
+  and (select test_input_row_count = 1 and test_input_qty_sum = 100 and test_input_md5 ~ '^[0-9a-f]{32}$'
+         from core.backtest_run where backtest_run_id = '00000000-0000-4000-8000-0000000004f3'),
+  'S2 Forecast Run · Backtest가 SUCCESS가 될 때 학습(24행 · 합 1,903) · 검증(1행) 입력 지문이 기록된다');
 
 
 \echo '== S3 필요량 120, MOQ 50 → 최종 발주량 150 =='
@@ -80,7 +87,8 @@ select plan_test.check(
 \echo '== S4 MOQ null이면 1을 적용한다 =='
 select plan_test.check(
   (select moq is null and effective_moq = 1 and avg_usage_6m = 100.5 and selected_qty = 120.5 and final_order_qty = 121
-      and projected_month_end_qty = 101 and projected_dos_days = 30.1
+      and projected_month_end_qty = 101 and projected_dos_days <> 30.1 and round(projected_dos_days, 1) = 30.1
+      and round(projected_dos_days, 10) = round(101 * 180 / 603.0, 10)
      from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B02' and month_no = 1),
   'S4 MOQ 미설정이면 1로 올림한다(120.5 → 121)');
 
@@ -208,12 +216,24 @@ select plan_test.check(
   'S9 확정은 T9B04 한 품목의 TARGET_DOS_UNSET(6라인) · PRIOR_MONTH_UNAVAILABLE(5라인)로만 차단된다');
 
 
-\echo '== S10 test Actual을 바꿔도 계획의 학습 Forecast 근거가 변하지 않는다 =='
+\echo '== S10 test Actual을 바꿔도 이미 만든 계획은 그대로다 · 다시 계산하면 입력 변경으로 막힌다 =='
 select plan_test.line_signature(:'plan_v2', 'T9B01') as s10_before \gset
--- 검증된 적재 배치 소속 test Actual 행의 값만 바꾼다(출처 없는 test 행은 S18에서 게이트가 막는다)
+begin;
+-- 검증된 적재 배치 소속 test Actual 행의 값만 바꾼다 — Champion을 채점한 Actual이 달라진다
 update raw.usage_history set qty = 99999 where usage_id = 'T9B-T9B01-TEST';
 select plan_test.check(plan_test.line_signature(:'plan_v2', 'T9B01') = :'s10_before',
   'S10 이미 만든 계획 라인은 test Actual 변경에 영향받지 않는다');
+set local role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as s10_changed \gset
+reset role;
+select plan_test.check(
+  (select source_status = 'FORECAST_INPUT_CHANGED' from core.procurement_plan where plan_id = :'s10_changed')
+  and (select bool_and(calculation_status = 'CALCULATION_UNAVAILABLE' and reason_code = 'FORECAST_INPUT_CHANGED' and base_forecast_qty is null)
+         from core.procurement_plan_line where plan_id = :'s10_changed')
+  and (select count(*) = 24 from core.forecast_result where run_id = :'run1' and predicted_qty = 100),
+  'S10 Backtest 이후 test Actual이 바뀌면 다시 계산한 계획은 FORECAST_INPUT_CHANGED(Forecast 결과는 그대로)');
+rollback;
 set role authenticated;
 select plan_test.as_user(:'planner1') \g /dev/null
 select core.build_procurement_plan(:'month', :'run1') as plan_v3 \gset
@@ -221,7 +241,7 @@ reset role;
 select plan_test.check(
   (select source_status = 'VERIFIED' from core.procurement_plan where plan_id = :'plan_v3')
   and plan_test.line_signature(:'plan_v3', 'T9B01') = :'s10_before',
-  'S10 test Actual 값을 바꾼 뒤 다시 계산해도 원천 판정 · 평균사용량 · 발주량이 같다');
+  'S10 입력이 실행 · Backtest 때와 같으면 같은 근거 · 발주량으로 다시 계산된다');
 
 
 \echo '== S11 영업 확률을 바꿔도 최종 발주량이 변하지 않는다 =='
@@ -247,7 +267,7 @@ select plan_test.check(
 \echo '== S12 목표 DoS 승인 후 재계산 → 확정 → PURCHASE_PLAN 승인 대기 =='
 set role authenticated;
 select plan_test.as_user(:'planner1') \g /dev/null
-select core.request_item_policy_change('T9B04', 20, 'AUTO', null, null, null, null, null, '목표 DoS 승인 요청') as s12_revision \gset
+select core.request_item_policy_change('T9B04', 45, 'AUTO', null, null, null, null, null, '목표 DoS 승인 요청') as s12_revision \gset
 reset role;
 select approval_id as s12_policy_approval from core.item_policy_revision where revision_id = :'s12_revision' \gset
 set role authenticated;
@@ -260,6 +280,12 @@ select plan_test.check(
   (select count(*) = 24 and bool_and(calculation_status = 'CALCULATED' and target_dos_approved)
      from core.procurement_plan_line where plan_id = :'plan_v5'),
   'S12 목표 DoS가 승인되면 24라인 모두 계산되고 승인 상태를 스냅샷한다');
+select plan_test.check(
+  (select round(avg_usage_6m, 6) = 16.666667 and target_dos_days = 45 and demand_qty = 110 and start_stock_qty = 80
+      and dos_required_qty = 55 and selected_qty = 55 and final_order_qty = 55 and projected_month_end_qty = 25
+      and projected_dos_days = 45
+     from core.procurement_plan_line where plan_id = :'plan_v5' and item_id = 'T9B04' and month_no = 1),
+  'S12 반복소수 평균(합 100 ÷ 6)이어도 정수 필요량(110 + 45 × 100 ÷ 180 − 80 = 55)에 한 단위를 더 붙이지 않는다');
 select plan_test.check((select confirmable and not is_final from analytics.v_procurement_plan where plan_id = :'plan_v5'),
   'S12 확정 가능(confirmable)하지만 아직 최종본은 아니다');
 set role authenticated;
@@ -497,30 +523,34 @@ select plan_test.check(
 rollback;
 
 
-\echo '== S19 원천 게이트 — stale 실행 · 학습 기간 변경 =='
+\echo '== S19 원천 게이트 — 무관한 적재는 막지 않고, 기간 안 사용 이력 추가 · 기간 설정 변경은 막는다 =='
 begin;
+-- 수주 파일 적재는 STEP 6 is_stale을 켠다(commit_import_batch가 stale_at도 기록) — 사용 이력 입력은 그대로다
 insert into core.upload_batch (file_name, import_type, import_mode, status, imported_at)
-values ('t9b-later-usage.csv', 'usage_history', 'append', 'IMPORTED', clock_timestamp());
+values ('t9b-later-sales.csv', 'sales_order', 'append', 'IMPORTED', clock_timestamp());
+update core.forecast_run set stale_at = clock_timestamp() where run_id = :'run1';
 set local role authenticated;
 select plan_test.as_user(:'planner1') \g /dev/null
 select core.build_procurement_plan(:'month', :'run1') as s19_plan \gset
 reset role;
 select plan_test.check(
-  (select source_status = 'FORECAST_RUN_STALE' from core.procurement_plan where plan_id = :'s19_plan')
-  and (select bool_and(calculation_status = 'CALCULATION_UNAVAILABLE' and reason_code = 'FORECAST_RUN_STALE' and final_order_qty is null)
-         from core.procurement_plan_line where plan_id = :'s19_plan'),
-  'S19 실행 이후 사용 이력 배치가 적재되면(is_stale) 모든 라인이 FORECAST_RUN_STALE');
+  (select is_stale from analytics.v_forecast_run where run_id = :'run1')
+  and (select source_status = 'VERIFIED' from core.procurement_plan where plan_id = :'s19_plan')
+  and (select count(*) = 24 and bool_and(calculation_status = 'CALCULATED') from core.procurement_plan_line where plan_id = :'s19_plan'),
+  'S19 실행 이후 무관한 수주 적재로 is_stale이 켜져도 입력 지문이 같으면 VERIFIED로 계산한다');
 rollback;
 begin;
--- 검증된 배치 소속이지만 실행 스냅샷 이후에 적재된 학습 행
+-- 검증된 배치 소속이지만 실행 이후에 학습 기간 안으로 추가된 사용 이력
 insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse, batch_id, source_type, loaded_at, source_record_id)
 values ('T9B-LATE-1', 'T9B02', '2026-06-20', 1, 'MAIN', '00000000-0000-4000-8000-0000000004b1', 'FILE_UPLOAD', clock_timestamp(), 'T9B-LATE-1');
 set local role authenticated;
 select plan_test.as_user(:'planner1') \g /dev/null
 select core.build_procurement_plan(:'month', :'run1') as s19_plan2 \gset
 reset role;
-select plan_test.check((select source_status = 'FORECAST_RUN_STALE' from core.procurement_plan where plan_id = :'s19_plan2'),
-  'S19 실행 스냅샷 이후 적재된 학습 행이 있으면 FORECAST_RUN_STALE');
+select plan_test.check(
+  (select source_status = 'FORECAST_INPUT_CHANGED' from core.procurement_plan where plan_id = :'s19_plan2')
+  and (select bool_and(reason_code = 'FORECAST_INPUT_CHANGED' and final_order_qty is null) from core.procurement_plan_line where plan_id = :'s19_plan2'),
+  'S19 실행 이후 학습 기간 안에 사용 이력이 추가되면 FORECAST_INPUT_CHANGED');
 rollback;
 begin;
 update core.forecast_setting set train_end = '2026-05-31' where active;
@@ -646,9 +676,9 @@ select plan_test.check(
 \echo '== S24 KPI — 계획 기대값(1개월차) =='
 select plan_test.check(
   (select n_items = 4 and n_unavailable_lines = 0 and kpi_reason_code is null
-      and total_final_order_qty = 368 and total_projected_month_end_qty = 1128 and total_projected_inventory_value = 430500
+      and total_final_order_qty = 326 and total_projected_month_end_qty = 1086 and total_projected_inventory_value = 409500
      from analytics.v_procurement_plan_kpi where plan_id = :'plan_v5' and month_no = 1),
-  'S24 승인본 1개월차 발주량 합 368 · 예상 월말재고 1,128 · 예상 재고금액 430,500');
+  'S24 승인본 1개월차 발주량 합 326 · 예상 월말재고 1,086 · 예상 재고금액 409,500');
 select plan_test.check(
   (select count(*) = 6 from analytics.v_procurement_plan_kpi where plan_id = :'plan_v5'),
   'S24 KPI는 계획 · 월별 한 행이다');
@@ -720,6 +750,92 @@ select plan_test.check(
      from core.procurement_plan_line where plan_id = :'s25_plan2' and item_id = 'T9B05' and month_no = 1)
   and (select approved_unit_price = 300 and unit_price_reason_code is null from analytics.v_item_policy where item_id = 'T9B05'),
   'S25 단가 변경안이 승인되면 그 단가(300)로 계산하고, MOQ는 여전히 승인값이 없어 1이다');
+rollback;
+
+
+\echo '== S26 정밀도 — 반복소수 평균에서도 정수 필요량은 MOQ 올림을 넘기지 않는다 =='
+select plan_test.check(
+  (select dos_required_qty = 100 and selected_qty = 100 and final_order_qty = 100
+     from core.calculate_procurement_plan_month(4, 75, null, 0, 0, 45, 100, null, 1)),
+  'S26 목표 45 · 6개월 합 100(평균 16.666…) · 수요 75 · 시작 0 · MOQ 미설정 → 필요량 100 · 발주량 100');
+select plan_test.check(
+  (select dos_required_qty = 6 and final_order_qty = 6 from core.calculate_procurement_plan_month(4, 0, null, 0, 0, 108, 10, null, 1)),
+  'S26 6개월 합 10 · 목표 108 → 필요량 6 · 발주량 6');
+select plan_test.check(
+  (select projected_dos_days is not null and round(projected_dos_days, 1) = 30.1 and projected_dos_days <> 30.1
+     from core.calculate_procurement_plan_month(1, 100, null, 0, 80, 30, 603, null, 1)),
+  'S26 예상 DoS는 반올림하지 않고 저장한다(표시할 때만 반올림)');
+select plan_test.check(
+  (select count(*) = 0
+     from generate_series(1, 1000) as total
+    cross join unnest(array[30, 45, 60, 90, 108]) as target
+    cross join unnest(array[1, 10, 50]) as moq
+    cross join unnest(array[0, 75]) as demand
+    cross join lateral core.calculate_procurement_plan_month(4, demand, null, 0, 0, target, total, moq, 1) c
+    where c.final_order_qty <> ((demand * 180 + target * total + 180 * moq - 1) / (180 * moq)) * moq),
+  'S26 합 1~1000 × 목표 {30,45,60,90,108} × MOQ {1,10,50} × 수요 {0,75} — 정수 산술 기대값과 불일치 0건');
+
+
+\echo '== S27 입력 지문 — 실행이 실제로 쓴 행과 지금 행이 다르면 막는다 =='
+begin;
+-- 더미(출처 없는) 학습 행이 남은 상태에서 Forecast · Backtest를 돌린다
+insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse)
+values ('T9B-DUMMY-RUN', 'T9B01', '2026-04-20', 5, 'MAIN');
+select plan_test.create_run('00000000-0000-4000-8000-0000000005f1', '00000000-0000-4000-8000-0000000005f2',
+                            '00000000-0000-4000-8000-0000000005f3');
+set local role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', '00000000-0000-4000-8000-0000000005f1') as s27_plan1 \gset
+reset role;
+select plan_test.check(
+  (select train_input_row_count = 25 from core.forecast_run where run_id = '00000000-0000-4000-8000-0000000005f1')
+  and (select source_status = 'FORECAST_SOURCE_UNVERIFIED' from core.procurement_plan where plan_id = :'s27_plan1'),
+  'S27 더미 행으로 학습한 실행은 지문에 그 행이 들어가고(25행), 더미가 남아 있는 동안은 FORECAST_SOURCE_UNVERIFIED');
+-- 실행 뒤 더미 행을 손으로 지운다 — 남은 행은 모두 검증됐고 is_stale도 켜지지 않는다
+delete from raw.usage_history where usage_id = 'T9B-DUMMY-RUN';
+set local role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', '00000000-0000-4000-8000-0000000005f1') as s27_plan2 \gset
+select core.confirm_procurement_plan(:'s27_plan2') as s27_result \gset
+reset role;
+select plan_test.check(
+  not (select is_stale from analytics.v_forecast_run where run_id = '00000000-0000-4000-8000-0000000005f1')
+  and (select source_status = 'FORECAST_INPUT_CHANGED' from core.procurement_plan where plan_id = :'s27_plan2')
+  and (select count(*) = 24 and bool_and(calculation_status = 'CALCULATION_UNAVAILABLE' and reason_code = 'FORECAST_INPUT_CHANGED')
+         from core.procurement_plan_line where plan_id = :'s27_plan2'),
+  'S27 실행 뒤 더미 행을 지우면 남은 행이 모두 검증돼도 FORECAST_INPUT_CHANGED(더미 기반 Champion을 쓰지 않는다)');
+select plan_test.check(
+  (:'s27_result')::jsonb ->> 'status' = 'BLOCKED'
+  and exists (select 1 from jsonb_array_elements((:'s27_result')::jsonb -> 'blocking_reasons') e
+               where e ->> 'reason_code' = 'FORECAST_INPUT_CHANGED'),
+  'S27 그 계획의 확정은 FORECAST_INPUT_CHANGED로 거절된다');
+rollback;
+begin;
+-- 이 마이그레이션 전에 끝난 실행처럼 지문이 없는 경우
+update core.forecast_run
+   set train_input_row_count = null, train_input_qty_sum = null, train_input_max_loaded_at = null,
+       train_input_md5 = null, train_input_fingerprinted_at = null
+ where run_id = :'run1';
+set local role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as s27_plan3 \gset
+reset role;
+select plan_test.check(
+  (select source_status = 'FORECAST_INPUT_UNTRACED' from core.procurement_plan where plan_id = :'s27_plan3')
+  and (select bool_and(reason_code = 'FORECAST_INPUT_UNTRACED' and final_order_qty is null) from core.procurement_plan_line where plan_id = :'s27_plan3'),
+  'S27 입력 지문이 없는 기존 Forecast Run은 FORECAST_INPUT_UNTRACED(다시 실행 필요)');
+rollback;
+begin;
+update core.backtest_run
+   set test_input_row_count = null, test_input_qty_sum = null, test_input_max_loaded_at = null,
+       test_input_md5 = null, test_input_fingerprinted_at = null
+ where backtest_run_id = '00000000-0000-4000-8000-0000000004f3';
+set local role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as s27_plan4 \gset
+reset role;
+select plan_test.check((select source_status = 'FORECAST_INPUT_UNTRACED' from core.procurement_plan where plan_id = :'s27_plan4'),
+  'S27 Champion을 채점한 Backtest에 지문이 없어도 FORECAST_INPUT_UNTRACED');
 rollback;
 
 \echo '== 끝 =='

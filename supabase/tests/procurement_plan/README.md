@@ -47,7 +47,7 @@ PGOPTIONS="-c timezone=America/Los_Angeles" bash supabase/tests/procurement_plan
 | S6 · S7 | 2~3개월차 ±30%, 4~6개월차 미적용 |
 | S8 | 목표 DoS null → 계산 불가 · 확정 차단(BLOCKED, 이력, 승인 요청 없음, 차단 사유 뷰와 일치) |
 | S9 | 목표 DoS를 승인 없이 직접 넣어도 승인값이 아니다(계산 불가 · 확정 차단), 재계산 = 새 버전 · 이전 버전 SUPERSEDED |
-| S10 | 검증된 test Actual 값을 바꿔도 저장된 계획과 재계산 결과가 같다 |
+| S10 | test Actual을 바꿔도 저장된 계획은 그대로, 다시 계산하면 FORECAST_INPUT_CHANGED(롤백), 입력이 같으면 같은 결과 |
 | S11 | 미확정 주문 · 영업 확률 100% 파이프라인이 있어도 발주량이 같다 |
 | S12 | 목표 DoS 승인 → 전 라인 계산 → 확정 → PURCHASE_PLAN 승인 대기, 우회 승인 요청 거절 |
 | S13 | 확정자 본인은 승인할 수 없다(합성 계정, 롤백) |
@@ -56,13 +56,15 @@ PGOPTIONS="-c timezone=America/Los_Angeles" bash supabase/tests/procurement_plan
 | S16 | 승인 후 재계산 = 새 버전, 승인본 그대로 · 최신 승인본 유지 |
 | S17 | 반려 → REJECTED(의견) · 재확정 · 승인 대기 중 재계산 시 승인 요청 CANCELLED |
 | S18 | 출처 없는 학습 행, 또는 학습 행은 검증됐지만 Champion 채점에 쓴 test 기간 행이 출처 없음 → 모든 라인 FORECAST_SOURCE_UNVERIFIED · 확정 거절(롤백) |
-| S19 | stale 실행 · 스냅샷 이후 적재 행 → FORECAST_RUN_STALE, 학습 기간 · 검증 기간 변경 → FORECAST_WINDOW_CHANGED(롤백) |
+| S19 | 무관한 수주 적재(is_stale 켜짐) → 여전히 VERIFIED, 실행 후 기간 안 사용 이력 추가 → FORECAST_INPUT_CHANGED, 학습 · 검증 기간 변경 → FORECAST_WINDOW_CHANGED(롤백) |
 | S20 | 재고 분류 불가 · 전월 계산 불가 · Champion 없음, KPI 부분 합계 금지(롤백) |
 | S21 | 성공한 Run 없음 → FORECAST_SOURCE_UNVERIFIED, Run 비우면 최신 성공 실행 |
 | S22 | RLS — 권한 없으면 계획 · 라인 · KPI · 차단 사유가 안 보이고 직접 쓰기 불가 |
 | S23 | 달마다 작업 중 계획 1개, 계산/불가 라인의 수량 불변식, MOQ 배수, Forecast 결과 불변 |
-| S24 | 승인본 1개월차 KPI 합계(발주량 368 · 예상 월말재고 1,128 · 예상 재고금액 430,500) |
+| S24 | 승인본 1개월차 KPI 합계(발주량 326 · 예상 월말재고 1,086 · 예상 재고금액 409,500) |
 | S25 | 승인된 정책 값만 — 직접 넣은 단가 → UNIT_PRICE_UNSET, 승인 후 그 단가 사용, 직접 넣은 MOQ → 1, 승인 MOQ 50 → 150, `v_item_policy` approved_* 열 · 사유(롤백) |
+| S26 | 정밀도 — 반복소수 평균에서 정수 필요량(합 100 · 목표 45 → 100, 합 10 · 목표 108 → 6), 예상 DoS 원값 저장, 합 1~1000 × 목표 5종 × MOQ 3종 × 수요 2종 불일치 0건 |
+| S27 | 입력 지문 — 더미로 학습한 실행 뒤 더미 삭제 → FORECAST_INPUT_CHANGED · 확정 거절, 지문 없는 실행 · Backtest → FORECAST_INPUT_UNTRACED(롤백) |
 
 ## 안전장치
 

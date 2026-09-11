@@ -94,7 +94,8 @@ const columns: Column<ProcurementPlanLine>[] = [
     key: 'projectedDosDays', label: '예상 DoS', align: 'right',
     render: (line) => line.projectedDosDays === null
       ? <EmptyValue reasonCode={line.calculationStatus === 'CALCULATED' ? 'AVG_USAGE_ZERO' : line.reasonCode ?? 'CALCULATION_UNAVAILABLE'} />
-      : `${formatNumber(line.projectedDosDays)}일`,
+      // 저장값은 반올림하지 않은 원값이다 — 표시할 때만 소수 1자리
+      : `${line.projectedDosDays.toLocaleString('ko-KR', { maximumFractionDigits: 1 })}일`,
   },
   { key: 'projectedInventoryValue', label: '예상 재고금액', align: 'right', render: (line) => qty(line, line.projectedInventoryValue) },
   {

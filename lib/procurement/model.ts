@@ -21,7 +21,13 @@ export const PLAN_STATUS_LABELS: Record<PlanStatus, string> = {
   SUPERSEDED: '새 버전으로 대체',
 };
 
-export const SOURCE_STATUSES = ['VERIFIED', 'FORECAST_SOURCE_UNVERIFIED', 'FORECAST_RUN_STALE', 'FORECAST_WINDOW_CHANGED'] as const;
+export const SOURCE_STATUSES = [
+  'VERIFIED',
+  'FORECAST_SOURCE_UNVERIFIED',
+  'FORECAST_WINDOW_CHANGED',
+  'FORECAST_INPUT_UNTRACED',
+  'FORECAST_INPUT_CHANGED',
+] as const;
 export type SourceStatus = (typeof SOURCE_STATUSES)[number];
 
 export const CALCULATION_STATUSES = ['CALCULATED', 'CALCULATION_UNAVAILABLE'] as const;
@@ -45,8 +51,9 @@ export type CandidateSource = (typeof CANDIDATE_SOURCES)[number];
  */
 export const PLAN_REASON_PRIORITY = [
   'FORECAST_SOURCE_UNVERIFIED',
-  'FORECAST_RUN_STALE',
   'FORECAST_WINDOW_CHANGED',
+  'FORECAST_INPUT_UNTRACED',
+  'FORECAST_INPUT_CHANGED',
   'CHAMPION_UNAVAILABLE',
   'BASE_FORECAST_UNAVAILABLE',
   'AVG_USAGE_UNAVAILABLE',
@@ -61,9 +68,10 @@ export const PLAN_REASON_PRIORITY = [
 ] as const;
 
 export const PLAN_REASON_LABELS: Record<(typeof PLAN_REASON_PRIORITY)[number], string> = {
-  FORECAST_SOURCE_UNVERIFIED: 'Forecast 학습 데이터가 검증된 적재 배치에서 오지 않았습니다',
-  FORECAST_RUN_STALE: 'Forecast 실행 이후 사용 이력이 바뀌었습니다(stale)',
-  FORECAST_WINDOW_CHANGED: 'Forecast 실행 뒤 학습 기간 설정이 바뀌었습니다',
+  FORECAST_SOURCE_UNVERIFIED: 'Forecast 학습 · 검증 데이터가 검증된 적재 배치에서 오지 않았습니다',
+  FORECAST_WINDOW_CHANGED: 'Forecast · Backtest 실행 뒤 학습 · 검증 기간 설정이 바뀌었습니다',
+  FORECAST_INPUT_UNTRACED: 'Forecast · Backtest 실행에 입력 기록(지문)이 없습니다 — 다시 실행하세요',
+  FORECAST_INPUT_CHANGED: 'Forecast · Backtest 실행 이후 사용 이력이 바뀌었습니다 — 다시 실행하세요',
   CHAMPION_UNAVAILABLE: '이 Forecast 실행의 Champion 모델이 없습니다',
   BASE_FORECAST_UNAVAILABLE: '해당 월 기준 Forecast가 없습니다',
   AVG_USAGE_UNAVAILABLE: '최근 6개월 월평균사용량을 계산할 수 없습니다',
@@ -112,10 +120,16 @@ export type PlanMonthCalculationInput = {
   approvedAddedQty: number;
   startStockQty: number;
   targetDosDays: number;
-  avgUsage6m: number;
+  /** 학습 기간 최근 6개월 사용량 합. 평균(합 ÷ 6)을 먼저 나누면 반복소수 오차가 MOQ 올림을 넘길 수 있어 합을 그대로 쓴다 */
+  usage6mTotal: number;
   moq: number | null;
   unitPrice: number;
 };
+
+/** 필요량은 올림 직전에 소수 6자리로 반올림한다 — SQL round(x, 6)과 같다(음수는 곧바로 0으로 잘린다) */
+function roundQty(value: number): number {
+  return Math.round(value * 1e6) / 1e6;
+}
 
 export type DemandSide = {
   candidateSource: CandidateSource;
@@ -173,8 +187,9 @@ export function calculateDemandSide(input: {
 /** core.calculate_procurement_plan_month의 거울 — 모든 필수 입력이 있을 때만 부른다 */
 export function calculatePlanMonth(input: PlanMonthCalculationInput): PlanMonthCalculation {
   const demand = calculateDemandSide(input);
-  const stockoutPreventionQty = Math.max(0, demand.demandQty - input.startStockQty);
-  const dosRequiredQty = Math.max(0, demand.demandQty + (input.targetDosDays * input.avgUsage6m) / 30 - input.startStockQty);
+  const stockoutPreventionQty = Math.max(0, roundQty(demand.demandQty - input.startStockQty));
+  // 목표DoS ÷ 30 × (합 ÷ 6) = 목표DoS × 합 ÷ 180 — 나눗셈을 한 번만 한다
+  const dosRequiredQty = Math.max(0, roundQty(demand.demandQty + (input.targetDosDays * input.usage6mTotal) / 180 - input.startStockQty));
   const selectedQty = Math.max(stockoutPreventionQty, dosRequiredQty);
   const selectionReason: SelectionReason = stockoutPreventionQty > dosRequiredQty
     ? 'STOCKOUT_PREVENTION'
@@ -190,9 +205,10 @@ export function calculatePlanMonth(input: PlanMonthCalculationInput): PlanMonthC
     effectiveMoq: effectiveMoq(input.moq),
     finalOrderQty,
     projectedMonthEndQty,
-    projectedDosDays: input.avgUsage6m > 0 ? Math.round((projectedMonthEndQty / input.avgUsage6m) * 30 * 10) / 10 : null,
+    // 월말 재고 ÷ (합 ÷ 6) × 30 = 월말 재고 × 180 ÷ 합. 반올림하지 않는다(표시할 때만 반올림, Task 12가 원값을 쓴다)
+    projectedDosDays: input.usage6mTotal > 0 ? (projectedMonthEndQty * 180) / input.usage6mTotal : null,
     projectedInventoryValue: projectedMonthEndQty * input.unitPrice,
-    dosReasonCode: input.avgUsage6m === 0 ? 'AVG_USAGE_ZERO' : null,
+    dosReasonCode: input.usage6mTotal === 0 ? 'AVG_USAGE_ZERO' : null,
   };
 }
 
@@ -204,7 +220,8 @@ export type PlanItemInput = {
   unitPrice: number | null;
   moq: number | null;
   championModelId: string | null;
-  avgUsage6m: number | null;
+  /** 학습 기간 최근 6개월 사용량 합(usageTotal6m). 라인의 avgUsage6m은 이 값 ÷ 6이다 */
+  usage6mTotal: number | null;
   /** null = 가용재고 행 자체가 없다 */
   startStock: { availableQty: number | null; reasonCode: string | null } | null;
   months: Array<{ monthNo: number; baseForecastQty: number | null; departmentAgreedQty: number | null; approvedAddedQty: number }>;
@@ -257,7 +274,7 @@ export function buildPlanItemLines(input: PlanItemInput): PlanItemLine[] {
     } else {
       if (input.championModelId === null) block('CHAMPION_UNAVAILABLE');
       else if (month.baseForecastQty === null) block('BASE_FORECAST_UNAVAILABLE');
-      if (input.avgUsage6m === null || input.avgUsage6m < 0) block('AVG_USAGE_UNAVAILABLE');
+      if (input.usage6mTotal === null || input.usage6mTotal < 0) block('AVG_USAGE_UNAVAILABLE');
     }
 
     if (month.monthNo === 1) {
@@ -285,7 +302,7 @@ export function buildPlanItemLines(input: PlanItemInput): PlanItemLine[] {
       reasonCode: null,
       reasonCodes: reasons,
       baseForecastQty,
-      avgUsage6m: verified ? input.avgUsage6m : null,
+      avgUsage6m: verified && input.usage6mTotal !== null ? input.usage6mTotal / 6 : null,
       candidateSource: demand?.candidateSource ?? null,
       candidateQty: demand?.candidateQty ?? null,
       flexMinQty: demand?.flexMinQty ?? null,
@@ -306,11 +323,11 @@ export function buildPlanItemLines(input: PlanItemInput): PlanItemLine[] {
     };
 
     if (!unavailable && baseForecastQty !== null && startStockQty !== null
-        && input.targetDosDays !== null && input.avgUsage6m !== null && input.unitPrice !== null) {
+        && input.targetDosDays !== null && input.usage6mTotal !== null && input.unitPrice !== null) {
       const result = calculatePlanMonth({
         monthNo: month.monthNo, baseForecastQty, departmentAgreedQty: month.departmentAgreedQty,
         approvedAddedQty: month.approvedAddedQty, startStockQty, targetDosDays: input.targetDosDays,
-        avgUsage6m: input.avgUsage6m, moq: input.moq, unitPrice: input.unitPrice,
+        usage6mTotal: input.usage6mTotal, moq: input.moq, unitPrice: input.unitPrice,
       });
       if (result.dosReasonCode) reasons.push(result.dosReasonCode);
       Object.assign(line, {
@@ -363,11 +380,11 @@ function monthStart(index: number): string {
 }
 
 /**
- * 최근 6개월 월평균사용량 — 학습 기간(core.v_train_demand)의 마지막 6개월만 쓴다.
+ * 최근 6개월 사용량 합 — 학습 기간(core.v_train_demand)의 마지막 6개월만 쓴다. 월평균사용량은 이 합 ÷ 6이다.
  * 학습 종료일 뒤(test Actual) 행은 보지 않는다. 원본 null이 하나라도 있으면 0으로 바꾸지 않고 null이다.
  * 기록이 없는 달은 0이다(STEP 5 · 6 월별 grid와 같은 규칙).
  */
-export function averageUsage6m(input: {
+export function usageTotal6m(input: {
   trainStart: string;
   trainEnd: string;
   rows: Array<{ useDate: string; qty: number | null }>;
@@ -378,7 +395,7 @@ export function averageUsage6m(input: {
   const windowStart = monthStart(firstMonth);
   const inWindow = input.rows.filter((row) => row.useDate >= windowStart && row.useDate >= input.trainStart && row.useDate <= input.trainEnd);
   if (inWindow.some((row) => row.qty === null)) return null;
-  return inWindow.reduce((sum, row) => sum + (row.qty ?? 0), 0) / 6;
+  return inWindow.reduce((sum, row) => sum + (row.qty ?? 0), 0);
 }
 
 const APPROVED_DEMAND_SOURCES: readonly string[] = ['CONFIRMED_ORDER', 'SUPPLY_MEETING', 'EVENT_DEMAND'];
@@ -395,18 +412,20 @@ type ProvenanceRow = { batchStatus: string | null; importType: string | null; so
 /**
  * Forecast 원천 게이트 — core.procurement_forecast_source_status의 거울(컨트롤러 판정 1 · pre-review fix).
  * 확인 순서: 실행 성공 여부 → 학습 기간 일치 → Champion을 채점한 Backtest의 검증 기간 일치 →
- * 모든 학습 행과 test 기간 행의 적재 출처 → stale.
+ * 모든 학습 행과 test 기간 행의 적재 출처 → 입력 지문(fix round 1).
+ * STEP 6 is_stale은 보지 않는다 — 무관한 적재(수주 · 이벤트)로도 켜지기 때문이다. 사용 이력 변경은 지문이 잡는다.
  */
 export function forecastSourceStatus(input: {
   runStatus: string | null;
   granularity: string | null;
   windowMatches: boolean;
   testWindowMatches: boolean;
-  isStale: boolean;
-  rolledBackAfterSnapshot: boolean;
-  snapshotAt: string | null;
-  trainingRows: Array<ProvenanceRow & { loadedAt: string | null }>;
+  trainingRows: ProvenanceRow[];
   testRows: ProvenanceRow[];
+  /** stored = 실행이 끝날 때 기록한 지문(없으면 null), current = 지금 같은 기간의 지문 */
+  trainFingerprint: { stored: InputFingerprint | null; current: InputFingerprint };
+  /** 이 실행의 Champion을 채점한 Backtest마다 하나 */
+  testFingerprints: Array<{ stored: InputFingerprint | null; current: InputFingerprint }>;
 }): SourceStatus {
   if (input.runStatus !== 'SUCCESS' || input.granularity !== 'MONTH') return 'FORECAST_SOURCE_UNVERIFIED';
   if (!input.windowMatches || !input.testWindowMatches) return 'FORECAST_WINDOW_CHANGED';
@@ -415,10 +434,19 @@ export function forecastSourceStatus(input: {
   if (input.trainingRows.length === 0 || !input.trainingRows.every(verifiedRow) || !input.testRows.every(verifiedRow)) {
     return 'FORECAST_SOURCE_UNVERIFIED';
   }
-  const snapshot = input.snapshotAt === null ? null : Date.parse(input.snapshotAt);
-  const loadedAfterSnapshot = input.trainingRows.some((row) => row.loadedAt === null || snapshot === null || Date.parse(row.loadedAt) > snapshot);
-  if (input.isStale || input.rolledBackAfterSnapshot || loadedAfterSnapshot) return 'FORECAST_RUN_STALE';
+  const prints = [input.trainFingerprint, ...input.testFingerprints];
+  if (prints.some((print) => print.stored === null)) return 'FORECAST_INPUT_UNTRACED';
+  if (prints.some((print) => print.stored !== null && !sameFingerprint(print.stored, print.current))) return 'FORECAST_INPUT_CHANGED';
   return 'VERIFIED';
+}
+
+/** 입력 지문 — core.usage_input_fingerprint 한 행(행 수 · 수량 합 · 최대 loaded_at · 정렬한 (품목, 일자, 수량, 배치)의 md5) */
+export type InputFingerprint = { rowCount: number; qtySum: number | null; maxLoadedAt: string | null; md5: string };
+
+function sameFingerprint(left: InputFingerprint, right: InputFingerprint): boolean {
+  const instant = (value: string | null) => (value === null ? null : Date.parse(value));
+  return left.rowCount === right.rowCount && left.qtySum === right.qtySum
+    && instant(left.maxLoadedAt) === instant(right.maxLoadedAt) && left.md5 === right.md5;
 }
 
 export type PlanConfirmBlocker = { reasonCode: string; lineCount: number; itemCount: number };

@@ -6,8 +6,8 @@ import {
   PLAN_REASON_LABELS,
   approvedAddedDemand,
   approvedPolicyValue,
-  averageUsage6m,
   buildPlanItemLines,
+  calculatePlanMonth,
   effectiveMoq,
   flexBandForMonth,
   forecastSourceStatus,
@@ -22,6 +22,8 @@ import {
   validateBuildPlanInput,
   validatePlanDecision,
   validatePlanId,
+  usageTotal6m,
+  type InputFingerprint,
   type PlanItemInput,
 } from './model.ts';
 
@@ -45,7 +47,7 @@ function item(overrides: Partial<PlanItemInput> = {}): PlanItemInput {
     unitPrice: 1000,
     moq: 50,
     championModelId: 'MA_3M',
-    avgUsage6m: 100,
+    usage6mTotal: 600,
     startStock: { availableQty: 80, reasonCode: null },
     months: months(),
     ...overrides,
@@ -69,12 +71,55 @@ test('필요량 120, MOQ 50이면 최종 발주량 150', () => {
 test('MOQ null이면 1을 적용한다', () => {
   assert.equal(effectiveMoq(null), 1);
   assert.equal(roundUpToMoq(120.5, null), 121);
-  const [first] = buildPlanItemLines(item({ moq: null, avgUsage6m: 100.5 }));
+  const [first] = buildPlanItemLines(item({ moq: null, usage6mTotal: 603 }));
+  assert.equal(first.avgUsage6m, 100.5);
   assert.equal(first.effectiveMoq, 1);
   assert.equal(first.selectedQty, 120.5);
   assert.equal(first.finalOrderQty, 121);
   assert.equal(first.projectedMonthEndQty, 101);
-  assert.equal(first.projectedDosDays, 30.1);
+  // 예상 DoS는 반올림하지 않고 저장한다(표시할 때만 반올림) — 101 × 180 ÷ 603
+  assert.equal(first.projectedDosDays, (101 * 180) / 603);
+});
+
+// ══ 정밀도 (fix round 1) ═══════════════════════════════════════════
+
+function exactFinalOrderQty(demand: number, target: number, total: number, moq: number): number {
+  // 필요량 = (수요 × 180 + 목표 × 6개월 합) ÷ 180 — 정수 산술로 올림한 뒤 MOQ 배수
+  const numerator = demand * 180 + target * total;
+  const denominator = 180 * moq;
+  return ((numerator - (numerator % denominator)) / denominator + (numerator % denominator === 0 ? 0 : 1)) * moq;
+}
+
+function monthResult(demand: number, target: number, total: number, moq: number | null) {
+  return calculatePlanMonth({
+    monthNo: 4, baseForecastQty: demand, departmentAgreedQty: null, approvedAddedQty: 0,
+    startStockQty: 0, targetDosDays: target, usage6mTotal: total, moq, unitPrice: 1,
+  });
+}
+
+test('반복소수 평균이어도 정수 필요량은 MOQ 올림으로 한 단위 더 붙지 않는다', () => {
+  // 목표 45 · 6개월 합 100(평균 16.666…) · 수요 75 · 시작 0 → 필요량 정확히 100
+  const example = monthResult(75, 45, 100, null);
+  assert.equal(example.dosRequiredQty, 100);
+  assert.equal(example.finalOrderQty, 100);
+  // 합 10 · 목표 108 → 필요량 정확히 6
+  assert.equal(monthResult(0, 108, 10, null).finalOrderQty, 6);
+});
+
+test('합 1~1000 × 목표 5종 × MOQ 3종 × 수요 2종 — 정수 산술 기대값과 모두 같다', () => {
+  const mismatches: string[] = [];
+  for (let total = 1; total <= 1000; total += 1) {
+    for (const target of [30, 45, 60, 90, 108]) {
+      for (const moq of [1, 10, 50]) {
+        for (const demand of [0, 75]) {
+          const actual = monthResult(demand, target, total, moq).finalOrderQty;
+          const expected = exactFinalOrderQty(demand, target, total, moq);
+          if (actual !== expected) mismatches.push(`${total}/${target}/${moq}/${demand}: ${actual} ≠ ${expected}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(mismatches.slice(0, 5), []);
 });
 
 // ══ 목표 DoS 미승인 → 확정 차단 (stage1 §6) ═══════════════════════
@@ -205,7 +250,7 @@ test('k개월차 시작재고는 k−1개월차 예상 월말재고다', () => {
 });
 
 test('평균사용량이 0이면 두 기준이 같아 INVENTORY_VALUE_MIN이고 예상 DoS는 null + AVG_USAGE_ZERO', () => {
-  const [first] = buildPlanItemLines(item({ avgUsage6m: 0 }));
+  const [first] = buildPlanItemLines(item({ usage6mTotal: 0 }));
   assert.equal(first.calculationStatus, 'CALCULATED');
   assert.equal(first.stockoutPreventionQty, 20);
   assert.equal(first.dosRequiredQty, 20);
@@ -232,8 +277,8 @@ test('재고 분류 불가면 1개월차는 그 사유로, 이후 달은 PRIOR_M
 
 test('단가 · 평균사용량 · Champion · 기준 Forecast가 없으면 임의 수량을 만들지 않는다', () => {
   assert.equal(buildPlanItemLines(item({ unitPrice: null }))[0].reasonCode, 'UNIT_PRICE_UNSET');
-  assert.equal(buildPlanItemLines(item({ avgUsage6m: null }))[0].reasonCode, 'AVG_USAGE_UNAVAILABLE');
-  assert.equal(buildPlanItemLines(item({ avgUsage6m: -3 }))[0].reasonCode, 'AVG_USAGE_UNAVAILABLE');
+  assert.equal(buildPlanItemLines(item({ usage6mTotal: null }))[0].reasonCode, 'AVG_USAGE_UNAVAILABLE');
+  assert.equal(buildPlanItemLines(item({ usage6mTotal: -18 }))[0].reasonCode, 'AVG_USAGE_UNAVAILABLE');
   assert.equal(buildPlanItemLines(item({ championModelId: null }))[0].reasonCode, 'CHAMPION_UNAVAILABLE');
   assert.equal(buildPlanItemLines(item({ hasPolicy: false }))[0].reasonCode, 'ITEM_POLICY_MISSING');
   const missingBase = buildPlanItemLines(item({ months: months([{ baseForecastQty: null }]) }));
@@ -247,28 +292,29 @@ test('단가 · 평균사용량 · Champion · 기준 Forecast가 없으면 임�
 
 const trainRows = ['2026-01', '2026-02', '2026-03', '2026-04', '2026-05', '2026-06'].map((month) => ({ useDate: `${month}-15`, qty: 100 }));
 
-test('월평균사용량은 학습 기간의 최근 6개월만 쓴다', () => {
-  assert.equal(averageUsage6m({ trainStart: '2026-01-01', trainEnd: '2026-06-30', rows: trainRows }), 100);
-  assert.equal(averageUsage6m({ trainStart: '2026-01-01', trainEnd: '2026-06-30', rows: trainRows.slice(1) }), 500 / 6);
+test('월평균사용량 근거는 학습 기간의 최근 6개월 합이다(평균 = 합 ÷ 6)', () => {
+  assert.equal(usageTotal6m({ trainStart: '2026-01-01', trainEnd: '2026-06-30', rows: trainRows }), 600);
+  assert.equal(usageTotal6m({ trainStart: '2026-01-01', trainEnd: '2026-06-30', rows: trainRows.slice(1) }), 500);
+  assert.equal(buildPlanItemLines(item({ usage6mTotal: 500 }))[0].avgUsage6m, 500 / 6);
 });
 
 test('test Actual을 바꿔도 계획의 학습 Forecast 근거가 변하지 않는다', () => {
-  const before = averageUsage6m({ trainStart: '2026-01-01', trainEnd: '2026-06-30', rows: trainRows });
-  const withTestActual = averageUsage6m({
+  const before = usageTotal6m({ trainStart: '2026-01-01', trainEnd: '2026-06-30', rows: trainRows });
+  const withTestActual = usageTotal6m({
     trainStart: '2026-01-01',
     trainEnd: '2026-06-30',
     rows: [...trainRows, { useDate: '2026-07-15', qty: 9999 }, { useDate: '2026-08-15', qty: null }],
   });
   assert.equal(withTestActual, before);
-  assert.deepEqual(buildPlanItemLines(item({ avgUsage6m: withTestActual })), buildPlanItemLines(item({ avgUsage6m: before })));
+  assert.deepEqual(buildPlanItemLines(item({ usage6mTotal: withTestActual })), buildPlanItemLines(item({ usage6mTotal: before })));
 });
 
 test('원본 null 사용량은 0으로 바꾸지 않고 계산 불가다', () => {
-  assert.equal(averageUsage6m({ trainStart: '2026-01-01', trainEnd: '2026-06-30', rows: [...trainRows, { useDate: '2026-03-02', qty: null }] }), null);
+  assert.equal(usageTotal6m({ trainStart: '2026-01-01', trainEnd: '2026-06-30', rows: [...trainRows, { useDate: '2026-03-02', qty: null }] }), null);
 });
 
 test('학습 기간이 6개월보다 짧으면 평균사용량을 계산하지 않는다', () => {
-  assert.equal(averageUsage6m({ trainStart: '2026-02-01', trainEnd: '2026-06-30', rows: trainRows.slice(1) }), null);
+  assert.equal(usageTotal6m({ trainStart: '2026-02-01', trainEnd: '2026-06-30', rows: trainRows.slice(1) }), null);
 });
 
 test('영업 확률을 바꿔도 최종 발주량이 변하지 않는다', () => {
@@ -286,17 +332,18 @@ test('영업 확률을 바꿔도 최종 발주량이 변하지 않는다', () =>
 
 // ══ 원천 게이트 (컨트롤러 판정 1) ═════════════════════════════════
 
-const importedRow = { batchStatus: 'IMPORTED', importType: 'usage_history', sourceType: 'FILE_UPLOAD', loadedAt: '2026-07-01T00:00:00Z' };
+const importedRow = { batchStatus: 'IMPORTED', importType: 'usage_history', sourceType: 'FILE_UPLOAD' };
+const trainPrint: InputFingerprint = { rowCount: 24, qtySum: 2400, maxLoadedAt: '2026-07-01T00:00:00Z', md5: 'a1' };
+const testPrint: InputFingerprint = { rowCount: 1, qtySum: 100, maxLoadedAt: '2026-07-01T00:00:00Z', md5: 'b2' };
 const verifiedRun = {
   runStatus: 'SUCCESS',
   granularity: 'MONTH',
   windowMatches: true,
   testWindowMatches: true,
-  isStale: false,
-  rolledBackAfterSnapshot: false,
-  snapshotAt: '2026-07-01T00:00:00Z',
   trainingRows: [importedRow],
   testRows: [importedRow],
+  trainFingerprint: { stored: trainPrint, current: trainPrint },
+  testFingerprints: [{ stored: testPrint, current: testPrint }],
 };
 
 test('모든 학습 행이 IMPORTED 적재 배치에서 왔으면 VERIFIED', () => {
@@ -306,7 +353,7 @@ test('모든 학습 행이 IMPORTED 적재 배치에서 왔으면 VERIFIED', () 
 test('출처 없는 학습 행이 하나라도 있으면 FORECAST_SOURCE_UNVERIFIED — 모든 라인이 계산 불가', () => {
   const status = forecastSourceStatus({
     ...verifiedRun,
-    trainingRows: [importedRow, { batchStatus: null, importType: null, sourceType: null, loadedAt: '2026-06-01T00:00:00Z' }],
+    trainingRows: [importedRow, { batchStatus: null, importType: null, sourceType: null }],
   });
   assert.equal(status, 'FORECAST_SOURCE_UNVERIFIED');
   const lines = buildPlanItemLines(item({ sourceStatus: status }));
@@ -341,15 +388,38 @@ test('학습 행이 없거나 실행이 SUCCESS가 아니면 FORECAST_SOURCE_UNV
   assert.equal(forecastSourceStatus({ ...verifiedRun, trainingRows: [{ ...importedRow, batchStatus: 'ROLLED_BACK' }] }), 'FORECAST_SOURCE_UNVERIFIED');
 });
 
-test('stale 실행은 FORECAST_RUN_STALE, 학습 기간이 바뀌었으면 FORECAST_WINDOW_CHANGED', () => {
-  assert.equal(forecastSourceStatus({ ...verifiedRun, isStale: true }), 'FORECAST_RUN_STALE');
-  assert.equal(forecastSourceStatus({ ...verifiedRun, rolledBackAfterSnapshot: true }), 'FORECAST_RUN_STALE');
-  assert.equal(
-    forecastSourceStatus({ ...verifiedRun, trainingRows: [{ ...importedRow, loadedAt: '2026-07-02T00:00:00Z' }] }),
-    'FORECAST_RUN_STALE',
-  );
+test('학습 기간이 바뀌었으면 FORECAST_WINDOW_CHANGED', () => {
   assert.equal(forecastSourceStatus({ ...verifiedRun, windowMatches: false }), 'FORECAST_WINDOW_CHANGED');
-  assert.equal(buildPlanItemLines(item({ sourceStatus: 'FORECAST_RUN_STALE' }))[0].reasonCode, 'FORECAST_RUN_STALE');
+});
+
+// ══ 입력 지문 (fix round 1) ════════════════════════════════════════
+
+test('실행 · Backtest에 입력 지문이 없으면 FORECAST_INPUT_UNTRACED(다시 실행해야 한다)', () => {
+  assert.equal(forecastSourceStatus({ ...verifiedRun, trainFingerprint: { stored: null, current: trainPrint } }), 'FORECAST_INPUT_UNTRACED');
+  assert.equal(forecastSourceStatus({ ...verifiedRun, testFingerprints: [{ stored: null, current: testPrint }] }), 'FORECAST_INPUT_UNTRACED');
+  assert.equal(buildPlanItemLines(item({ sourceStatus: 'FORECAST_INPUT_UNTRACED' }))[0].reasonCode, 'FORECAST_INPUT_UNTRACED');
+});
+
+test('실행 이후 학습 · 검증 기간 행이 바뀌면(삭제 · 추가 · 수정) FORECAST_INPUT_CHANGED', () => {
+  const deletedDummy = { ...trainPrint, rowCount: 23, md5: 'c3' };
+  assert.equal(forecastSourceStatus({ ...verifiedRun, trainFingerprint: { stored: trainPrint, current: deletedDummy } }), 'FORECAST_INPUT_CHANGED');
+  assert.equal(
+    forecastSourceStatus({ ...verifiedRun, testFingerprints: [{ stored: testPrint, current: { ...testPrint, qtySum: 99999, md5: 'd4' } }] }),
+    'FORECAST_INPUT_CHANGED',
+  );
+  assert.equal(
+    forecastSourceStatus({ ...verifiedRun, trainFingerprint: { stored: trainPrint, current: { ...trainPrint, maxLoadedAt: '2026-07-02T00:00:00Z' } } }),
+    'FORECAST_INPUT_CHANGED',
+  );
+  const lines = buildPlanItemLines(item({ sourceStatus: 'FORECAST_INPUT_CHANGED' }));
+  assert.ok(lines.every((line) => line.calculationStatus === 'CALCULATION_UNAVAILABLE' && line.reasonCode === 'FORECAST_INPUT_CHANGED'));
+});
+
+test('지문 비교는 시각 표기가 달라도 같은 시각이면 같다', () => {
+  assert.equal(
+    forecastSourceStatus({ ...verifiedRun, trainFingerprint: { stored: trainPrint, current: { ...trainPrint, maxLoadedAt: '2026-06-30T17:00:00-07:00' } } }),
+    'VERIFIED',
+  );
 });
 
 // ══ 입력 검증 · 정규화 ═══════════════════════════════════════════

@@ -130,7 +130,10 @@ values ('00000000-0000-4000-8000-0000000004b1', 't9b-usage-2026.csv', 'usage_his
 
 insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse, batch_id, source_type, loaded_at, source_record_id)
 select 'T9B-' || i.item_id || '-' || to_char(m.month, 'YYYYMM'), i.item_id, (m.month + 14)::date,
-       case when i.item_id = 'T9B02' and m.month = '2026-06-01' then 103 else 100 end,
+       -- T9B02는 합 603(평균 100.5), T9B04는 합 100(평균 16.666… 반복소수 — fix round 1 정밀도 검증)
+       case when i.item_id = 'T9B02' and m.month = '2026-06-01' then 103
+            when i.item_id = 'T9B04' then case when extract(month from m.month) in (1, 4) then 16 else 17 end
+            else 100 end,
        'MAIN', '00000000-0000-4000-8000-0000000004b1', 'FILE_UPLOAD', '2026-07-01T00:00:00Z',
        'T9B-' || i.item_id || '-' || to_char(m.month, 'YYYYMM')
   from (values ('T9B01'), ('T9B02'), ('T9B03'), ('T9B04')) as i(item_id)
@@ -142,29 +145,37 @@ values ('T9B-T9B01-TEST', 'T9B01', '2026-08-15', 100, 'MAIN', '00000000-0000-400
         '2026-07-01T00:00:00Z', 'T9B-T9B01-TEST');
 
 -- ══ Forecast Run · Champion ══════════════════════════════════════
-insert into core.forecast_run (run_id, status, granularity, train_start, train_end, horizon, data_snapshot_at,
-                               n_models, n_items, n_rows, started_at, finished_at, message)
-values ('00000000-0000-4000-8000-0000000004f1', 'SUCCESS', 'MONTH', '2026-01-01', '2026-06-30', 9, '2026-07-01T00:00:00Z',
-        1, 4, 24, '2026-07-02T00:00:00Z', '2026-07-02T00:01:00Z', 'T9B fixture');
+-- 실행 함수(STEP 6 · 7)를 다시 돌리지 않고 결과 행을 직접 넣는다. SUCCESS 행을 넣는 순간 0900의 트리거가 그때의
+-- 학습 · 검증 기간 입력 지문을 기록한다(실제 실행이 SUCCESS로 끝날 때와 같다). S27이 같은 함수로 두 번째 실행을 만든다.
+create or replace function plan_test.create_run(p_run_id uuid, p_model_version uuid, p_backtest_id uuid) returns void
+language plpgsql as $$
+begin
+  insert into core.forecast_run (run_id, status, granularity, train_start, train_end, horizon, data_snapshot_at,
+                                 n_models, n_items, n_rows, started_at, finished_at, message)
+  select p_run_id, 'SUCCESS', 'MONTH', s.train_start, s.train_end, 9, (select max(t.loaded_at) from core.v_train_demand t),
+         1, 4, 24, clock_timestamp(), clock_timestamp(), 'T9B fixture'
+    from core.forecast_setting s where s.active;
 
-insert into core.model_version (model_version, run_id, model_id, version, definition, parameters)
-values ('00000000-0000-4000-8000-0000000004f2', '00000000-0000-4000-8000-0000000004f1', 'MA_3M', '1.0.0', '{}'::jsonb, '{"window": 3}'::jsonb);
+  insert into core.model_version (model_version, run_id, model_id, version, definition, parameters)
+  values (p_model_version, p_run_id, 'MA_3M', '1.0.0', '{}'::jsonb, '{"window": 3}'::jsonb);
 
-insert into core.forecast_result (run_id, model_id, item_id, period, model_version, predicted_qty, p50, basis)
-select '00000000-0000-4000-8000-0000000004f1', 'MA_3M', i.item_id, m.period, '00000000-0000-4000-8000-0000000004f2', 100, 100,
-       '{"source": "TRAIN_ONLY"}'::jsonb
-  from (values ('T9B01'), ('T9B02'), ('T9B03'), ('T9B04')) as i(item_id)
- cross join (select generate_series('2026-10-01'::timestamp, '2027-03-01'::timestamp, interval '1 month')::date as period) m;
+  insert into core.forecast_result (run_id, model_id, item_id, period, model_version, predicted_qty, p50, basis)
+  select p_run_id, 'MA_3M', i.item_id, m.period, p_model_version, 100, 100, '{"source": "TRAIN_ONLY"}'::jsonb
+    from (values ('T9B01'), ('T9B02'), ('T9B03'), ('T9B04')) as i(item_id)
+   cross join (select generate_series('2026-10-01'::timestamp, '2027-03-01'::timestamp, interval '1 month')::date as period) m;
 
-insert into core.backtest_run (backtest_run_id, forecast_run_id, test_start, test_end, metric, reference_model_id, status, finished_at)
-values ('00000000-0000-4000-8000-0000000004f3', '00000000-0000-4000-8000-0000000004f1', '2026-07-01', '2026-09-30', 'WAPE', 'WMA_3M',
-        'SUCCESS', '2026-07-02T00:02:00Z');
+  insert into core.backtest_run (backtest_run_id, forecast_run_id, test_start, test_end, metric, reference_model_id, status, finished_at)
+  select p_backtest_id, p_run_id, s.test_start, s.test_end, 'WAPE', 'WMA_3M', 'SUCCESS', clock_timestamp()
+    from core.forecast_setting s where s.active;
 
-insert into core.champion_model_selection (backtest_run_id, item_id, champion_model_id, model_version, champion_metric,
-                                           champion_metric_value, selection_reason, selection_method)
-select '00000000-0000-4000-8000-0000000004f3', item_id, 'MA_3M', '00000000-0000-4000-8000-0000000004f2', 'WAPE', 0.1,
-       'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO'
-  from (values ('T9B01'), ('T9B02'), ('T9B03'), ('T9B04')) as i(item_id);
+  insert into core.champion_model_selection (backtest_run_id, item_id, champion_model_id, model_version, champion_metric,
+                                             champion_metric_value, selection_reason, selection_method)
+  select p_backtest_id, i.item_id, 'MA_3M', p_model_version, 'WAPE', 0.1, 'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO'
+    from (values ('T9B01'), ('T9B02'), ('T9B03'), ('T9B04')) as i(item_id);
+end $$;
+
+select plan_test.create_run('00000000-0000-4000-8000-0000000004f1', '00000000-0000-4000-8000-0000000004f2',
+                            '00000000-0000-4000-8000-0000000004f3');
 
 -- ══ 부서 제출(Task 7) · 수급회의(Task 8) ═══════════════════════════
 insert into core.planning_cycle (cycle_id, plan_month, submission_deadline, status, is_active, opened_by)
