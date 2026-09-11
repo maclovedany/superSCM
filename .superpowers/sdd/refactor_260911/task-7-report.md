@@ -507,3 +507,138 @@ $ git diff --check  # 출력 없음
   동작을 그대로 증명한다.
 - 관리자 `validate`/`commit` 라우트의 `importType` 재확인 — `parse` 단계에서 이미
   `ADMIN_BATCH_IMPORT_TYPES`로 막혀 그 이후 단계로 `demand_line`이 흘러갈 경로 자체가 없다.
+
+## 10. Fix round 3 — 잠그지 않은 SELECT로 인한 경쟁 상태 수정
+
+재검토에서 "합의(agree) 구멍은 해결됐지만, 새 구조적 트리거와 함수들의 `is_active` 확인이
+**잠그지 않은 SELECT**라 READ COMMITTED에서 `close_planning_cycle`의 커밋을 기다리지 않고 옛 값을
+읽을 수 있다"는 Important 결함이 나왔다. 즉 §9의 "닫힌 주기 행은 절대 안 바뀐다"는 주장이 이론상
+맞아도 실제 동시 실행에서는 보장되지 않았다.
+
+### 원인
+
+트리거(`core.guard_demand_submission_cycle_active` · `..._line_cycle_active`)와 함수(`save` ·
+`submit` · `withdraw` · `agree`)가 모두 `select is_active from core.planning_cycle where
+cycle_id = ...`처럼 잠그지 않은 SELECT로 읽었다. READ COMMITTED에서 잠그지 않은 SELECT는 다른
+트랜잭션이 그 행에 걸어 둔 행 잠금을 기다리지 않고, 그 트랜잭션이 시작된 시점(정확히는 그 문장이
+시작된 시점)의 스냅샷을 그대로 읽는다 — `close_planning_cycle`이 `is_active = false`로 바꾸는
+UPDATE를 아직 커밋하지 않았다면, 동시에 도는 쓰기 함수는 옛(true) 값을 그대로 보고 통과한 뒤
+자기 쓰기를 커밋할 수 있다. 두 트랜잭션이 모두 성공적으로 커밋되면, "닫힌 주기인데 방금
+바뀐(수정 시각이 새로운) 제출본"이라는, 정확히 막으려던 상태가 실제로 만들어진다.
+
+### 고침 1 — 트리거와 함수 모두 `FOR SHARE`로 읽기(핵심 교착 지점)
+
+`core.guard_demand_submission_cycle_active`(demand_submission용)와
+`core.guard_demand_submission_line_cycle_active`(demand_submission_line용, `for share of c`로
+취합 주기 행만 잠근다) 둘 다 `is_active` 조회에 `FOR SHARE`를 붙였다 — 이 트리거가 "함수가 무엇을
+확인했든 상관없이 스스로 맞아야 하는" 구조적 최종 방어선이므로, 여기서 먼저 고쳤다.
+
+**`FOR KEY SHARE`가 아니라 `FOR SHARE`를 쓴 이유** — `close_planning_cycle`의(원래는) 평범한
+`UPDATE`는 키가 아닌 열만 바꾸므로 암묵적으로 `FOR NO KEY UPDATE` 잠금을 건다. PostgreSQL의 행
+잠금 충돌표에서 `FOR KEY SHARE`는 `FOR UPDATE`하고만 충돌하고 `FOR NO KEY UPDATE`와는 충돌하지
+않는다 — 그래서 `FOR KEY SHARE`로는 이 UPDATE를 전혀 기다리지 못했을 것이다. `FOR SHARE`는
+`FOR NO KEY UPDATE`와 충돌하므로 실제로 순서를 맞춘다.
+
+이어서 `save_demand_submission_lines` · `submit_demand_submission` · `withdraw_demand_submission` ·
+`agree_demand_submission` 네 함수의 자체 확인도 `FOR SHARE`로 바꿨다(친절한 메시지를 일찍
+돌려주는 역할은 그대로 두고, 최종 방어는 트리거가 한다).
+
+### 고침 2 — `close_planning_cycle`이 취합 주기 행을 명시적으로 `FOR UPDATE`로 먼저 잠근다
+
+기존에는 평범한 `UPDATE ... WHERE cycle_id = ... AND is_active`가 암묵적으로 잠갔다. 이제
+"찾을 수 없음" 판정과 잠금 획득을 분리해, `SELECT * FROM core.planning_cycle WHERE cycle_id = ...
+FOR UPDATE`로 먼저 명시적으로 잠그고 존재·활성 여부를 확인한 뒤에만 `UPDATE`한다 — 잠금 시점이
+코드에서 분명히 드러나고, 위 트리거·함수들의 `FOR SHARE`와 반드시 충돌하는 잠금 종류를 명시적으로
+선언한다.
+
+### 고침 3 — 잠금 순서를 파일 전체에서 통일하고 머리말에 문서화(Task 5 방식)
+
+기존에는 `save/submit/withdraw/agree` 네 함수가 **제출본 행을 먼저**(`FOR UPDATE`) 잠근 뒤 취합
+주기 행을 나중에(트리거를 통해) 확인했다 — `start_demand_submission`과
+`close_planning_cycle`(취합 주기 행만 잠근다)의 순서와 반대였다. 두 순서가 섞여 있으면 앞으로
+함수가 늘어날 때 교착 상태(40P01)가 날 수 있어, 네 함수 모두 **취합 주기 행을 먼저 잠그도록**
+고쳤다:
+
+1. 제출본에서 `cycle_id`만 잠그지 않고 조회한다(제출본 생성 뒤 `cycle_id`는 절대 바뀌지 않으므로
+   잠그지 않은 조회로도 안전하다).
+2. 그 `cycle_id`로 `core.planning_cycle` 행을 `FOR SHARE`로 잠그고 `is_active`를 확인한다.
+3. 그다음에야 제출본 행을 `FOR UPDATE`로 잠근다.
+
+`core.lock_stock_balance_items`(Task 5)가 "다품목 주문끼리 서로 다른 순서로 잠그면 교착 상태가
+난다"며 품목코드 오름차순으로 통일했던 것과 같은 이유다. 파일 머리말에 "★ 잠금 순서(fix round 3)"
+절을 추가해 규칙과 그 근거(어느 함수도 반대 방향으로 잠그지 않는다, `close_planning_cycle`은
+제출본 행을 아예 잠그지 않는다)를 적어 뒀다.
+
+### 검증 — 실제 두 연결 동시성 테스트(신규 `concurrency.sh`)
+
+`supabase/tests/sales_order_allocation/concurrency.sh`(Task 5)와 같은 패턴으로
+`supabase/tests/demand_submission/concurrency.sh`를 새로 만들었다(`run-all.sh`가 시나리오 뒤에
+자동으로 부른다). scenarios.psql이 쓰는 달(0 · +2 · +4개월)과 겹치지 않게 +8 · +10개월 취합
+주기를 새로 연다.
+
+- **CC1(요청한 첫 번째 순서)** — 연결 A가 취합 주기 행을 `FOR UPDATE`로 먼저 잠근 채 3초 대기하다
+  `close_planning_cycle`을 부른다. 그동안 연결 B가 같은 주기의 제출본에
+  `save_demand_submission_lines`를 부른다. `pg_stat_activity`로 B가 실제로 그 행 잠금을 기다리는
+  중임을 직접 확인한 뒤, A가 먼저 끝나 주기를 닫고, B는 그 뒤에 깨어나 "취합 주기가 닫혀 더 이상
+  수정할 수 없습니다"로 거절되며(종료 코드 1), 실제로 줄이 하나도 안 남는다.
+- **CC2(반대 순서)** — 연결 B가 취합 주기 행을 먼저 잠근 채(3초 대기) 있다가 실제 저장을
+  실행·커밋한다. 그동안 연결 A가 `close_planning_cycle`을 부른다. A가 그 행 잠금을 기다리는
+  중임을 확인한 뒤, B의 저장이 먼저 성공적으로 반영되고, A는 그 뒤에 정상적으로 주기를 닫는다.
+  마무리로 같은 제출본에 세 번째 저장을 시도해 이번에는 거절됨을 재확인해, "닫힌 뒤에는
+  얼어붙는다"는 규칙이 동시 실행 상황에서도 지켜짐을 보였다.
+- 두 시나리오 모두 로그에 `deadlock` 문구가 없음을 확인했다(교착 상태 없이 잠금 대기로만
+  직렬화됐다는 뜻 — 잠금 순서를 통일한 효과).
+
+FOR SHARE/FOR UPDATE는 SELECT 권한과 별개로 UPDATE 권한이 필요하다는 PostgreSQL의 문서화된 동작
+때문에(`authenticated`에는 `core.planning_cycle` UPDATE 권한이 없다 — 의도적으로, 모든 쓰기는
+함수를 통해서만 한다), 테스트에서 "미리 잠그고 기다리는" 쪽의 사전 잠금은 접속 기본 역할(로컬
+슈퍼유저)로 걸고, 실제 RPC 호출 직전에만 `authenticated` + JWT claim으로 바꾼다 — 작성 중 이
+차이 때문에 CC2가 처음에 "permission denied for table planning_cycle"로 실패해 이 방식으로
+고쳤다.
+
+```bash
+$ LOG_DIR=/tmp/t7-fix3-utc bash supabase/tests/demand_submission/run-all.sh
+scenarios: PASS 75 · FAIL/ERROR 2
+concurrency: PASS 14 · FAIL/ERROR 0
+  PASS: CC1 B가 취합 주기 행 잠금을 기다리는 중(A가 아직 커밋 전) (1)
+  PASS: CC1 A(close_planning_cycle)는 정상 종료 (0)
+  PASS: CC1 B(save_demand_submission_lines)는 거절되어 비정상 종료 (1)
+  PASS: CC2 A(close_planning_cycle)가 취합 주기 행 잠금을 기다리는 중(B가 아직 커밋 전) (1)
+  PASS: CC2 B(save_demand_submission_lines)는 정상 종료(A보다 먼저 커밋) (0)
+  PASS: CC2 A(close_planning_cycle)는 B가 끝난 뒤 정상 종료 (0)
+  PASS: CC2 B의 저장은 A가 닫기 전에 먼저 반영됐다
+  PASS: CC2 닫힌 뒤 세 번째 저장 시도는 거절된다(얼어붙음 재확인) (1)
+결과: 전부 통과
+
+$ PGOPTIONS="-c timezone=America/Los_Angeles" LOG_DIR=/tmp/t7-fix3-la bash supabase/tests/demand_submission/run-all.sh
+scenarios: PASS 75 · FAIL/ERROR 2
+concurrency: PASS 14 · FAIL/ERROR 0
+결과: 전부 통과
+```
+
+두 번 더(다른 로그 디렉터리로) 반복 실행해도 같은 결과였다(타이밍에 흔들리지 않음을 확인).
+
+### 재실행 결과
+
+```bash
+$ npx --no-install node --test "lib/demand/model.test.ts"      # 17/17 (변화 없음)
+$ npx --no-install node --test "lib/import/validate.test.ts"   # 7/7 (변화 없음)
+$ LOG_DIR=/tmp/t7-fix3-utc bash supabase/tests/demand_submission/run-all.sh                                    # 전부 통과 — 시나리오 75 · 동시성 14 (UTC)
+$ PGOPTIONS="-c timezone=America/Los_Angeles" LOG_DIR=/tmp/t7-fix3-la bash supabase/tests/demand_submission/run-all.sh  # 전부 통과 (LA)
+$ npm test        # 186/186
+$ npm run build   # 성공
+$ git diff --check  # 출력 없음
+```
+
+### 파일 변경(이번 라운드)
+
+- `supabase/migrations/20260911000700_stage1_demand_submission.sql` — 머리말에 잠금 순서 문서화,
+  트리거 2개와 함수 4개(`save` · `submit` · `withdraw` · `agree`)의 확인을 `FOR SHARE`로,
+  `close_planning_cycle`을 명시적 `FOR UPDATE` 선잠금으로, 잠금 순서를 "취합 주기 → 제출본"으로
+  통일.
+- `supabase/tests/demand_submission/concurrency.sh` — 신규, CC1·CC2 두 시나리오.
+- `supabase/tests/demand_submission/run-all.sh` — `concurrency.sh` 호출과 요약 출력 추가.
+
+### Deferred — 이번에도 새로 생긴 것 없음
+
+리뷰가 이번 라운드에서 새로 미룬 항목은 없었다(이전 라운드의 deferred 항목들은 그대로 유지).

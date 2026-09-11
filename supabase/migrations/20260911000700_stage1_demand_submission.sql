@@ -10,6 +10,20 @@
 -- ★ 알 수 없는 품목·null 수량·잘못된 날짜는 조용히 지우지 않는다. core.demand_submission_line에
 --   행을 그대로 남기고 issues(오류 사유)를 붙인다.
 -- ★ 실제 Supabase 적용은 사용자가 SQL Editor에서 수동으로 수행한다. 이 파일은 다시 실행해도 안전하다.
+--
+-- ★ 잠금 순서(fix round 3) — core.stock_balance 잠금 규칙(Task 5, core.lock_stock_balance_items)과
+--   같은 이유다: 이 마이그레이션의 모든 함수는 core.planning_cycle 행을 core.demand_submission
+--   행보다 항상 먼저 잠근다.
+--     1) 취합 주기 행 — core.close_planning_cycle은 FOR UPDATE, 그 밖의(read) 확인은 FOR SHARE.
+--        FOR KEY SHARE는 쓰지 않는다 — 일반 UPDATE(키가 아닌 열만 바꾸는 FOR NO KEY UPDATE)와
+--        충돌하지 않아 close_planning_cycle을 기다리지 못한다.
+--     2) 제출본 행 — FOR UPDATE(save/submit/withdraw/agree 전부).
+--   core.guard_demand_submission_cycle_active · guard_demand_submission_line_cycle_active
+--   트리거도 같은 순서로 취합 주기 행만 FOR SHARE로 잠근다(제출본 행은 트리거를 부른 함수가 이미
+--   잠그고 있다). close_planning_cycle은 제출본 행을 전혀 잠그지 않으므로(반복 알림 정리는
+--   core.notification_outbox만 건드린다) 역방향 대기가 생기지 않는다 — 이 순서를 지키는 한 두
+--   방향으로 서로 기다리는 조합이 나올 수 없다. 이 순서를 바꿔야 하면(새 함수 추가 등) 이 주석부터
+--   다시 확인한다.
 
 
 -- ══ 1. 수요 취합 주기 ═══════════════════════════════════════════
@@ -145,7 +159,13 @@ as $$
 declare
   v_is_active boolean;
 begin
-  select c.is_active into v_is_active from core.planning_cycle c where c.cycle_id = new.cycle_id;
+  -- fix round 3 — 잠그지 않은 SELECT는 READ COMMITTED에서 동시 진행 중인
+  -- core.close_planning_cycle의 커밋을 기다리지 않고 옛(잠기기 전) 값을 그대로 읽을 수 있다.
+  -- FOR SHARE로 읽어야 close_planning_cycle(FOR UPDATE로 잠근다)과 실제로 순서가 맞춰진다.
+  -- FOR KEY SHARE는 부족하다 — 일반 UPDATE(키가 아닌 열만 바꾸는 FOR NO KEY UPDATE)와 충돌하지
+  -- 않기 때문이다. 이 트리거가 최종 방어선이라 애플리케이션 함수의 확인 여부와 무관하게 스스로
+  -- 정확해야 한다.
+  select c.is_active into v_is_active from core.planning_cycle c where c.cycle_id = new.cycle_id for share;
   if v_is_active is distinct from true then
     raise exception '취합 주기가 닫힌 제출본은 더 이상 바꿀 수 없습니다.' using errcode = '22023';
   end if;
@@ -168,10 +188,14 @@ declare
   v_submission_id uuid := coalesce(new.submission_id, old.submission_id);
   v_is_active boolean;
 begin
+  -- fix round 3 — 위 core.guard_demand_submission_cycle_active와 같은 이유로 취합 주기 행만
+  -- FOR SHARE로 잠근다("for share of c" — 제출본 행은 호출한 함수가 이미 따로 잠그고 있으므로
+  -- 여기서 다시 잠글 필요가 없다).
   select c.is_active into v_is_active
     from core.demand_submission s
     join core.planning_cycle c on c.cycle_id = s.cycle_id
-   where s.submission_id = v_submission_id;
+   where s.submission_id = v_submission_id
+   for share of c;
   if v_is_active is distinct from true then
     raise exception '취합 주기가 닫힌 제출본의 항목은 더 이상 바꿀 수 없습니다.' using errcode = '22023';
   end if;
@@ -251,6 +275,7 @@ as $$
 declare
   v_actor uuid := auth.uid();
   v_department text;
+  v_cycle core.planning_cycle%rowtype;
 begin
   if v_actor is null or not core.is_active_user(v_actor) then
     raise exception '로그인한 활성 사용자만 취합 주기를 닫을 수 있습니다.' using errcode = '42501';
@@ -259,14 +284,18 @@ begin
     raise exception 'SCM 품목담당자 또는 관리자만 취합 주기를 닫을 수 있습니다.' using errcode = '42501';
   end if;
 
-  update core.planning_cycle
-     set status = 'CLOSED', is_active = false, closed_by = v_actor, closed_at = clock_timestamp()
-   where cycle_id = p_cycle_id
-     and is_active;
-
-  if not found then
+  -- fix round 3 — 잠금 순서: 이 마이그레이션은 어디서나 취합 주기 행을 먼저 잠근다(파일 머리말
+  -- "잠금 순서" 참고). 여기서 FOR UPDATE로 명시적으로 먼저 잠가, 이 시점부터 동시에 진행 중인
+  -- save/submit/withdraw/agree(취합 주기 행을 FOR SHARE로 먼저 잠근다)와 순서가 확정된다 —
+  -- 어느 쪽이 먼저 이 행을 잠갔는지에 따라 나머지가 기다렸다가 최신 상태를 본다.
+  select * into v_cycle from core.planning_cycle where cycle_id = p_cycle_id for update;
+  if not found or not v_cycle.is_active then
     raise exception '열려 있는 취합 주기를 찾을 수 없습니다.' using errcode = 'P0002';
   end if;
+
+  update core.planning_cycle
+     set status = 'CLOSED', is_active = false, closed_by = v_actor, closed_at = clock_timestamp()
+   where cycle_id = p_cycle_id;
 
   -- fix round 1 — 닫힌 주기에 남아 있던 반복 미제출 알림을 전부 중단한다. 재개(reopen)는
   -- 같은 달에 새 cycle_id로 새 취합 주기를 여는 것이라, 이 닫힌 주기에 묶인 제출본(DRAFT ·
@@ -319,6 +348,10 @@ begin
 
   v_month := date_trunc('month', p_plan_month)::date;
 
+  -- fix round 3 — 잠금 순서: 취합 주기 행을 먼저 잠근다(파일 머리말의 "잠금 순서" 참고). WHERE에
+  -- is_active를 넣은 채로 FOR UPDATE를 걸면, 동시에 진행 중인 close_planning_cycle이 커밋될 때까지
+  -- 기다렸다가 그 결과(닫혔으면 조건에 더 이상 맞지 않음)를 다시 확인한다 — PostgreSQL의 표준
+  -- FOR UPDATE 재확인 동작이다.
   select * into v_cycle from core.planning_cycle where plan_month = v_month and is_active for update;
   if not found then
     raise exception '해당 월의 수요 취합 주기가 열려 있지 않습니다.' using errcode = '22023';
@@ -363,6 +396,8 @@ declare
   v_actor uuid := auth.uid();
   v_department text;
   v_submission core.demand_submission%rowtype;
+  v_cycle_id uuid;
+  v_cycle_is_active boolean;
   v_line jsonb;
   v_line_no integer := 0;
   v_raw_item text;
@@ -382,17 +417,29 @@ begin
 
   select department into v_department from core.app_user where user_id = v_actor;
 
+  -- fix round 3 — 잠금 순서: 취합 주기 행을 먼저 잠그고(FOR SHARE) 그다음 제출본 행을 잠근다
+  -- (FOR UPDATE). close_planning_cycle도 취합 주기 행을 먼저(FOR UPDATE) 잠그므로, 이 마이그리이션
+  -- 전체가 "취합 주기 → 제출본" 한 방향으로만 잠가 교착 상태가 나지 않는다(파일 머리말 참고).
+  -- cycle_id는 제출본 생성 뒤 바뀌지 않으므로 이 첫 조회는 잠글 필요가 없다.
+  select cycle_id into v_cycle_id from core.demand_submission where submission_id = p_submission_id;
+  if v_cycle_id is null then
+    raise exception '제출본을 찾을 수 없습니다.' using errcode = 'P0002';
+  end if;
+  -- 잠그지 않은 SELECT는 동시 진행 중인 close_planning_cycle의 커밋을 기다리지 않는다 — FOR
+  -- SHARE로 읽어야 실제로 순서가 맞춰진다(core.guard_demand_submission_cycle_active와 같은 이유).
+  select is_active into v_cycle_is_active from core.planning_cycle where cycle_id = v_cycle_id for share;
+  -- fix round 1 — 닫힌 취합 주기에 묶인 제출본은 얼려 둔다. 재개(open_planning_cycle)는
+  -- 같은 달에 새 cycle_id를 만들 뿐 이 행을 되살리지 않는다(아래 §4 재개 정책 참고).
+  if v_cycle_is_active is distinct from true then
+    raise exception '취합 주기가 닫혀 더 이상 수정할 수 없습니다.' using errcode = '22023';
+  end if;
+
   select * into v_submission from core.demand_submission where submission_id = p_submission_id for update;
   if not found then
     raise exception '제출본을 찾을 수 없습니다.' using errcode = 'P0002';
   end if;
   if v_submission.department is distinct from v_department then
     raise exception '다른 부서의 제출본은 수정할 수 없습니다.' using errcode = '42501';
-  end if;
-  -- fix round 1 — 닫힌 취합 주기에 묶인 제출본은 얼려 둔다. 재개(open_planning_cycle)는
-  -- 같은 달에 새 cycle_id를 만들 뿐 이 행을 되살리지 않는다(아래 §4 재개 정책 참고).
-  if not exists (select 1 from core.planning_cycle c where c.cycle_id = v_submission.cycle_id and c.is_active) then
-    raise exception '취합 주기가 닫혀 더 이상 수정할 수 없습니다.' using errcode = '22023';
   end if;
   if v_submission.status not in ('DRAFT', 'WITHDRAWN') then
     raise exception '제출되었거나 합의된 자료는 회수한 뒤에만 수정할 수 있습니다.' using errcode = '22023';
@@ -484,6 +531,8 @@ declare
   v_actor uuid := auth.uid();
   v_department text;
   v_submission core.demand_submission%rowtype;
+  v_cycle_id uuid;
+  v_cycle_is_active boolean;
   v_previous_status text;
   v_line_count integer;
   v_error_count integer;
@@ -497,16 +546,24 @@ begin
 
   select department into v_department from core.app_user where user_id = v_actor;
 
+  -- fix round 3 — 잠금 순서: 취합 주기 행을 먼저(FOR SHARE) 잠그고 그다음 제출본 행을 잠근다
+  -- (FOR UPDATE). 파일 머리말의 "잠금 순서" 참고.
+  select cycle_id into v_cycle_id from core.demand_submission where submission_id = p_submission_id;
+  if v_cycle_id is null then
+    raise exception '제출본을 찾을 수 없습니다.' using errcode = 'P0002';
+  end if;
+  select is_active into v_cycle_is_active from core.planning_cycle where cycle_id = v_cycle_id for share;
+  -- fix round 1 — 닫힌 취합 주기에서는 제출도 막는다.
+  if v_cycle_is_active is distinct from true then
+    raise exception '취합 주기가 닫혀 더 이상 제출할 수 없습니다.' using errcode = '22023';
+  end if;
+
   select * into v_submission from core.demand_submission where submission_id = p_submission_id for update;
   if not found then
     raise exception '제출본을 찾을 수 없습니다.' using errcode = 'P0002';
   end if;
   if v_submission.department is distinct from v_department then
     raise exception '다른 부서의 제출본은 제출할 수 없습니다.' using errcode = '42501';
-  end if;
-  -- fix round 1 — 닫힌 취합 주기에서는 제출도 막는다.
-  if not exists (select 1 from core.planning_cycle c where c.cycle_id = v_submission.cycle_id and c.is_active) then
-    raise exception '취합 주기가 닫혀 더 이상 제출할 수 없습니다.' using errcode = '22023';
   end if;
   if v_submission.status not in ('DRAFT', 'WITHDRAWN') then
     raise exception '이미 제출되었거나 합의된 자료입니다.' using errcode = '22023';
@@ -560,6 +617,7 @@ declare
   v_department text;
   v_submission core.demand_submission%rowtype;
   v_previous_status text;
+  v_cycle_id uuid;
   v_cycle core.planning_cycle%rowtype;
   v_series_id text;
   v_recipients uuid[];
@@ -576,18 +634,25 @@ begin
 
   select department into v_department from core.app_user where user_id = v_actor;
 
+  -- fix round 3 — 잠금 순서: 취합 주기 행을 먼저(FOR SHARE) 잠그고 그다음 제출본 행을 잠근다
+  -- (FOR UPDATE). 파일 머리말의 "잠금 순서" 참고. cycle_id는 제출본 생성 뒤 바뀌지 않으므로
+  -- 이 첫 조회는 잠글 필요가 없다.
+  select cycle_id into v_cycle_id from core.demand_submission where submission_id = p_submission_id;
+  if v_cycle_id is null then
+    raise exception '제출본을 찾을 수 없습니다.' using errcode = 'P0002';
+  end if;
+  select * into v_cycle from core.planning_cycle where cycle_id = v_cycle_id for share;
+  -- fix round 1 — 닫힌 취합 주기에서는 회수도 막는다(이미 확정된 이력을 건드리지 않는다).
+  if not v_cycle.is_active then
+    raise exception '취합 주기가 닫혀 더 이상 회수할 수 없습니다.' using errcode = '22023';
+  end if;
+
   select * into v_submission from core.demand_submission where submission_id = p_submission_id for update;
   if not found then
     raise exception '제출본을 찾을 수 없습니다.' using errcode = 'P0002';
   end if;
   if v_submission.department is distinct from v_department then
     raise exception '다른 부서의 제출본은 회수할 수 없습니다.' using errcode = '42501';
-  end if;
-
-  select * into v_cycle from core.planning_cycle where cycle_id = v_submission.cycle_id;
-  -- fix round 1 — 닫힌 취합 주기에서는 회수도 막는다(이미 확정된 이력을 건드리지 않는다).
-  if not v_cycle.is_active then
-    raise exception '취합 주기가 닫혀 더 이상 회수할 수 없습니다.' using errcode = '22023';
   end if;
   if v_submission.status <> 'SUBMITTED' then
     raise exception '제출된 자료만 회수할 수 있습니다.' using errcode = '22023';
@@ -635,6 +700,8 @@ as $$
 declare
   v_actor uuid := auth.uid();
   v_submission core.demand_submission%rowtype;
+  v_cycle_id uuid;
+  v_cycle_is_active boolean;
   v_previous_status text;
 begin
   if v_actor is null or not core.is_active_user(v_actor) then
@@ -644,14 +711,22 @@ begin
     raise exception 'SCM 품목담당자 또는 관리자만 합의를 확정할 수 있습니다.' using errcode = '42501';
   end if;
 
+  -- fix round 3 — 잠금 순서: 취합 주기 행을 먼저(FOR SHARE) 잠그고 그다음 제출본 행을 잠근다
+  -- (FOR UPDATE). 파일 머리말의 "잠금 순서" 참고.
+  select cycle_id into v_cycle_id from core.demand_submission where submission_id = p_submission_id;
+  if v_cycle_id is null then
+    raise exception '제출본을 찾을 수 없습니다.' using errcode = 'P0002';
+  end if;
+  select is_active into v_cycle_is_active from core.planning_cycle where cycle_id = v_cycle_id for share;
+  -- fix round 2 — 닫힌 취합 주기(재개로 이미 새 cycle_id가 열렸을 수도 있는, 옛 cycle_id에 묶인
+  -- 행)에서는 합의도 막는다. save/submit/withdraw와 같은 규칙이다.
+  if v_cycle_is_active is distinct from true then
+    raise exception '취합 주기가 닫혀 더 이상 합의를 확정할 수 없습니다.' using errcode = '22023';
+  end if;
+
   select * into v_submission from core.demand_submission where submission_id = p_submission_id for update;
   if not found then
     raise exception '제출본을 찾을 수 없습니다.' using errcode = 'P0002';
-  end if;
-  -- fix round 2 — 닫힌 취합 주기(재개로 이미 새 cycle_id가 열렸을 수도 있는, 옛 cycle_id에 묶인
-  -- 행)에서는 합의도 막는다. save/submit/withdraw와 같은 규칙이다.
-  if not exists (select 1 from core.planning_cycle c where c.cycle_id = v_submission.cycle_id and c.is_active) then
-    raise exception '취합 주기가 닫혀 더 이상 합의를 확정할 수 없습니다.' using errcode = '22023';
   end if;
   if v_submission.status <> 'SUBMITTED' then
     raise exception '제출완료 상태만 합의를 확정할 수 있습니다.' using errcode = '22023';
