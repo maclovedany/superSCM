@@ -108,11 +108,16 @@ export async function getPermissions(): Promise<PermissionSet> {
  *   그래도 새면 RLS 가 마지막으로 막습니다. 세 겹입니다.
  */
 export async function requirePermission(code: Permission): Promise<AuthenticatedUser> {
+  return requireAnyPermission(code);
+}
+
+/** 나열한 업무 권한 중 하나라도 없으면 서버에서 거절합니다. */
+export async function requireAnyPermission(...codes: Permission[]): Promise<AuthenticatedUser> {
   const current = await readAuthenticatedUser();
   if (!current) throw new AuthorizationError('로그인이 필요합니다.', 401);
   const permissions = await getPermissions();
-  if (!permissions.has(code)) {
-    throw new AuthorizationError(`이 작업에는 ${code} 권한이 필요합니다.`, 403);
+  if (codes.length === 0 || !permissions.hasAny(...codes)) {
+    throw new AuthorizationError(`이 작업에는 ${codes.join(' 또는 ')} 권한이 필요합니다.`, 403);
   }
   return current;
 }

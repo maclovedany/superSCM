@@ -1,7 +1,7 @@
 import type { LucideIcon } from 'lucide-react';
 import { BarChart3, Boxes, Database, Gauge, LineChart, Settings2, Users, Workflow, Bot } from 'lucide-react';
 
-import type { Permission, PermissionSet } from './permission';
+import { WORK_ROUTE_PERMISSIONS, type Permission, type PermissionSet } from './permission.ts';
 
 export type MenuItem = {
   href: string;
@@ -9,18 +9,18 @@ export type MenuItem = {
   description: string;
   icon: LucideIcon;
   /** 이 중 하나라도 있으면 보입니다. 없으면 로그인만으로 보입니다 */
-  anyOf?: Permission[];
+  anyOf?: readonly Permission[];
 };
 
 export const USER_MENU: MenuItem[] = [
   { href: '/dashboard', label: '전체 현황', description: '월간 발주계획 요약', icon: Gauge },
-  { href: '/procurement-plans', label: '발주계획', description: '최종 발주계획 확정과 승인', icon: Workflow, anyOf: ['PLAN_CONFIRM', 'PLAN_APPROVE'] },
-  { href: '/allocations', label: '배정', description: '품목별 재고 배정 처리', icon: Boxes, anyOf: ['ALLOC_MANUAL', 'ALLOC_FIRM_CANCEL'] },
-  { href: '/approvals', label: '승인함', description: '정책·배정·수요·발주계획 승인', icon: Workflow, anyOf: ['ITEM_POLICY_APPROVE', 'ALLOC_PRIORITY_APPROVE', 'EVENT_ORDER_APPROVE', 'PLAN_APPROVE'] },
-  { href: '/orders', label: '주문', description: '영업 주문 등록과 검토 요청', icon: Workflow, anyOf: ['ORDER_CREATE', 'ORDER_REVIEW_REQUEST'] },
-  { href: '/allocations/priorities', label: '배정 우선순위', description: '주문 대기 순서와 우선순위 관리', icon: Workflow, anyOf: ['ALLOC_PRIORITY_EDIT'] },
-  { href: '/inventory', label: '재고', description: '업무 범위별 가용재고 조회', icon: Boxes, anyOf: ['STOCK_VIEW_ALL', 'STOCK_VIEW_PAPER', 'STOCK_VIEW_SUPPLY'] },
-  { href: '/demand-submissions', label: '수요 제출', description: '부서별 월간 수요 제출', icon: BarChart3, anyOf: ['DEMAND_SUBMIT'] },
+  { href: '/procurement-plans', label: '발주계획', description: '최종 발주계획 확정과 승인', icon: Workflow, anyOf: WORK_ROUTE_PERMISSIONS['/procurement-plans'] },
+  { href: '/allocations', label: '배정', description: '품목별 재고 배정 처리', icon: Boxes, anyOf: WORK_ROUTE_PERMISSIONS['/allocations'] },
+  { href: '/approvals', label: '승인함', description: '정책·배정·수요·발주계획 승인', icon: Workflow, anyOf: WORK_ROUTE_PERMISSIONS['/approvals'] },
+  { href: '/orders', label: '주문', description: '영업 주문 등록과 검토 요청', icon: Workflow, anyOf: WORK_ROUTE_PERMISSIONS['/orders'] },
+  { href: '/allocations/priorities', label: '배정 우선순위', description: '주문 대기 순서와 우선순위 관리', icon: Workflow, anyOf: WORK_ROUTE_PERMISSIONS['/allocations/priorities'] },
+  { href: '/inventory', label: '재고', description: '업무 범위별 가용재고 조회', icon: Boxes, anyOf: WORK_ROUTE_PERMISSIONS['/inventory'] },
+  { href: '/demand-submissions', label: '수요 제출', description: '부서별 월간 수요 제출', icon: BarChart3, anyOf: WORK_ROUTE_PERMISSIONS['/demand-submissions'] },
   { href: '/analysis/demand-profile', label: '수요 패턴', description: '출고 실적 기반 수요 성격 분류', icon: BarChart3 },
   { href: '/analysis/model-comparison', label: 'OL 예측 정확도', description: '영업 OL · SCM OL 의 WAPE 와 Bias', icon: LineChart },
   { href: '/analysis/leadtime', label: '리드타임 격차', description: '실데이터 대기 — 공급처별 Lead time 필요', icon: LineChart },

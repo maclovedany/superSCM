@@ -30,6 +30,24 @@ export const PERMISSIONS = [
 
 export type Permission = (typeof PERMISSIONS)[number];
 
+/** 업무 경로와 진입에 필요한 anyOf 권한의 단일 정의입니다. */
+export const WORK_ROUTE_PERMISSIONS = {
+  '/procurement-plans': ['PLAN_CONFIRM', 'PLAN_APPROVE'],
+  '/allocations': ['ALLOC_MANUAL', 'ALLOC_FIRM_CANCEL'],
+  '/approvals': ['ITEM_POLICY_APPROVE', 'ALLOC_PRIORITY_APPROVE', 'EVENT_ORDER_APPROVE', 'PLAN_APPROVE'],
+  '/orders': ['ORDER_CREATE', 'ORDER_REVIEW_REQUEST'],
+  '/allocations/priorities': ['ALLOC_PRIORITY_EDIT'],
+  '/inventory': ['STOCK_VIEW_ALL', 'STOCK_VIEW_PAPER', 'STOCK_VIEW_SUPPLY'],
+  '/demand-submissions': ['DEMAND_SUBMIT'],
+} as const satisfies Record<string, readonly Permission[]>;
+
+export function requiredPermissionsForPath(pathname: string): readonly Permission[] | null {
+  const matchedPath = Object.keys(WORK_ROUTE_PERMISSIONS)
+    .filter((path) => pathname === path || pathname.startsWith(`${path}/`))
+    .sort((left, right) => right.length - left.length)[0] as keyof typeof WORK_ROUTE_PERMISSIONS | undefined;
+  return matchedPath ? WORK_ROUTE_PERMISSIONS[matchedPath] : null;
+}
+
 export const JOB_ROLES = ['SALES_REP', 'SCM_PLANNER', 'SCM_LEAD', 'BIZ_DEV', 'MARKETING', 'SERVICE'] as const;
 export type JobRole = (typeof JOB_ROLES)[number];
 

@@ -2,8 +2,9 @@ import { createServerClient, type SetAllCookies } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 import { getSupabaseEnv } from '@/lib/supabase/env';
 import { routeAccessDecision } from '@/lib/auth-policy';
+import { requiredPermissionsForPath, WORK_ROUTE_PERMISSIONS } from '@/lib/permission';
 
-const protectedPrefixes = ['/dashboard', '/analysis', '/agent', '/admin', '/workflow'];
+const protectedPrefixes = ['/dashboard', '/analysis', '/agent', '/admin', '/workflow', ...Object.keys(WORK_ROUTE_PERMISSIONS)];
 
 export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
@@ -35,7 +36,20 @@ export async function middleware(request: NextRequest) {
   }
 
   const { data: profile } = await supabase.schema('core').from('app_user').select('role, active').eq('user_id', user.id).maybeSingle();
-  const access = routeAccessDecision({ pathname, authenticated: true, active: profile?.active === true, role: profile?.role === 'ADMIN' ? 'ADMIN' : profile?.role === 'USER' ? 'USER' : null });
+  const requiredPermissions = requiredPermissionsForPath(pathname);
+  const { data: permissionRows } = requiredPermissions
+    ? await supabase.schema('core').rpc('my_permissions')
+    : { data: [] };
+  const permissionCodes = Array.isArray(permissionRows)
+    ? permissionRows.map((row) => String((row as Record<string, unknown>).permission_code ?? '')).filter(Boolean)
+    : [];
+  const access = routeAccessDecision({
+    pathname,
+    authenticated: true,
+    active: profile?.active === true,
+    role: profile?.role === 'ADMIN' ? 'ADMIN' : profile?.role === 'USER' ? 'USER' : null,
+    permissionCodes,
+  });
   if (access.kind === 'FORBIDDEN') return new NextResponse('이 경로에 접근할 권한이 없습니다.', { status: 403 });
 
   return response;

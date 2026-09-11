@@ -18,6 +18,7 @@
 | 배포 화면에서 사이드바와 본문이 기본 HTML처럼 세로로 깨짐 | `styles/shell.css`의 셸 규칙이 덮어써짐 | [#8](#8-배포-화면에서-사이드바와-본문이-기본-html처럼-깨진다) |
 | `supabase db lint --local` connection refused | 로컬 Supabase DB가 실행되지 않음 | [#9](#9-supabase-db-lint---local-connection-refused) |
 | `ERROR: 42P01: relation "core.policy_config" does not exist` | STEP 5를 STEP 3보다 먼저 또는 단독 실행 | [#10](#10-error-42p01-relation-corepolicy_config-does-not-exist) |
+| `ERR_MODULE_NOT_FOUND: Cannot find module '.../lib/permission'` | Node ESM 테스트가 확장자 없는 런타임 import를 해석하지 못함 | [#13](#13-err_module_not_found-libpermission) |
 
 > **Supabase 3층 구조를 먼저 기억하면 #3·#4·#5 를 헷갈리지 않습니다.**
 >
@@ -364,3 +365,19 @@ drop table core.agent_message_legacy_<시각>, core.agent_conversation_legacy_<�
 봅니다. 이름이 겹칠 수 있는 표를 만들 때는 컬럼 존재를 직접 확인하고, 다르면 분명한 조치를
 취하도록 적습니다.
 
+---
+
+## #13 `ERR_MODULE_NOT_FOUND: Cannot find module '.../lib/permission'`
+
+**증상.** `node --test` 실행 시 `lib/menu.ts`가 불러오는 `lib/permission`을 찾지 못해 테스트
+파일 자체가 시작되지 않았습니다.
+
+**원인.** 기존 import는 타입 전용이라 실행 전에 제거됐지만, `WORK_ROUTE_PERMISSIONS`를 함께
+불러오면서 런타임 import가 됐습니다. Node ESM 해석기는 확장자 없는 상대 경로를 자동으로
+`.ts` 파일에 연결하지 않습니다.
+
+**해결.** Node 테스트가 직접 거치는 상대 런타임 import를 `./permission.ts`로 명시했습니다.
+프로젝트의 `allowImportingTsExtensions` 설정으로 Next.js 타입 검사에서도 같은 경로를 허용합니다.
+
+**예방.** 타입 전용 import에 런타임 값을 추가할 때는 해당 모듈이 `node --test`에서도 직접
+로드되는지 확인하고, 그렇다면 `.ts` 확장자를 함께 명시합니다.

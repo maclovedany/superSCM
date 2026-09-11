@@ -1,4 +1,5 @@
 import type { AppRole } from './menu';
+import { PermissionSet, requiredPermissionsForPath } from './permission.ts';
 
 export function safeNextPath(value: string | null | undefined): string {
   if (!value || !value.startsWith('/') || value.startsWith('//')) return '/dashboard';
@@ -15,9 +16,11 @@ export function canManageUser({ actorId, targetId, nextRole, nextActive }: { act
 
 export type RouteAccessDecision = { kind: 'ALLOW' } | { kind: 'LOGIN_REQUIRED' } | { kind: 'FORBIDDEN' };
 
-export function routeAccessDecision({ pathname, authenticated, active, role }: { pathname: string; authenticated: boolean; active: boolean; role: AppRole | null }): RouteAccessDecision {
+export function routeAccessDecision({ pathname, authenticated, active, role, permissionCodes = [] }: { pathname: string; authenticated: boolean; active: boolean; role: AppRole | null; permissionCodes?: readonly string[] }): RouteAccessDecision {
   if (!authenticated) return { kind: 'LOGIN_REQUIRED' };
   if (!active) return { kind: 'FORBIDDEN' };
   if (pathname.startsWith('/admin/') && role !== 'ADMIN') return { kind: 'FORBIDDEN' };
+  const required = requiredPermissionsForPath(pathname);
+  if (required && !new PermissionSet(permissionCodes).hasAny(...required)) return { kind: 'FORBIDDEN' };
   return { kind: 'ALLOW' };
 }

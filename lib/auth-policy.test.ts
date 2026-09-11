@@ -47,3 +47,64 @@ test('route access denies USER admin routes with 403', async () => {
   assert.deepEqual(policy.routeAccessDecision({ pathname: '/admin/users', authenticated: true, active: true, role: 'ADMIN' }), { kind: 'ALLOW' });
   assert.deepEqual(policy.routeAccessDecision({ pathname: '/analysis/leadtime', authenticated: false, active: false, role: null }), { kind: 'LOGIN_REQUIRED' });
 });
+
+test('업무 메뉴 직접 URL은 해당 anyOf 권한이 없으면 403이다', async () => {
+  const { routeAccessDecision } = await import('./auth-policy.ts');
+  const routes = [
+    ['/procurement-plans', 'PLAN_CONFIRM'],
+    ['/allocations', 'ALLOC_MANUAL'],
+    ['/approvals', 'PLAN_APPROVE'],
+    ['/orders', 'ORDER_CREATE'],
+    ['/allocations/priorities', 'ALLOC_PRIORITY_EDIT'],
+    ['/inventory', 'STOCK_VIEW_PAPER'],
+    ['/demand-submissions', 'DEMAND_SUBMIT'],
+  ] as const;
+
+  for (const [pathname, permissionCode] of routes) {
+    assert.deepEqual(
+      routeAccessDecision({ pathname, authenticated: true, active: true, role: 'USER', permissionCodes: [permissionCode] }),
+      { kind: 'ALLOW' },
+      `${pathname} 허용 권한이 거절됐습니다.`,
+    );
+    assert.deepEqual(
+      routeAccessDecision({ pathname, authenticated: true, active: true, role: 'USER', permissionCodes: [] }),
+      { kind: 'FORBIDDEN' },
+      `${pathname}가 빈 권한으로 열렸습니다.`,
+    );
+    assert.deepEqual(
+      routeAccessDecision({ pathname, authenticated: true, active: true, role: 'USER', permissionCodes: ['ATP_VIEW'] }),
+      { kind: 'FORBIDDEN' },
+      `${pathname}가 관계없는 권한으로 열렸습니다.`,
+    );
+  }
+});
+
+test('배정 우선순위 직접 URL은 부모 배정 권한으로 열리지 않는다', async () => {
+  const { routeAccessDecision } = await import('./auth-policy.ts');
+  assert.deepEqual(
+    routeAccessDecision({
+      pathname: '/allocations/priorities/example',
+      authenticated: true,
+      active: true,
+      role: 'USER',
+      permissionCodes: ['ALLOC_MANUAL'],
+    }),
+    { kind: 'FORBIDDEN' },
+  );
+});
+
+test('업무 메뉴 7개 경로는 최소 서버 진입 페이지를 제공한다', () => {
+  const pages = [
+    '../app/(user)/procurement-plans/page.tsx',
+    '../app/(user)/allocations/page.tsx',
+    '../app/(user)/approvals/page.tsx',
+    '../app/(user)/orders/page.tsx',
+    '../app/(user)/allocations/priorities/page.tsx',
+    '../app/(user)/inventory/page.tsx',
+    '../app/(user)/demand-submissions/page.tsx',
+  ];
+
+  for (const page of pages) {
+    assert.equal(existsSync(new URL(page, import.meta.url)), true, `${page}가 없어 404가 발생합니다.`);
+  }
+});

@@ -1,9 +1,24 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { menuFor } from './menu.ts';
-import { JOB_ROLES, PERMISSIONS, PermissionSet, departmentLabel, isJobRole, jobRoleLabel } from './permission.ts';
+import { JOB_ROLES, PERMISSIONS, PermissionSet, departmentLabel, isJobRole, jobRoleLabel, type JobRole } from './permission.ts';
 
 const businessMenuLabels = new Set(['발주계획', '배정', '승인함', '주문', '배정 우선순위', '재고', '수요 제출']);
+const step19Sql = readFileSync(new URL('../supabase/migrations/20260911000200_step19_permission.sql', import.meta.url), 'utf8');
+
+function permissionsByJobRole(): Map<JobRole, string[]> {
+  const values = step19Sql.match(/insert into core\.role_permission\s*\([^)]*\)\s*values([\s\S]*?)on conflict/i)?.[1];
+  assert.ok(values, 'STEP 19의 직책별 권한 INSERT를 읽을 수 있어야 합니다.');
+
+  const result = new Map<JobRole, string[]>();
+  for (const match of values.matchAll(/\('([^']+)'\s*,\s*'([^']+)'\)/g)) {
+    const role = match[1];
+    if (!isJobRole(role)) continue;
+    result.set(role, [...(result.get(role) ?? []), match[2]]);
+  }
+  return result;
+}
 
 function visibleBusinessMenus(codes: readonly string[]): string[] {
   return menuFor('USER', new PermissionSet(codes))
@@ -52,26 +67,20 @@ test('권한 코드 목록에 중복이 없다', () => {
   assert.equal(new Set(PERMISSIONS).size, PERMISSIONS.length);
 });
 
-test('SCM 품목담당자는 발주계획과 배정 업무 메뉴를 본다', () => {
-  assert.deepEqual(visibleBusinessMenus(['PLAN_CONFIRM', 'ALLOC_MANUAL']), ['발주계획', '배정']);
-});
+test('STEP 19의 실제 전체 직책 권한으로 업무 메뉴를 노출한다', () => {
+  const permissions = permissionsByJobRole();
+  assert.deepEqual([...permissions.keys()].sort(), [...JOB_ROLES].sort());
 
-test('SCM팀장은 승인함과 발주계획 업무 메뉴를 본다', () => {
-  assert.deepEqual(visibleBusinessMenus(['PLAN_APPROVE', 'ITEM_POLICY_APPROVE']), ['발주계획', '승인함']);
-});
+  const expected: Record<JobRole, string[]> = {
+    SCM_PLANNER: ['발주계획', '배정', '재고'],
+    SCM_LEAD: ['발주계획', '승인함', '재고'],
+    SALES_REP: ['주문'],
+    BIZ_DEV: ['배정 우선순위'],
+    MARKETING: ['재고', '수요 제출'],
+    SERVICE: ['재고', '수요 제출'],
+  };
 
-test('영업담당자는 주문 업무 메뉴를 본다', () => {
-  assert.deepEqual(visibleBusinessMenus(['ORDER_CREATE', 'ORDER_REVIEW_REQUEST']), ['주문']);
-});
-
-test('사업강화부는 배정 우선순위 업무 메뉴를 본다', () => {
-  assert.deepEqual(visibleBusinessMenus(['ALLOC_PRIORITY_EDIT']), ['배정 우선순위']);
-});
-
-test('마케팅부는 재고와 수요 제출 업무 메뉴만 본다', () => {
-  assert.deepEqual(visibleBusinessMenus(['STOCK_VIEW_PAPER', 'DEMAND_SUBMIT']), ['재고', '수요 제출']);
-});
-
-test('서비스부는 재고와 수요 제출 업무 메뉴만 본다', () => {
-  assert.deepEqual(visibleBusinessMenus(['STOCK_VIEW_SUPPLY', 'DEMAND_SUBMIT']), ['재고', '수요 제출']);
+  for (const role of JOB_ROLES) {
+    assert.deepEqual(visibleBusinessMenus(permissions.get(role) ?? []), expected[role], `${role} 메뉴가 다릅니다.`);
+  }
 });
