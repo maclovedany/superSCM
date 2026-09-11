@@ -3,13 +3,18 @@ import type { NotificationPayload } from './types';
 export type EmailMessage = { to: string; subject: string; text: string };
 export type EmailResult =
   | { ok: true; externalMessageId: string | null }
-  | { ok: false; error: string };
+  | { ok: false; error: string; retryable: boolean };
 
 export type EmailOptions = {
   apiKey: string;
   from: string;
+  idempotencyKey?: string;
   fetchImpl?: typeof fetch;
 };
+
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+}
 
 function payloadText(payload: NotificationPayload, key: string): string | null {
   const value = payload[key];
@@ -27,9 +32,9 @@ export function renderNotificationEmail(templateCode: string, payload: Notificat
 }
 
 export async function sendEmail(message: EmailMessage, options: EmailOptions): Promise<EmailResult> {
-  if (message.to.trim() === '') return { ok: false, error: '이메일 수신자가 없습니다.' };
+  if (message.to.trim() === '') return { ok: false, error: '이메일 수신자가 없습니다.', retryable: false };
   if (options.apiKey.trim() === '' || options.from.trim() === '') {
-    return { ok: false, error: '이메일 발송 환경변수가 설정되지 않았습니다.' };
+    return { ok: false, error: '이메일 발송 환경변수가 설정되지 않았습니다.', retryable: false };
   }
 
   try {
@@ -38,6 +43,7 @@ export async function sendEmail(message: EmailMessage, options: EmailOptions): P
       headers: {
         authorization: `Bearer ${options.apiKey}`,
         'content-type': 'application/json',
+        ...(options.idempotencyKey ? { 'idempotency-key': options.idempotencyKey } : {}),
       },
       body: JSON.stringify({
         from: options.from,
@@ -53,6 +59,7 @@ export async function sendEmail(message: EmailMessage, options: EmailOptions): P
         error: typeof body.message === 'string' && body.message.trim() !== ''
           ? body.message
           : `이메일 발송에 실패했습니다. (${response.status})`,
+        retryable: isRetryableStatus(response.status),
       };
     }
     return {
@@ -60,6 +67,10 @@ export async function sendEmail(message: EmailMessage, options: EmailOptions): P
       externalMessageId: typeof body.id === 'string' && body.id !== '' ? body.id : null,
     };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : '이메일 발송 중 오류가 발생했습니다.' };
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : '이메일 발송 중 오류가 발생했습니다.',
+      retryable: true,
+    };
   }
 }

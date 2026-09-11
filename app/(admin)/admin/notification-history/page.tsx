@@ -21,8 +21,8 @@ export default async function NotificationHistoryPage() {
         {error ? <><p className="text-danger">조회에 실패했습니다.</p><p className="muted">{error}</p></>
           : rows.length === 0 ? <p className="muted">표시할 발송 이력이 없습니다.</p>
             : <div className="analysis-table-wrap"><table className="analysis-table notification-history-table">
-              <thead><tr><th>시각</th><th>템플릿</th><th>수신자</th><th>채널</th><th>상태</th><th>오류·외부 ID</th></tr></thead>
-              <tbody>{rows.map((row) => <tr key={row.deliveryId}><td>{formatDate(row.attemptedAt)}</td><td>{row.templateCode}</td><td><b>{row.recipientName}</b><br /><span className="muted">{row.recipientEmail ?? '이메일 없음'}</span></td><td><span className="tag blue">{row.channel}</span></td><td><span className={`tag ${row.status === 'SUCCESS' ? 'green' : 'red'}`}>{row.status}</span></td><td>{row.errorMessage ?? row.externalMessageId ?? '—'}</td></tr>)}</tbody>
+              <thead><tr><th>시각</th><th>템플릿</th><th>수신자</th><th>채널</th><th>시도</th><th>상태</th><th>오류·외부 ID</th></tr></thead>
+              <tbody>{rows.map((row) => <tr key={row.deliveryId}><td>{formatDate(row.attemptedAt)}</td><td>{row.templateCode}</td><td><b>{row.recipientName}</b><br /><span className="muted">{row.recipientEmail ?? '이메일 없음'}</span></td><td><span className="tag blue">{row.channel}</span></td><td>{row.attemptNumber ?? '—'}</td><td><span className={`tag ${row.status === 'SUCCESS' ? 'green' : 'red'}`}>{row.status}</span>{row.status === 'FAILED' && row.retryable ? <><br /><span className="muted">재시도 가능</span></> : null}</td><td>{row.errorMessage ?? row.externalMessageId ?? '—'}</td></tr>)}</tbody>
             </table></div>}
       </div></div>
     </section>

@@ -25,6 +25,28 @@
 | `zsh: no matches found: app/(user)/...` | 괄호가 있는 경로를 따옴표 없이 전달 | [#17](#17-zsh-no-matches-found-appuser) |
 | `The following paths are ignored` | `.superpowers/sdd/.gitignore`가 보고서도 제외 | [#18](#18-the-following-paths-are-ignored) |
 | `Promise<{ error: ... }>` is not assignable to `Promise<void>` | 일반 form 액션이 값을 반환함 | [#19](#19-form-action은-promisevoid를-요구한다) |
+| `column reference "notification_id" is ambiguous` | 반환 테이블 함수의 출력 열과 SQL 열 이름이 충돌 | [#20](#20-column-reference-notification_id-is-ambiguous) |
+
+## #20 반환 테이블 함수에서 `notification_id`가 모호하다는 오류
+
+**증상**
+
+```text
+ERROR: column reference "notification_id" is ambiguous
+DETAIL: It could refer to either a PL/pgSQL variable or a table column.
+```
+
+**원인**
+
+`returns table (notification_id ...)`로 선언한 PL/pgSQL 함수 안에서는 출력 열 이름도 변수로
+취급됩니다. 같은 함수의 `UPDATE ... RETURNING notification_id`에서 테이블 별칭을 생략하면
+PostgreSQL이 출력 변수와 실제 테이블 열 중 어느 것을 뜻하는지 결정할 수 없습니다.
+
+**해결**
+
+`UPDATE core.notification_outbox AS o`처럼 별칭을 선언하고, `RETURNING o.notification_id`와
+조건절의 열을 모두 별칭으로 한정합니다. 반환 테이블 함수를 변경한 뒤에는 정적 문자열 검사만 하지
+말고 임시 PostgreSQL에서 함수를 실제 호출해 모호한 열 오류까지 확인합니다.
 
 ## #19 `<form action>`은 `Promise<void>`를 요구한다
 

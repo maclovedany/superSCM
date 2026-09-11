@@ -22,6 +22,8 @@ export type NotificationDeliveryRow = {
   recipientName: string;
   channel: NotificationChannel;
   status: string;
+  attemptNumber: number | null;
+  retryable: boolean | null;
   attemptedAt: string;
   errorMessage: string | null;
   externalMessageId: string | null;
@@ -29,6 +31,7 @@ export type NotificationDeliveryRow = {
 
 export type ClaimedNotification = {
   notificationId: string;
+  claimToken: string;
   templateCode: string;
   recipientUserId: string;
   recipientEmail: string | null;
@@ -49,6 +52,12 @@ function objectValue(input: unknown): NotificationPayload {
   return input !== null && typeof input === 'object' && !Array.isArray(input)
     ? input as NotificationPayload
     : {};
+}
+
+function nullableNumber(input: unknown): number | null {
+  if (input === null || input === undefined || input === '') return null;
+  const parsed = Number(input);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 export function normalizeNotificationRow(row: Record<string, unknown>): NotificationRow {
@@ -75,6 +84,10 @@ export function normalizeDeliveryRow(row: Record<string, unknown>): Notification
     recipientName: String(value(row, ['recipient_name', '수신자명']) ?? ''),
     channel: channelValue === 'EMAIL' ? 'EMAIL' : 'IN_APP',
     status: String(value(row, ['status', '상태']) ?? ''),
+    attemptNumber: nullableNumber(value(row, ['attempt_number', '시도번호'])),
+    retryable: typeof value(row, ['retryable', '재시도가능']) === 'boolean'
+      ? value(row, ['retryable', '재시도가능']) as boolean
+      : null,
     attemptedAt: String(value(row, ['attempted_at', '시도시각']) ?? ''),
     errorMessage: nullableString(value(row, ['error_message', '오류'])),
     externalMessageId: nullableString(value(row, ['external_message_id', '외부메시지ID'])),
@@ -85,6 +98,7 @@ export function normalizeClaimedNotification(row: Record<string, unknown>): Clai
   const channelValue = row.channel;
   return {
     notificationId: String(row.notification_id ?? ''),
+    claimToken: String(row.claim_token ?? ''),
     templateCode: String(row.template_code ?? ''),
     recipientUserId: String(row.recipient_user_id ?? ''),
     recipientEmail: nullableString(row.recipient_email),
