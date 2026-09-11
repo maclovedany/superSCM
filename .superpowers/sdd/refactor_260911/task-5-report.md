@@ -225,3 +225,104 @@ $ git diff --check
 
 - 확보가 걸린 주문을 영업담당자가 취소하면 승인 요청의 `decided_by`가 영업담당자로 기록된다(요청 취소 처리자 = 주문 취소자). 승인 결정이 아니라 CANCELLED이므로 자기 승인 규칙과는 무관하다.
 - 마이그레이션은 이 수정으로 2,393줄이 됐다(우려 1, 리뷰 판단).
+
+---
+
+## fix round 1 — 만료 시각 이후 차단 · DB 검증 스크립트 커밋 (커밋 `95a144c`)
+
+리뷰 결과 Spec ✅ / Needs fixes: Important 1건 + 확인된 증거 공백 1건. 나머지 minor는 최종 리뷰로 미룸(변경 없음).
+
+### 1. [Important] 만료 시각 이후에도 확정 · 임시배정이 되던 문제
+
+**원인.** `confirm_sales_order`와 `allocate_to_order_line`이 `clock_timestamp() < temporary_expires_at`을 확인하지 않았다. 만료 시각과 Task 6 자동 해제 작업 사이에 영업담당자가 이미 만료된 임시배정을 확정(FIRM, 만료 없음)으로 바꿀 수 있었고, 후속 배정 계약 함수는 만료된 주문에 새 TEMPORARY를 만들었다(만료 예고는 전부 과거라 취소되어 아무에게도 알리지 않음) — stage1 §2 44 · 46행 위반.
+
+**수정 (`20260911000600`, +45줄).** 확정 전 주문에서 `clock_timestamp() >= temporary_expires_at`이면 `TEMPORARY_ALLOCATION_EXPIRED`(SQLSTATE 55000)로 거절한다.
+
+| 경로 | 차단 |
+|---|---|
+| `core.confirm_sales_order` | 상태 확인 직후 만료 시각 확인 → 수주 확정 거절 |
+| `core.allocate_to_order_line` | 주문이 CONFIRMED가 아니면(=TEMPORARY 분기) 거절. CONFIRMED 주문의 FIRM 후속 배정은 그대로 |
+| `core.create_stock_allocation` | `p_status = 'TEMPORARY'`이고 주문이 확정 전이면 거절 — 모든 임시배정 생성의 중앙 방어 |
+| `core.transition_stock_allocation` | `TEMPORARY → FIRM` 전환만 거절. 해제(RELEASED)는 언제든 허용(Task 6 자동 해제용) |
+| `core.request_order_review` | 만료 시각이 이미 기록된 주문이면 거절(DRAFT는 check 제약상 만료가 비어 있어 방어 코드) |
+
+수동 FIRM(`request_manual_allocation` 정상 순서)과 승인대기 확보(생성 · 승인 → FIRM)는 시간 제한을 두지 않았다(stage1 §2 68 · 83행). 계약 테스트가 이 네 함수에 `TEMPORARY_ALLOCATION_EXPIRED`가 없음을 고정한다. 마이그레이션 머리말의 Task 6 계약에 "만료된 확정 전 주문은 `allocate_to_order_line`이 예외를 던지므로 신규 입고 배정은 먼저 해제하거나 건너뛴다"를 적었다.
+
+### 2. [증거 공백] DB 시나리오 · 동시성 · 불변식 스크립트를 저장소에 커밋
+
+`supabase/tests/sales_order_allocation/` — README에 실행 · 안전장치 · 정리 방법을 적었다.
+
+| 파일 | 내용 |
+|---|---|
+| `run-all.sh` | 임시 DB 생성 → fixture → 시나리오 → 동시성 → 불변식 → 요약, `trap cleanup EXIT`로 성공 · 실패 · 중단 모두 `dropdb`(`KEEP_DB=1`로 유지 가능), 로그는 `LOG_DIR`(기본 mktemp) |
+| `bootstrap.sh` | 클러스터 역할(없을 때만 nologin) → `createdb` → `auth-stub.psql` → `schema-dump/2026-09-11.sql` → STEP 4 · 7 정책 선삭제 → 전체 마이그레이션 → 0600 재적용 |
+| `lib.sh` · `guard.psql` | DB 이름 `scm_test_*`, `PGHOST`는 소켓 디렉터리 · localhost만, `PGHOSTADDR`/`PGSERVICE` 설정 시 거절. 모든 `.psql`은 `\ir guard.psql`로 시작해 DB 이름 · 루프백 접속을 다시 확인 |
+| `auth-stub.psql` · `fixtures.psql` | 테스트 전용 auth 스텁, 사용자 7명 · 품목 · 재고와 헬퍼 스키마 `order_test` |
+| `scenarios.psql` | S2~S8(기존) + **S9 만료 시각 이후 차단** |
+| `concurrency.sh` | C1~C4. 잠금 대기 수(2 · 10)도 이제 출력만이 아니라 PASS/FAIL로 판정 |
+| `invariants.psql` | 불변식 8종 |
+
+- 접속 정보 없음(계약 테스트가 `PGPASSWORD=` · `password=` · `supabase.co` · `sb_secret_` · `postgres://` 부재를 확인).
+- `.sql`이 아니라 `.psql` 확장자 — `supabase test db`(pg_prove)가 이 폴더를 테스트로 실행하지 않게 했다.
+- 스크래치 사본에서 옮기며 헬퍼 스키마 이름만 `t5` → `order_test`로 바꿨고, S9 fixture 품목 ITEMT10을 추가했다.
+
+**S9 구성 (테스트 전용 경로).** 최초 검토 요청 시각을 "지금 − 30일 + 5초"로 처음 한 번 기록해 5초 뒤 만료되는 주문 두 건(EX 80, NB 20)을 만든다 — 만료일 불변 트리거는 null에서 처음 채우는 것을 허용하므로 트리거를 끄지 않았고, `만료 = 최초 검토 요청 + 30일`과 검토 요청 이력도 유지된다.
+만료 전 후속 임시배정 60 · 20 생성 → NB 수주 확정 성공(만료 직전) → 만료 시각까지 대기 → EX 수주 확정 · `allocate_to_order_line` · `create_stock_allocation(TEMPORARY)` · `transition_stock_allocation(TEMPORARY→FIRM)` 모두 `TEMPORARY_ALLOCATION_EXPIRED`, 기존 임시배정 60 그대로 → 정상 순서 수동 FIRM 10 허용 → 다른 주문 우선순위를 1로 올린 뒤 순서 건너뜀 확보 5 생성 · 팀장 승인 → FIRM 허용(FIRM 합 15).
+
+**안전장치 확인.**
+```
+$ psql -d postgres -f supabase/tests/sales_order_allocation/guard.psql
+ERROR:  supabase/tests는 로컬 임시 DB(scm_test_*)에서만 실행합니다. 현재 DB: postgres      (exit 3)
+$ bash supabase/tests/sales_order_allocation/run-all.sh postgres
+거절: 검증 DB 이름은 scm_test_로 시작해야 합니다 (postgres).                              (exit 2)
+$ PGHOST=db.example.supabase.co bash …/run-all.sh
+거절: 로컬 PostgreSQL(유닉스 소켓 디렉터리 또는 localhost)에서만 실행합니다 …               (exit 2)
+$ PGHOSTADDR=10.0.0.1 bash …/run-all.sh
+거절: PGHOSTADDR 또는 PGSERVICE가 설정된 셸에서는 실행하지 않습니다(원격 접속 우회 방지).   (exit 2)
+```
+
+### 명령과 결과
+
+```
+$ node --test lib/orders/model.test.ts        # 계약 테스트 먼저 추가
+✖ 만료 시각이 지난 확정 전 주문은 임시배정 생성 · 확정 전환 · 수주 확정을 거절하고 수동 FIRM · 확보는 막지 않는다
+ℹ tests 30 · pass 29 · fail 1                  # RED — 마이그레이션에 만료 확인이 없어 기대한 실패
+
+$ node --test lib/orders/model.test.ts        # 수정 후
+ℹ tests 30 · pass 30 · fail 0
+
+$ bash supabase/tests/sales_order_allocation/run-all.sh      # 커밋된 파일에서 실행
+DB: scm_test_order_alloc_20260912012753 · 로그: …/T//scm_test_order_alloc.Eoz6JU
+bootstrap 완료: scm_test_order_alloc_20260912012753 (마이그레이션 전체 적용 + 20260911000600_stage1_sales_order_allocation.sql 재적용)
+scenarios:   PASS 153 · FAIL/ERROR 0
+  S2 PASS 12
+  S3 PASS 9
+  S4 PASS 29
+  S5 PASS 24
+  S6 PASS 16
+  S7 PASS 26
+  S8 PASS 25
+  S9 PASS 12
+concurrency: PASS 16 · FAIL/ERROR 0
+  PASS: C1 재고 행 잠금을 기다리는 검토 요청 수 (2)
+  PASS: C2 재고 행 잠금을 기다리는 검토 요청 수 — 10건이 동시에 진행 중 (10)
+  PASS: C2 동시 10건 → 배정 합계 정확히 100 (초과 0)
+  PASS: C4 동시 10건 → 배정 합계 정확히 100
+  PASS: C4 선착순 30·30·30·10, 나머지 0 + 부족 표시
+invariants:  PASS 8 · FAIL/ERROR 0
+결과: 전부 통과
+삭제: scm_test_order_alloc_20260912012753
+run-all exit=0        (이후 scm_test_% DB 0개)
+
+$ npm test
+ℹ tests 162 · pass 162 · fail 0
+$ npm run build
+✓ Compiled successfully … ƒ /orders/[orderId] 180 B · ƒ /orders 165 B · ƒ /orders/new 163 B
+$ git diff --check
+(출력 없음)
+```
+
+### 남은 우려
+
+- **만료된 확정 전 주문에 수동 FIRM만 남는 경우.** 판정대로 수동 FIRM · 확보는 만료 뒤에도 허용되고 Task 6 판정은 "FIRM/확보가 남은 주문은 EXPIRED로 만들지 않는다"이다. 그런데 이제 수주 확정은 만료 뒤 거절되므로, 이런 주문은 확정할 방법이 없고 SCM 품목담당자의 확정배정 취소로만 끝난다. 의도라면 그대로, 아니라면 "임시배정이 없는 주문의 확정은 만료와 무관" 같은 예외 판정이 필요하다.
+- `allocate_to_order_line`은 만료 주문에서 0을 돌려주지 않고 예외를 던진다(지시대로 거절). Task 6의 입고 배정 루프가 만료된 확정 전 주문을 걸러내지 않으면 입고 트랜잭션 전체가 되돌려진다 — 머리말 계약에 적었다.
