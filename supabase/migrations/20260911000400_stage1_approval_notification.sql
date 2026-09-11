@@ -791,6 +791,8 @@ declare
   v_notice core.notification_outbox%rowtype;
   v_recipient_email text;
   v_next_at timestamptz;
+  v_is_recurring boolean;
+  v_retry_scheduled boolean;
 begin
   select * into v_notice
     from core.notification_outbox
@@ -817,18 +819,26 @@ begin
     from core.app_user u
    where u.user_id = v_notice.recipient_user_id;
 
+  -- 반복 알림은 현재 발송 성공 여부와 무관하게 다음 10분 회차가 이어져야 합니다.
+  -- 같은 알림 자체를 재시도하면 다음 회차와 겹칠 수 있으므로, 단발 알림만 동일 ID로 재시도합니다.
+  v_is_recurring := v_notice.template_code in ('APPROVAL_PENDING', 'DEMAND_SUBMISSION_OVERDUE');
+  v_retry_scheduled := not p_success
+    and p_retryable
+    and not v_is_recurring
+    and v_notice.attempt_count < v_notice.max_attempts;
+
   insert into core.notification_delivery (
     notification_id, recipient_user_id, recipient_email, channel,
     status, attempt_number, retryable, error_message, external_message_id
   ) values (
     v_notice.notification_id, v_notice.recipient_user_id, v_recipient_email,
     v_notice.channel, case when p_success then 'SUCCESS' else 'FAILED' end,
-    v_notice.attempt_count, case when p_success then false else p_retryable end,
+    v_notice.attempt_count, v_retry_scheduled,
     case when p_success then null else btrim(p_error_message) end,
     nullif(btrim(p_external_message_id), '')
   );
 
-  if not p_success and p_retryable and v_notice.attempt_count < v_notice.max_attempts then
+  if v_retry_scheduled then
     update core.notification_outbox
        set status = 'PENDING',
            scheduled_at = clock_timestamp() + make_interval(
@@ -860,7 +870,7 @@ begin
   end if;
 
   -- 승인 대기는 24시간 운영하며, 처리되지 않은 동안에만 정확히 10분 뒤 다음 건을 예약합니다.
-  if p_success and v_notice.template_code = 'APPROVAL_PENDING'
+  if v_notice.template_code = 'APPROVAL_PENDING'
      and exists (
        select 1 from core.approval_request r
         where r.approval_id::text = v_notice.payload ->> 'approval_id'
@@ -871,7 +881,7 @@ begin
       'approval:' || (v_notice.payload ->> 'approval_id') || ':pending:' || extract(epoch from v_next_at)::bigint,
       'APPROVAL_PENDING', v_notice.recipient_user_id, v_notice.channel, v_next_at, v_notice.payload
     );
-  elsif p_success and v_notice.template_code = 'DEMAND_SUBMISSION_OVERDUE' then
+  elsif v_notice.template_code = 'DEMAND_SUBMISSION_OVERDUE' then
     v_next_at := greatest(v_notice.scheduled_at + interval '10 minutes', clock_timestamp() + interval '10 minutes');
     perform core.enqueue_notification(
       'demand:' || (v_notice.payload ->> 'series_id') || ':overdue:' || extract(epoch from v_next_at)::bigint,

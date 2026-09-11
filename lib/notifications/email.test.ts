@@ -186,8 +186,22 @@ test('알림 SQL 계약은 실패 이력을 보존하고 제한 횟수까지 재
   assert.match(sql, /attempt_number\s+integer/i);
   assert.match(sql, /retryable\s+boolean/i);
   assert.match(sql, /insert into core\.notification_delivery[\s\S]{0,900}case when p_success then 'SUCCESS' else 'FAILED' end/i);
-  assert.match(sql, /p_retryable[\s\S]{0,500}attempt_count\s*<\s*v_notice\.max_attempts[\s\S]{0,500}status\s*=\s*'PENDING'/i);
+  assert.match(sql, /v_retry_scheduled\s*:=\s*not p_success[\s\S]{0,300}attempt_count\s*<\s*v_notice\.max_attempts/i);
+  assert.match(sql, /if\s+v_retry_scheduled\s+then[\s\S]{0,500}status\s*=\s*'PENDING'/i);
   assert.match(sql, /scheduled_at\s*=\s*clock_timestamp\(\)\s*\+/i);
+});
+
+test('반복 알림의 다음 10분 회차는 개별 채널 발송 성공 여부와 분리한다', () => {
+  const sql = readFileSync(
+    new URL('../../supabase/migrations/20260911000400_stage1_approval_notification.sql', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(sql, /v_is_recurring\s*:=\s*v_notice\.template_code\s+in\s*\(\s*'APPROVAL_PENDING',\s*'DEMAND_SUBMISSION_OVERDUE'\s*\)/i);
+  assert.match(sql, /v_retry_scheduled\s*:=\s*not p_success[\s\S]{0,180}not v_is_recurring/i);
+  assert.match(sql, /v_notice\.template_code\s*=\s*'APPROVAL_PENDING'[\s\S]{0,700}interval '10 minutes'/i);
+  assert.doesNotMatch(sql, /if\s+p_success\s+and\s+v_notice\.template_code\s*=\s*'APPROVAL_PENDING'/i);
+  assert.match(sql, /attempt_count,\s*v_retry_scheduled,/i);
 });
 
 test('발송 직전 승인과 취소된 series 상태를 다시 확인하는 DB 계약이 있다', () => {
