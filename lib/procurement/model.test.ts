@@ -5,6 +5,7 @@ import {
   PLAN_HORIZON_MONTHS,
   PLAN_REASON_LABELS,
   approvedAddedDemand,
+  approvedPolicyValue,
   averageUsage6m,
   buildPlanItemLines,
   effectiveMoq,
@@ -41,7 +42,6 @@ function item(overrides: Partial<PlanItemInput> = {}): PlanItemInput {
     sourceStatus: 'VERIFIED',
     hasPolicy: true,
     targetDosDays: 30,
-    targetDosApproved: true,
     unitPrice: 1000,
     moq: 50,
     championModelId: 'MA_3M',
@@ -80,7 +80,7 @@ test('MOQ null이면 1을 적용한다', () => {
 // ══ 목표 DoS 미승인 → 확정 차단 (stage1 §6) ═══════════════════════
 
 test('목표 DoS null이면 라인은 계산 불가이고 확정이 차단된다', () => {
-  const lines = buildPlanItemLines(item({ targetDosDays: null, targetDosApproved: false }));
+  const lines = buildPlanItemLines(item({ targetDosDays: null }));
   assert.equal(lines[0].calculationStatus, 'CALCULATION_UNAVAILABLE');
   assert.equal(lines[0].reasonCode, 'TARGET_DOS_UNSET');
   assert.equal(lines[0].finalOrderQty, null);
@@ -88,13 +88,43 @@ test('목표 DoS null이면 라인은 계산 불가이고 확정이 차단된다
   assert.ok(blockers.some((blocker) => blocker.reasonCode === 'TARGET_DOS_UNSET'));
 });
 
-test('목표 DoS 값이 있어도 승인 이력이 없으면 계산은 하되 확정은 차단된다', () => {
-  const lines = buildPlanItemLines(item({ targetDosApproved: false }));
-  assert.equal(lines[0].calculationStatus, 'CALCULATED');
-  assert.equal(lines[0].finalOrderQty, 150);
+// ══ 승인된 정책 값만 (pre-review fix) ═══════════════════════════════
+
+const approvedRevision = (decidedAt: string, proposedValue: number | null) => ({ status: 'APPROVED', decidedAt, proposedValue });
+
+test('정책 값은 그 필드를 제안한 최신 승인 변경안의 값이다 — 반려 · 대기 · 미제안 변경안은 보지 않는다', () => {
+  assert.equal(approvedPolicyValue([]), null);
+  assert.equal(approvedPolicyValue([
+    approvedRevision('2026-09-01T00:00:00Z', 30),
+    approvedRevision('2026-09-05T00:00:00Z', null),
+    { status: 'REJECTED', decidedAt: '2026-09-06T00:00:00Z', proposedValue: 45 },
+    { status: 'PENDING', decidedAt: null, proposedValue: 60 },
+  ]), 30);
+  assert.equal(approvedPolicyValue([approvedRevision('2026-09-03T00:00:00Z', 20), approvedRevision('2026-09-01T00:00:00Z', 30)]), 20);
+});
+
+test('목표 DoS를 승인 없이 직접 넣었으면 승인값이 없어 계산 불가이고 확정이 차단된다', () => {
+  const lines = buildPlanItemLines(item({ targetDosDays: approvedPolicyValue([]) }));
+  assert.equal(lines[0].calculationStatus, 'CALCULATION_UNAVAILABLE');
   assert.equal(lines[0].reasonCode, 'TARGET_DOS_UNSET');
-  const blockers = planConfirmBlockers(lines.map((line) => ({ itemId: 'A', ...line })));
-  assert.deepEqual(blockers, [{ reasonCode: 'TARGET_DOS_UNSET', lineCount: 6, itemCount: 1 }]);
+  assert.equal(lines[0].finalOrderQty, null);
+  assert.deepEqual(planConfirmBlockers(lines.map((line) => ({ itemId: 'A', ...line }))), [
+    { reasonCode: 'PRIOR_MONTH_UNAVAILABLE', lineCount: 5, itemCount: 1 },
+    { reasonCode: 'TARGET_DOS_UNSET', lineCount: 6, itemCount: 1 },
+  ]);
+});
+
+test('단가를 승인 없이 직접 넣었으면 UNIT_PRICE_UNSET, 승인된 단가가 있으면 그 값을 쓴다', () => {
+  assert.equal(buildPlanItemLines(item({ unitPrice: approvedPolicyValue([]) }))[0].reasonCode, 'UNIT_PRICE_UNSET');
+  const [first] = buildPlanItemLines(item({ unitPrice: approvedPolicyValue([approvedRevision('2026-09-01T00:00:00Z', 300)]) }));
+  assert.equal(first.calculationStatus, 'CALCULATED');
+  assert.equal(first.projectedInventoryValue, 130 * 300);
+});
+
+test('MOQ를 승인 없이 직접 넣었으면 승인값이 없어 1을 적용한다', () => {
+  const [first] = buildPlanItemLines(item({ moq: approvedPolicyValue([]) }));
+  assert.equal(first.effectiveMoq, 1);
+  assert.equal(first.finalOrderQty, 120);
 });
 
 test('모든 라인이 계산되고 목표 DoS가 승인됐으면 확정 차단 사유가 없다', () => {
@@ -261,10 +291,12 @@ const verifiedRun = {
   runStatus: 'SUCCESS',
   granularity: 'MONTH',
   windowMatches: true,
+  testWindowMatches: true,
   isStale: false,
   rolledBackAfterSnapshot: false,
   snapshotAt: '2026-07-01T00:00:00Z',
   trainingRows: [importedRow],
+  testRows: [importedRow],
 };
 
 test('모든 학습 행이 IMPORTED 적재 배치에서 왔으면 VERIFIED', () => {
@@ -286,6 +318,21 @@ test('출처 없는 학습 행이 하나라도 있으면 FORECAST_SOURCE_UNVERIF
     assert.equal(line.avgUsage6m, null);
     assert.equal(line.finalOrderQty, null);
   }
+});
+
+test('학습 행이 모두 검증됐어도 Champion 채점에 쓴 test 기간 행이 하나라도 출처 없으면 FORECAST_SOURCE_UNVERIFIED', () => {
+  const status = forecastSourceStatus({ ...verifiedRun, testRows: [importedRow, { batchStatus: null, importType: null, sourceType: null }] });
+  assert.equal(status, 'FORECAST_SOURCE_UNVERIFIED');
+  const lines = buildPlanItemLines(item({ sourceStatus: status }));
+  assert.ok(lines.every((line) => line.calculationStatus === 'CALCULATION_UNAVAILABLE' && line.finalOrderQty === null));
+  assert.equal(
+    forecastSourceStatus({ ...verifiedRun, testRows: [{ ...importedRow, importType: 'sales_order' }] }),
+    'FORECAST_SOURCE_UNVERIFIED',
+  );
+});
+
+test('Backtest 이후 검증 기간 설정이 바뀌었으면 FORECAST_WINDOW_CHANGED', () => {
+  assert.equal(forecastSourceStatus({ ...verifiedRun, testWindowMatches: false }), 'FORECAST_WINDOW_CHANGED');
 });
 
 test('학습 행이 없거나 실행이 SUCCESS가 아니면 FORECAST_SOURCE_UNVERIFIED', () => {

@@ -42,7 +42,7 @@ STATUS=0
 # 통과 줄은 "PASS: "로 시작한다. 기대한 오류 문구(→ 42501 …)에 섞인 단어를 실패로 세지 않도록
 # 실패는 "FAIL" 또는 psql 오류 접두어("psql:…ERROR")만 센다.
 echo "scenarios: PASS $(count '^PASS' "$LOG_DIR/scenarios.log") · FAIL/ERROR $(count '^FAIL|FAIL:|psql:.*ERROR' "$LOG_DIR/scenarios.log")"
-for scenario in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17 S18 S19 S20 S21 S22 S23 S24; do
+for scenario in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17 S18 S19 S20 S21 S22 S23 S24 S25; do
   printf '  %s PASS %s\n' "$scenario" "$(count "^PASS: $scenario " "$LOG_DIR/scenarios.log")"
 done
 

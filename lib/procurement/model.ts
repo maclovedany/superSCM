@@ -199,8 +199,8 @@ export function calculatePlanMonth(input: PlanMonthCalculationInput): PlanMonthC
 export type PlanItemInput = {
   sourceStatus: SourceStatus;
   hasPolicy: boolean;
+  /** 승인값만 넘긴다(approvedPolicyValue). 직접 넣은 운영값은 승인이 아니다 */
   targetDosDays: number | null;
-  targetDosApproved: boolean;
   unitPrice: number | null;
   moq: number | null;
   championModelId: string | null;
@@ -272,7 +272,6 @@ export function buildPlanItemLines(input: PlanItemInput): PlanItemLine[] {
     } else {
       if (input.unitPrice === null) block('UNIT_PRICE_UNSET');
       if (input.targetDosDays === null) block('TARGET_DOS_UNSET');
-      else if (!input.targetDosApproved) reasons.push('TARGET_DOS_UNSET');
     }
 
     const baseForecastQty = verified && input.championModelId !== null ? month.baseForecastQty : null;
@@ -334,6 +333,22 @@ export function buildPlanItemLines(input: PlanItemInput): PlanItemLine[] {
   });
 }
 
+// ══ 승인된 정책 값 ════════════════════════════════════════════════
+
+/**
+ * 한 정책 필드의 승인값 — 그 필드를 제안한(proposed 값이 null이 아닌) APPROVED 변경안 중 가장 최근에 결정된 것의 값.
+ * analytics.v_item_policy의 approved_* 열과 같은 규칙이다. core.item_policy에 직접 들어간 운영값은 승인이 아니다
+ * (Task 9a의 target_dos_approved와 같은 판단).
+ */
+export function approvedPolicyValue(
+  revisions: Array<{ status: string; decidedAt: string | null; proposedValue: number | null }>,
+): number | null {
+  const approved = revisions
+    .filter((revision) => revision.status === 'APPROVED' && revision.proposedValue !== null && revision.decidedAt !== null)
+    .sort((left, right) => Date.parse(right.decidedAt ?? '') - Date.parse(left.decidedAt ?? ''));
+  return approved[0]?.proposedValue ?? null;
+}
+
 // ══ 학습 데이터 · 확정 근거 · 원천 게이트 ═══════════════════════════
 
 function monthIndex(isoDate: string): number {
@@ -375,24 +390,31 @@ export function approvedAddedDemand(rows: Array<{ sourceCode: string; counted: b
     .reduce((sum, row) => sum + row.qty, 0);
 }
 
+type ProvenanceRow = { batchStatus: string | null; importType: string | null; sourceType: string | null };
+
 /**
- * Forecast 원천 게이트 — core.procurement_forecast_source_status의 거울(컨트롤러 판정 1).
- * 확인 순서: 실행 성공 여부 → 학습 기간 일치 → 모든 학습 행의 적재 출처 → stale.
+ * Forecast 원천 게이트 — core.procurement_forecast_source_status의 거울(컨트롤러 판정 1 · pre-review fix).
+ * 확인 순서: 실행 성공 여부 → 학습 기간 일치 → Champion을 채점한 Backtest의 검증 기간 일치 →
+ * 모든 학습 행과 test 기간 행의 적재 출처 → stale.
  */
 export function forecastSourceStatus(input: {
   runStatus: string | null;
   granularity: string | null;
   windowMatches: boolean;
+  testWindowMatches: boolean;
   isStale: boolean;
   rolledBackAfterSnapshot: boolean;
   snapshotAt: string | null;
-  trainingRows: Array<{ batchStatus: string | null; importType: string | null; sourceType: string | null; loadedAt: string | null }>;
+  trainingRows: Array<ProvenanceRow & { loadedAt: string | null }>;
+  testRows: ProvenanceRow[];
 }): SourceStatus {
   if (input.runStatus !== 'SUCCESS' || input.granularity !== 'MONTH') return 'FORECAST_SOURCE_UNVERIFIED';
-  if (!input.windowMatches) return 'FORECAST_WINDOW_CHANGED';
-  const verifiedRow = (row: (typeof input.trainingRows)[number]) =>
+  if (!input.windowMatches || !input.testWindowMatches) return 'FORECAST_WINDOW_CHANGED';
+  const verifiedRow = (row: ProvenanceRow) =>
     row.batchStatus === 'IMPORTED' && row.importType === 'usage_history' && row.sourceType === 'FILE_UPLOAD';
-  if (input.trainingRows.length === 0 || !input.trainingRows.every(verifiedRow)) return 'FORECAST_SOURCE_UNVERIFIED';
+  if (input.trainingRows.length === 0 || !input.trainingRows.every(verifiedRow) || !input.testRows.every(verifiedRow)) {
+    return 'FORECAST_SOURCE_UNVERIFIED';
+  }
   const snapshot = input.snapshotAt === null ? null : Date.parse(input.snapshotAt);
   const loadedAfterSnapshot = input.trainingRows.some((row) => row.loadedAt === null || snapshot === null || Date.parse(row.loadedAt) > snapshot);
   if (input.isStale || input.rolledBackAfterSnapshot || loadedAfterSnapshot) return 'FORECAST_RUN_STALE';

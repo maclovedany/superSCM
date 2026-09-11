@@ -20,10 +20,13 @@
 -- ★ 원천 게이트(컨트롤러 판정 1) — 현재 Forecast 파이프라인은 core.v_train_demand ← raw.usage_history(5회차 더미
 --   7,038행)로 학습한다. 발주량은 원천이 추적 가능한 실데이터에서만 만든다. 판정은 실행 단위로 한다:
 --     ① 실행이 없거나 SUCCESS · MONTH가 아니면                        FORECAST_SOURCE_UNVERIFIED
---     ② 활성 학습 기간 설정이 실행의 학습 기간과 다르면                  FORECAST_WINDOW_CHANGED
---        (core.v_train_demand가 더 이상 그 실행의 학습 시계열이 아니다 — test 기간을 섞지 않으려고 raw를 직접 읽지 않는다)
---     ③ 학습 행이 0건이거나, 한 행이라도 IMPORTED usage_history 적재 배치(core.upload_batch) · FILE_UPLOAD 출처가 아니면
+--     ② 활성 학습 기간 설정이 실행의 학습 기간과 다르거나, 이 실행의 Champion을 채점한 Backtest의 검증 기간이 활성
+--        검증 기간과 다르면                                             FORECAST_WINDOW_CHANGED
+--        (core.v_train_demand · core.v_test_actual이 더 이상 그 실행 · 채점의 입력이 아니다 — raw를 직접 읽지 않는다)
+--     ③ 학습 행이 0건이거나, 학습 행 또는 Champion 채점에 쓴 test 기간 행(core.v_test_actual)이 한 행이라도
+--        IMPORTED usage_history 적재 배치(core.upload_batch) · FILE_UPLOAD 출처가 아니면
 --                                                                    FORECAST_SOURCE_UNVERIFIED
+--        (pre-review fix — 더미 Actual로 채점해 고른 Champion은 더미 기반 모델 선택이다)
 --     ④ analytics.v_forecast_run.is_stale, 스냅샷 이후 적재된 학습 행, 스냅샷 이후 롤백된 사용 이력 배치가 있으면
 --                                                                    FORECAST_RUN_STALE
 --   통과하지 못하면 그 계획의 모든 라인이 CALCULATION_UNAVAILABLE + 위 사유이고 Forecast 유래 수량은 null이다.
@@ -41,6 +44,12 @@
 --   selected = 둘 중 큰 값(같으면 INVENTORY_VALUE_MIN), final = ceil(selected ÷ coalesce(MOQ,1)) × coalesce(MOQ,1),
 --   예상 월말 = 시작 + final − 수요, 예상 DoS = 예상 월말 ÷ 평균사용량 × 30(소수 1자리, 평균 0이면 null + AVG_USAGE_ZERO),
 --   예상 재고금액 = 예상 월말 × 단가. pack_size · min_order_amount는 스냅샷 · 표시만 한다(stage1 §7).
+--
+-- ★ 승인된 정책 값만(pre-review fix) — 목표 DoS · 단가 · MOQ · 목표재고는 core.item_policy 운영값이 아니라 "그 필드를
+--   제안한(제안값 not null) 가장 최근 APPROVED core.item_policy_revision"의 값을 쓴다. 9a 이전에 직접 들어간 값은 승인이
+--   아니다(9a의 target_dos_approved와 같은 판단). analytics.v_item_policy 끝에 approved_* 열과 사유 코드를 덧붙여
+--   9b와 Task 12가 한 곳에서 읽는다. 승인 단가 없음 → UNIT_PRICE_UNSET(계산 불가), 승인 MOQ 없음 → 1,
+--   승인 목표 DoS 없음 → TARGET_DOS_UNSET(계산 불가), 승인 목표재고 없음 → null + TARGET_STOCK_UNSET(9b 계산에는 안 씀).
 --
 -- ★ 확정 · 승인(컨트롤러 판정 6~7)
 --   라인 중 하나라도 CALCULATION_UNAVAILABLE이거나 TARGET_DOS_UNSET이면 확정을 거절하고 사유 목록을 돌려준다(이력은 남긴다).
@@ -401,6 +410,8 @@ declare
   v_run analytics.v_forecast_run%rowtype;
   v_train_start date;
   v_train_end date;
+  v_test_start date;
+  v_test_end date;
 begin
   if p_run_id is null then
     return 'FORECAST_SOURCE_UNVERIFIED';
@@ -411,7 +422,7 @@ begin
     return 'FORECAST_SOURCE_UNVERIFIED';
   end if;
 
-  select s.train_start, s.train_end into v_train_start, v_train_end
+  select s.train_start, s.train_end, s.test_start, s.test_end into v_train_start, v_train_end, v_test_start, v_test_end
     from core.forecast_setting s
    where s.active and core.is_valid_forecast_window(s.train_start, s.train_end, s.test_start, s.test_end, s.granularity)
    order by s.updated_at desc
@@ -420,10 +431,27 @@ begin
     return 'FORECAST_WINDOW_CHANGED';
   end if;
 
+  -- 이 실행의 Champion(품목별 최신 선정)을 채점한 Backtest의 검증 기간이 지금 core.v_test_actual의 기간과 같아야
+  -- 아래 출처 확인이 "채점에 쓴 Actual"을 본다
+  if exists (
+    select 1
+      from analytics.v_champion_model c
+      join core.backtest_run br on br.backtest_run_id = c.backtest_run_id
+     where br.forecast_run_id = p_run_id
+       and (br.test_start is distinct from v_test_start or br.test_end is distinct from v_test_end)
+  ) then
+    return 'FORECAST_WINDOW_CHANGED';
+  end if;
+
+  -- 학습 행과 Champion 채점에 쓴 test 기간 행 모두 검증된 적재 배치 출처여야 한다(pre-review fix)
   if not exists (select 1 from core.v_train_demand)
      or exists (
        select 1
-         from core.v_train_demand t
+         from (
+           select tr.batch_id, tr.source_type from core.v_train_demand tr
+           union all
+           select te.batch_id, te.source_type from core.v_test_actual te
+         ) t
          left join core.upload_batch b on b.batch_id = t.batch_id
         where b.batch_id is null
            or b.status <> 'IMPORTED'
@@ -449,6 +477,67 @@ $$;
 
 comment on function core.procurement_forecast_source_status(uuid) is
   'Task 9b 원천 게이트 — VERIFIED · FORECAST_SOURCE_UNVERIFIED · FORECAST_WINDOW_CHANGED · FORECAST_RUN_STALE';
+
+
+-- ══ 4b. 승인된 정책 값 — analytics.v_item_policy 확장 ══════════════
+--
+-- ★ Task 9a(20260911000850)의 열 16개를 이름 · 순서 · 식 그대로 먼저 두고 끝에만 덧붙인다(error.md #16).
+--   target_dos_approved · order_blocked · reason_code의 의미는 바꾸지 않는다.
+-- ★ 승인값 = 그 필드를 제안한(제안값 not null) APPROVED 변경안 중 가장 최근에 결정된 것의 제안값.
+--   9a 승인 반영은 coalesce(제안값, 현재값)이라 제안하지 않은 필드는 직접 넣은 옛 값이 운영값에 남는다 — 그 값은 승인이 아니다.
+
+create or replace view analytics.v_item_policy as
+select p.item_id,
+       p.target_dos_days, p.allocation_mode, p.target_stock_qty,
+       p.unit_price, p.unit_price_basis,
+       p.moq, p.pack_size, p.min_order_amount, p.item_grade, p.service_level,
+       p.updated_at,
+       coalesce(p.moq, 1) as effective_moq,
+       not exists (
+         select 1 from core.item_policy_revision r
+          where r.item_id = p.item_id and r.status = 'APPROVED' and r.proposed_target_dos_days is not null
+       ) as order_blocked,
+       case when not exists (
+         select 1 from core.item_policy_revision r
+          where r.item_id = p.item_id and r.status = 'APPROVED' and r.proposed_target_dos_days is not null
+       ) then 'TARGET_DOS_UNSET' end as reason_code,
+       exists (
+         select 1 from core.item_policy_revision r
+          where r.item_id = p.item_id and r.status = 'APPROVED' and r.proposed_target_dos_days is not null
+       ) as target_dos_approved,
+       -- ── pre-review fix(Task 9b) 덧붙인 열 ──
+       av.approved_target_dos_days,
+       av.approved_unit_price,
+       case when av.approved_unit_price is null then 'UNIT_PRICE_UNSET' end as unit_price_reason_code,
+       av.approved_moq,
+       coalesce(av.approved_moq, 1) as approved_effective_moq,
+       case when av.approved_moq is null then 'MOQ_UNSET' end as moq_reason_code,
+       av.approved_target_stock_qty,
+       case when av.approved_target_stock_qty is null then 'TARGET_STOCK_UNSET' end as target_stock_reason_code
+  from core.item_policy p
+  left join lateral (
+    select
+      (select r.proposed_target_dos_days from core.item_policy_revision r
+        where r.item_id = p.item_id and r.status = 'APPROVED' and r.proposed_target_dos_days is not null
+        order by r.decided_at desc, r.requested_at desc limit 1) as approved_target_dos_days,
+      (select r.proposed_unit_price from core.item_policy_revision r
+        where r.item_id = p.item_id and r.status = 'APPROVED' and r.proposed_unit_price is not null
+        order by r.decided_at desc, r.requested_at desc limit 1) as approved_unit_price,
+      (select r.proposed_moq from core.item_policy_revision r
+        where r.item_id = p.item_id and r.status = 'APPROVED' and r.proposed_moq is not null
+        order by r.decided_at desc, r.requested_at desc limit 1) as approved_moq,
+      (select r.proposed_target_stock_qty from core.item_policy_revision r
+        where r.item_id = p.item_id and r.status = 'APPROVED' and r.proposed_target_stock_qty is not null
+        order by r.decided_at desc, r.requested_at desc limit 1) as approved_target_stock_qty
+  ) av on true;
+
+comment on view analytics.v_item_policy is
+  'Task 9a — target_dos_approved · order_blocked는 승인된 core.item_policy_revision 이력으로 판정한다. '
+  'Task 9b — approved_* 열은 그 필드를 제안한 최신 승인 변경안의 값이다(직접 넣은 운영값은 승인이 아니다). '
+  '발주계획 계산과 Task 12는 approved_* 열만 쓴다';
+
+grant select on analytics.v_item_policy to authenticated;
+revoke all on analytics.v_item_policy from anon;
 
 
 -- ══ 5. 계획 생성 — SCM 품목담당자(PLAN_CONFIRM) ═══════════════════
@@ -582,9 +671,12 @@ begin
     select i.item_id,
            im.item_name,
            ip.item_id is not null as has_policy,
-           ip.target_dos_days,
+           -- ★ 승인값만 쓴다(pre-review fix) — core.item_policy에 직접 들어간 운영값은 승인이 아니다
+           ip.approved_target_dos_days as target_dos_days,
            coalesce(ip.target_dos_approved, false) as target_dos_approved,
-           ip.unit_price, ip.moq, ip.pack_size, ip.min_order_amount,
+           ip.approved_unit_price as unit_price,
+           ip.approved_moq as moq,
+           ip.pack_size, ip.min_order_amount,
            ch.champion_model_id, ch.model_version,
            st.item_id is not null as has_stock_row,
            st.normal_warehouse_qty,
@@ -682,11 +774,9 @@ begin
           v_unavailable := true;
         end if;
         if v_item.target_dos_days is null then
+          -- 승인된 목표 DoS가 없다(직접 넣은 운영값만 있어도 마찬가지)
           v_reasons := array_append(v_reasons, 'TARGET_DOS_UNSET');
           v_unavailable := true;
-        elsif not v_item.target_dos_approved then
-          -- 값은 있으나 승인 이력이 없다 — 계산은 하되 확정을 막는다(컨트롤러 판정 5)
-          v_reasons := array_append(v_reasons, 'TARGET_DOS_UNSET');
         end if;
       end if;
 
@@ -1143,10 +1233,18 @@ revoke all on function core.apply_procurement_plan_decision() from public, anon,
 -- select r.run_id, r.status, r.train_start, r.train_end, r.is_stale, core.procurement_forecast_source_status(r.run_id)
 --   from analytics.v_forecast_run r order by r.started_at desc limit 5;
 
--- (b) 출처 없는 학습 행 수(이 값이 0이 되기 전에는 발주량이 계산되지 않는다).
--- select count(*) as unverified_training_rows
---   from core.v_train_demand t left join core.upload_batch b on b.batch_id = t.batch_id
---  where b.batch_id is null or b.status <> 'IMPORTED' or b.import_type <> 'usage_history' or t.source_type is distinct from 'FILE_UPLOAD';
+-- (b) 출처 없는 학습 · test 기간 행 수(둘 다 0이 되기 전에는 발주량이 계산되지 않는다).
+-- select split, count(*) as unverified_rows
+--   from (select 'TRAIN' as split, batch_id, source_type from core.v_train_demand
+--         union all select 'TEST', batch_id, source_type from core.v_test_actual) t
+--   left join core.upload_batch b on b.batch_id = t.batch_id
+--  where b.batch_id is null or b.status <> 'IMPORTED' or b.import_type <> 'usage_history' or t.source_type is distinct from 'FILE_UPLOAD'
+--  group by split;
+
+-- (b-1) 승인된 정책 값 — 직접 넣은 운영값만 있고 승인값이 없는 품목(발주계획은 승인값만 쓴다).
+-- select item_id, target_dos_days, approved_target_dos_days, unit_price, approved_unit_price, unit_price_reason_code,
+--        moq, approved_moq, approved_effective_moq, target_stock_qty, approved_target_stock_qty, target_stock_reason_code
+--   from analytics.v_item_policy order by item_id;
 
 -- (c) 한 달 계산 손검산 — 필요량 120 · MOQ 50 → 150, MOQ null → 1.
 -- select selected_qty, selection_reason, effective_moq, final_order_qty, projected_month_end_qty, projected_dos_days

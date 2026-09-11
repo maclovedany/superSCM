@@ -29,6 +29,29 @@
 | `permission denied for table purchase_order` (security_invoker 뷰) | `analytics` 뷰가 `raw` 테이블을 직접 참조함 | [#22](#22-permission-denied-for-table-purchase_order-security_invoker-뷰에서) |
 | 임시 DB에 `supabase/schema-dump/*.sql`을 복원하면 여러 오류가 연쇄로 남 | 스텁이 불완전하고 일부 마이그레이션이 정책 재적용에 취약함 | [#21](#21-schema-dumpsql-복원-임시-db-부트스트랩) |
 | 도메인별 승인 결과 알림이 예상한 template_code로 저장되지 않음(값은 있는데 내용이 일반 문구) | 같은 dedupe_key를 쓰는 다른 AFTER UPDATE 트리거가 이름 알파벳 순서상 먼저 실행되어 `on conflict do nothing`에 먼저 이김 | [#23](#23-승인-결과-알림이-일반-문구로만-남고-도메인-상세-알림이-안-보인다) |
+| `cannot drop columns from view` (앞 마이그레이션 재적용) | 뒤 마이그레이션이 같은 뷰 끝에 열을 덧붙인 뒤 앞 마이그레이션의 좁은 뷰 정의를 다시 실행 | [#24](#24-cannot-drop-columns-from-view) |
+
+## #24 `cannot drop columns from view`
+
+**증상.** Task 9b pre-review fix에서 `20260911000900_stage1_procurement_plan.sql`이 `analytics.v_item_policy` 끝에
+`approved_*` 열 8개를 덧붙인 뒤 `bash supabase/tests/item_policy/run-all.sh`를 실행하자 bootstrap이 멈췄습니다.
+
+```text
+재적용 실패: 20260911000850_stage1_item_policy_revision.sql
+psql:…/20260911000850_stage1_item_policy_revision.sql:489: ERROR:  cannot drop columns from view
+```
+
+**원인.** `create or replace view`는 기존 열 뒤에 열을 덧붙일 수는 있어도 뺄 수는 없습니다(#16의 반대 방향).
+item_policy 스위트의 bootstrap은 전체 마이그레이션을 적용한 **뒤에** 0850만 한 번 더 실행해 재실행 안전성을
+확인했는데, 그 시점의 뷰는 0900이 넓힌 24열이라 0850의 16열 정의로 되돌리려다 실패했습니다.
+
+**해결.** 스위트 bootstrap이 대상 마이그레이션을 **자기 순서 자리에서 곧바로** 한 번 더 적용하도록 바꿨습니다
+(`supabase/tests/item_policy/bootstrap.sh`). "0850 직후 상태에서 0850을 다시 실행해도 안전한가"라는 확인의 뜻은
+그대로이고, 이후 마이그레이션까지 모두 적용된 최종 상태도 그대로입니다.
+
+**예방.** 뒤 마이그레이션이 뷰를 확장하면 앞 마이그레이션은 **단독으로** 다시 실행할 수 없습니다(0100 → 0850의
+`v_item_policy`도 같은 관계). 재실행 안전성은 그 마이그레이션 직후 상태에서 확인합니다. Supabase SQL Editor에서
+옛 마이그레이션을 다시 실행해야 한다면 그 뒤 마이그레이션도 순서대로 다시 실행합니다.
 
 ## #23 승인 결과 알림이 일반 문구로만 남고 도메인 상세 알림이 안 보인다
 

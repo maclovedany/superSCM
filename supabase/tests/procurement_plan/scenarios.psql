@@ -174,7 +174,7 @@ select plan_test.check(
   'S8 화면용 차단 사유 뷰(v_procurement_plan_blocker)와 확정 함수가 돌려준 사유가 같다');
 
 
-\echo '== S9 목표 DoS 값이 있어도 승인 이력이 없으면 계산은 하되 확정은 차단 · 재계산은 새 버전 =='
+\echo '== S9 목표 DoS를 승인 없이 직접 넣어도 승인값이 아니다 · 재계산은 새 버전 =='
 -- 9a 이전에 직접 들어간 값을 흉내 낸다(운영에서는 authenticated가 이 컬럼을 쓸 수 없다).
 update core.item_policy set target_dos_days = 20 where item_id = 'T9B04';
 set role authenticated;
@@ -192,22 +192,26 @@ select plan_test.check(
 select plan_test.check((select version = 2 and status = 'DRAFT' from core.procurement_plan where plan_id = :'plan_v2'),
   'S9 새 계획은 버전 2 DRAFT');
 select plan_test.check(
-  (select calculation_status = 'CALCULATED' and reason_code = 'TARGET_DOS_UNSET' and target_dos_days = 20 and not target_dos_approved
-      and final_order_qty = 97 and projected_month_end_qty = 67 and projected_dos_days = 20.1
+  (select target_dos_days = 20 and approved_target_dos_days is null and not target_dos_approved and reason_code = 'TARGET_DOS_UNSET'
+     from analytics.v_item_policy where item_id = 'T9B04'),
+  'S9 직접 넣은 목표 DoS(20)는 운영값에만 있고 승인값(approved_target_dos_days)은 null이다');
+select plan_test.check(
+  (select calculation_status = 'CALCULATION_UNAVAILABLE' and reason_code = 'TARGET_DOS_UNSET' and target_dos_days is null
+      and not target_dos_approved and final_order_qty is null
      from core.procurement_plan_line where plan_id = :'plan_v2' and item_id = 'T9B04' and month_no = 1),
-  'S9 미승인 목표 DoS(20)로 계산은 하고(97) 사유 TARGET_DOS_UNSET을 남긴다');
+  'S9 승인되지 않은 목표 DoS로는 계산하지 않는다(TARGET_DOS_UNSET · 발주량 null)');
 select plan_test.check(
   (:'s9_result')::jsonb ->> 'status' = 'BLOCKED'
-  and (select count(*) = 1 and bool_and(e ->> 'reason_code' = 'TARGET_DOS_UNSET' and (e ->> 'line_count')::int = 6)
-         from jsonb_array_elements((:'s9_result')::jsonb -> 'blocking_reasons') e),
-  'S9 계산은 됐어도 목표 DoS 미승인이면 확정이 차단된다(사유 1종 · 6라인)');
+  and (:'s9_result')::jsonb -> 'blocking_reasons'
+      = '[{"reason_code": "PRIOR_MONTH_UNAVAILABLE", "line_count": 5, "item_count": 1},
+          {"reason_code": "TARGET_DOS_UNSET", "line_count": 6, "item_count": 1}]'::jsonb,
+  'S9 확정은 T9B04 한 품목의 TARGET_DOS_UNSET(6라인) · PRIOR_MONTH_UNAVAILABLE(5라인)로만 차단된다');
 
 
 \echo '== S10 test Actual을 바꿔도 계획의 학습 Forecast 근거가 변하지 않는다 =='
 select plan_test.line_signature(:'plan_v2', 'T9B01') as s10_before \gset
+-- 검증된 적재 배치 소속 test Actual 행의 값만 바꾼다(출처 없는 test 행은 S18에서 게이트가 막는다)
 update raw.usage_history set qty = 99999 where usage_id = 'T9B-T9B01-TEST';
-insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse)
-values ('T9B-T9B01-TEST-2', 'T9B01', '2026-08-20', 5, 'MAIN');
 select plan_test.check(plan_test.line_signature(:'plan_v2', 'T9B01') = :'s10_before',
   'S10 이미 만든 계획 라인은 test Actual 변경에 영향받지 않는다');
 set role authenticated;
@@ -217,7 +221,7 @@ reset role;
 select plan_test.check(
   (select source_status = 'VERIFIED' from core.procurement_plan where plan_id = :'plan_v3')
   and plan_test.line_signature(:'plan_v3', 'T9B01') = :'s10_before',
-  'S10 test Actual(출처 없는 행 포함)을 바꾼 뒤 다시 계산해도 원천 판정 · 평균사용량 · 발주량이 같다');
+  'S10 test Actual 값을 바꾼 뒤 다시 계산해도 원천 판정 · 평균사용량 · 발주량이 같다');
 
 
 \echo '== S11 영업 확률을 바꿔도 최종 발주량이 변하지 않는다 =='
@@ -466,6 +470,31 @@ select plan_test.check(
                where e ->> 'reason_code' = 'FORECAST_SOURCE_UNVERIFIED' and (e ->> 'item_count')::int = 4),
   'S18 확정은 FORECAST_SOURCE_UNVERIFIED로 거절된다');
 rollback;
+begin;
+-- 학습 행은 모두 검증됐고, Champion 채점(Backtest)에 쓴 test 기간에만 출처 없는 행이 있다
+insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse)
+values ('T9B-DUMMY-TEST', 'T9B02', '2026-08-20', 5, 'MAIN');
+set local role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as s18_plan2 \gset
+select core.confirm_procurement_plan(:'s18_plan2') as s18_result2 \gset
+reset role;
+select plan_test.check(
+  (select source_status = 'FORECAST_SOURCE_UNVERIFIED' from core.procurement_plan where plan_id = :'s18_plan2')
+  and (select count(*) = 24 and bool_and(calculation_status = 'CALCULATION_UNAVAILABLE' and reason_code = 'FORECAST_SOURCE_UNVERIFIED'
+                                         and base_forecast_qty is null and final_order_qty is null)
+         from core.procurement_plan_line where plan_id = :'s18_plan2'),
+  'S18 학습 행이 모두 검증됐어도 test 기간(Champion 채점) 행 하나가 출처 없으면 모든 라인이 FORECAST_SOURCE_UNVERIFIED');
+select plan_test.check(
+  (:'s18_result2')::jsonb ->> 'status' = 'BLOCKED'
+  and exists (select 1 from jsonb_array_elements((:'s18_result2')::jsonb -> 'blocking_reasons') e
+               where e ->> 'reason_code' = 'FORECAST_SOURCE_UNVERIFIED'),
+  'S18 그 계획의 확정은 FORECAST_SOURCE_UNVERIFIED로 거절된다');
+select plan_test.check(
+  (select string_agg(plan_test.line_signature(:'plan_v5', item_id), '#' order by item_id)
+     from (values ('T9B01'), ('T9B02'), ('T9B03'), ('T9B04')) as i(item_id)) = :'s16_before',
+  'S18 이미 승인된 계획(v5)의 라인은 그대로다');
+rollback;
 
 
 \echo '== S19 원천 게이트 — stale 실행 · 학습 기간 변경 =='
@@ -503,6 +532,15 @@ select plan_test.check(
   (select source_status = 'FORECAST_WINDOW_CHANGED' from core.procurement_plan where plan_id = :'s19_plan3')
   and (select bool_and(reason_code = 'FORECAST_WINDOW_CHANGED') from core.procurement_plan_line where plan_id = :'s19_plan3'),
   'S19 실행 뒤 학습 기간 설정이 바뀌면 FORECAST_WINDOW_CHANGED');
+rollback;
+begin;
+update core.forecast_setting set test_end = '2026-08-31' where active;
+set local role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as s19_plan4 \gset
+reset role;
+select plan_test.check((select source_status = 'FORECAST_WINDOW_CHANGED' from core.procurement_plan where plan_id = :'s19_plan4'),
+  'S19 Champion을 채점한 Backtest 이후 검증 기간 설정이 바뀌어도 FORECAST_WINDOW_CHANGED');
 rollback;
 
 
@@ -614,5 +652,74 @@ select plan_test.check(
 select plan_test.check(
   (select count(*) = 6 from analytics.v_procurement_plan_kpi where plan_id = :'plan_v5'),
   'S24 KPI는 계획 · 월별 한 행이다');
+
+\echo '== S25 계산은 승인된 정책 값만 쓴다 — 직접 넣은 단가 · MOQ · 목표재고는 승인값이 아니다 =='
+begin;
+-- 9a 이전처럼 운영값을 직접 넣은 품목(T9B05)과, 승인값이 있는 품목(T9B02)의 운영값을 직접 덮어쓴 경우
+insert into core.item_policy (item_id, item_grade, unit_price, moq, target_stock_qty, target_dos_days)
+values ('T9B05', 'C', 300, 50, 10, 30);
+update core.item_policy set moq = 50, unit_price = 777 where item_id = 'T9B02';
+insert into core.stock_balance (item_id, snapshot_qty, normal_qty, snapshot_at) values ('T9B05', 0, 0, '2026-09-30T00:00:00Z');
+insert into core.forecast_result (run_id, model_id, item_id, period, model_version, predicted_qty, p50, basis)
+select :'run1', 'MA_3M', 'T9B05', m.period, '00000000-0000-4000-8000-0000000004f2', 100, 100, '{"source": "TRAIN_ONLY"}'::jsonb
+  from (select generate_series('2026-10-01'::timestamp, '2027-03-01'::timestamp, interval '1 month')::date as period) m;
+insert into core.champion_model_selection (backtest_run_id, item_id, champion_model_id, model_version, champion_metric,
+                                           champion_metric_value, selection_reason, selection_method)
+values ('00000000-0000-4000-8000-0000000004f3', 'T9B05', 'MA_3M', '00000000-0000-4000-8000-0000000004f2', 'WAPE', 0.1,
+        'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO');
+-- 목표 DoS만 승인한다(단가 · MOQ · 목표재고는 제안하지 않는다)
+set local role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.request_item_policy_change('T9B05', 30, 'AUTO', null, null, null, null, null, '목표 DoS 승인 요청') as s25_rev1 \gset
+reset role;
+select approval_id as s25_approval1 from core.item_policy_revision where revision_id = :'s25_rev1' \gset
+set local role authenticated;
+select plan_test.as_user(:'lead1') \g /dev/null
+select core.decide_approval(:'s25_approval1', 'APPROVED', '목표 DoS 승인') \g /dev/null
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as s25_plan1 \gset
+reset role;
+select plan_test.check(
+  (select unit_price = 300 and approved_unit_price is null and unit_price_reason_code = 'UNIT_PRICE_UNSET'
+      and moq = 50 and approved_moq is null and approved_effective_moq = 1 and moq_reason_code = 'MOQ_UNSET'
+      and target_stock_qty = 10 and approved_target_stock_qty is null and target_stock_reason_code = 'TARGET_STOCK_UNSET'
+      and approved_target_dos_days = 30 and target_dos_approved
+     from analytics.v_item_policy where item_id = 'T9B05'),
+  'S25 v_item_policy — 직접 넣은 단가 · MOQ · 목표재고는 승인값이 null + 사유, 승인된 목표 DoS만 승인값이다');
+select plan_test.check(
+  (select approved_unit_price = 1000 and approved_moq = 50 and approved_effective_moq = 50 and approved_target_dos_days = 30
+      and unit_price_reason_code is null and moq_reason_code is null
+     from analytics.v_item_policy where item_id = 'T9B01'),
+  'S25 v_item_policy — 승인 절차로 넣은 값은 승인값으로 보인다');
+select plan_test.check(
+  (select calculation_status = 'CALCULATION_UNAVAILABLE' and reason_code = 'UNIT_PRICE_UNSET' and unit_price is null
+      and moq is null and effective_moq = 1 and target_dos_days = 30
+     from core.procurement_plan_line where plan_id = :'s25_plan1' and item_id = 'T9B05' and month_no = 1),
+  'S25 단가를 승인 없이 직접 넣은 품목은 UNIT_PRICE_UNSET으로 계산 불가');
+select plan_test.check(
+  (select moq is null and effective_moq = 1 and final_order_qty = 121 and unit_price = 1000 and projected_inventory_value = 101000
+     from core.procurement_plan_line where plan_id = :'s25_plan1' and item_id = 'T9B02' and month_no = 1),
+  'S25 MOQ(50) · 단가(777)를 직접 덮어써도 계산은 승인값(MOQ 없음 → 1, 단가 1,000)을 쓴다');
+select plan_test.check(
+  (select effective_moq = 50 and final_order_qty = 150
+     from core.procurement_plan_line where plan_id = :'s25_plan1' and item_id = 'T9B01' and month_no = 1),
+  'S25 승인된 MOQ 50은 그대로 적용된다(120 → 150)');
+set local role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.request_item_policy_change('T9B05', null, 'AUTO', null, 300, null, null, null, '단가 승인 요청') as s25_rev2 \gset
+reset role;
+select approval_id as s25_approval2 from core.item_policy_revision where revision_id = :'s25_rev2' \gset
+set local role authenticated;
+select plan_test.as_user(:'lead1') \g /dev/null
+select core.decide_approval(:'s25_approval2', 'APPROVED', '단가 승인') \g /dev/null
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as s25_plan2 \gset
+reset role;
+select plan_test.check(
+  (select calculation_status = 'CALCULATED' and unit_price = 300 and moq is null and effective_moq = 1 and final_order_qty = 100
+     from core.procurement_plan_line where plan_id = :'s25_plan2' and item_id = 'T9B05' and month_no = 1)
+  and (select approved_unit_price = 300 and unit_price_reason_code is null from analytics.v_item_policy where item_id = 'T9B05'),
+  'S25 단가 변경안이 승인되면 그 단가(300)로 계산하고, MOQ는 여전히 승인값이 없어 1이다');
+rollback;
 
 \echo '== 끝 =='

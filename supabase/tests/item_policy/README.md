@@ -31,7 +31,7 @@ bash supabase/tests/item_policy/run-all.sh
 | 파일 | 역할 |
 |---|---|
 | `run-all.sh` | 전체 실행과 요약, 종료 시 임시 DB 삭제(`trap`) |
-| `bootstrap.sh` | 클러스터 역할 확인 → `createdb` → `auth-stub.psql` → `schema-dump/2026-09-11.sql` → STEP 4 · 7 정책 선삭제 → 전체 마이그레이션 → 0850(Task 9a) 재적용(재실행 안전성) |
+| `bootstrap.sh` | 클러스터 역할 확인 → `createdb` → `auth-stub.psql` → `schema-dump/2026-09-11.sql` → STEP 4 · 7 정책 선삭제 → 전체 마이그레이션(0850(Task 9a)은 자기 순서 자리에서 곧바로 한 번 더 적용 — 재실행 안전성, error.md #24) |
 | `lib.sh` | 로컬 대상 확인(`require_local_target`) — 다른 스위트와 동일 |
 | `guard.psql` | 모든 `.psql`이 먼저 포함하는 대상 DB 확인 — 동일 |
 | `auth-stub.psql` | 최소 `auth.users` · `auth.uid()` 스텁(JWT claim 대역) — 동일 |

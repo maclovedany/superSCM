@@ -52,6 +52,8 @@ begin
 end $$;
 SQL
 
+# 0850은 자기 순서 자리에서 곧바로 한 번 더 적용한다(재실행 안전성). 전체 적용 뒤에 다시 돌리면, 뒤 마이그레이션
+# (Task 9b 0900)이 analytics.v_item_policy 끝에 덧붙인 열을 0850의 뷰 정의가 지우려다 실패한다(error.md #24).
 for migration in "$REPO"/supabase/migrations/*.sql; do
   name=$(basename "$migration")
   if ! "${PSQL[@]}" -d "$DB" -f "$migration" > "$LOG_DIR/migration-$name.log" 2>&1; then
@@ -59,11 +61,10 @@ for migration in "$REPO"/supabase/migrations/*.sql; do
     tail -5 "$LOG_DIR/migration-$name.log" >&2
     exit 1
   fi
+  if [ "$migration" = "$TARGET_MIGRATION" ] && ! "${PSQL[@]}" -d "$DB" -f "$TARGET_MIGRATION" > "$LOG_DIR/migration-rerun.log" 2>&1; then
+    echo "재적용 실패: $(basename "$TARGET_MIGRATION")" >&2
+    tail -5 "$LOG_DIR/migration-rerun.log" >&2
+    exit 1
+  fi
 done
-
-if ! "${PSQL[@]}" -d "$DB" -f "$TARGET_MIGRATION" > "$LOG_DIR/migration-rerun.log" 2>&1; then
-  echo "재적용 실패: $(basename "$TARGET_MIGRATION")" >&2
-  tail -5 "$LOG_DIR/migration-rerun.log" >&2
-  exit 1
-fi
-echo "bootstrap 완료: $DB (마이그레이션 전체 적용 + $(basename "$TARGET_MIGRATION") 재적용)"
+echo "bootstrap 완료: $DB (마이그레이션 전체 적용, $(basename "$TARGET_MIGRATION")은 자기 순서에서 재적용)"
