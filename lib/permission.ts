@@ -33,6 +33,9 @@ export type Permission = (typeof PERMISSIONS)[number];
 /** 업무 경로와 진입에 필요한 anyOf 권한의 단일 정의입니다. */
 export const WORK_ROUTE_PERMISSIONS = {
   '/procurement-plans': ['PLAN_CONFIRM', 'PLAN_APPROVE'],
+  // Task 9a — 품목 정책 변경 요청·승인 대기 현황은 이 하위 경로 전용 항목을 쓴다(가장 구체적인
+  // 경로가 우선한다). 계산·확정 화면(발주계획, Task 9b)과는 별도로 ITEM_POLICY_EDIT · APPROVE만으로 들어온다.
+  '/procurement-plans/item-policies': ['ITEM_POLICY_EDIT', 'ITEM_POLICY_APPROVE'],
   '/allocations': ['ALLOC_MANUAL', 'ALLOC_FIRM_CANCEL'],
   '/approvals': ['ITEM_POLICY_APPROVE', 'ALLOC_PRIORITY_APPROVE', 'EVENT_ORDER_APPROVE', 'PLAN_APPROVE'],
   '/orders': ['ORDER_CREATE', 'ORDER_REVIEW_REQUEST'],

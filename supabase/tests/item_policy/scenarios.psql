@@ -1,0 +1,274 @@
+-- Task 9a 품목 정책 변경·승인 — 검증 시나리오. 로컬 임시 DB(scm_test_*) 전용, fixtures.psql 적용 뒤 실행.
+-- 구조는 supabase/tests/approved_demand/scenarios.psql과 같다: 사용자 컨텍스트가 필요한 구간은
+-- `set role authenticated`(진짜 RLS·GRANT 적용) 안에서 as_user()로 auth.uid()를 지정하고,
+-- 결과 확인은 `reset role`(슈퍼유저) 뒤 원본 테이블을 직접 읽어 판정한다. RLS 자체를 검증하는
+-- 구간(S12)은 확인도 authenticated 롤 안에서 한다.
+\set ON_ERROR_STOP 1
+\ir guard.psql
+\pset tuples_only on
+\pset format unaligned
+
+\set planner1 '00000000-0000-4000-8000-000000000301'
+\set planner2 '00000000-0000-4000-8000-000000000302'
+\set lead1 '00000000-0000-4000-8000-000000000303'
+\set marketing1 '00000000-0000-4000-8000-000000000304'
+\set admin1 '00000000-0000-4000-8000-000000000305'
+\set dualrole1 '00000000-0000-4000-8000-000000000306'
+\set item1 'ITEMT901'
+\set item2 'ITEMT902'
+\set item3 'ITEMT903'
+
+
+\echo '== S1 변경 요청 — 권한 없는 사용자(마케팅)는 거절된다 =='
+set role authenticated;
+select itempolicy_test.as_user(:'marketing1') \g /dev/null
+select itempolicy_test.expect_error(
+  format($f$select core.request_item_policy_change(%L, 30, 'AUTO', null, null, null, null, null, '사유')$f$, :'item1'),
+  '품목 정책 변경 요청 권한이 없습니다', 'S1 권한 없는 사용자(마케팅)는 품목 정책 변경을 요청할 수 없다'
+);
+reset role;
+
+
+\echo '== S2 변경 요청 — 입력 검증 =='
+set role authenticated;
+select itempolicy_test.as_user(:'planner1') \g /dev/null
+select itempolicy_test.expect_error(
+  format($f$select core.request_item_policy_change('', 30, 'AUTO', null, null, null, null, null, '사유')$f$),
+  '품목코드는 필수', 'S2 품목코드가 없으면 거절된다'
+);
+select itempolicy_test.expect_error(
+  format($f$select core.request_item_policy_change(%L, 30, 'HYBRID', null, null, null, null, null, '사유')$f$, :'item1'),
+  '배정 방식은 AUTO 또는 MANUAL', 'S2 배정 방식이 AUTO/MANUAL이 아니면 거절된다'
+);
+select itempolicy_test.expect_error(
+  format($f$select core.request_item_policy_change(%L, 0, 'AUTO', null, null, null, null, null, '사유')$f$, :'item1'),
+  '목표 DoS 일수는 0보다 커야', 'S2 목표 DoS 0 이하는 거절된다'
+);
+select itempolicy_test.expect_error(
+  format($f$select core.request_item_policy_change(%L, null, 'AUTO', null, null, -5, null, null, '사유')$f$, :'item1'),
+  '최소주문수량은 0보다 커야', 'S2 MOQ 음수는 거절된다'
+);
+select itempolicy_test.expect_error(
+  format($f$select core.request_item_policy_change(%L, null, 'AUTO', null, null, null, null, null, '')$f$, :'item1'),
+  '변경 사유는 필수', 'S2 변경 사유가 없으면 거절된다'
+);
+select itempolicy_test.expect_error(
+  format($f$select core.request_item_policy_change('NO-SUCH-ITEM', null, 'AUTO', null, null, null, null, null, '사유')$f$),
+  '품목 정책을 찾을 수 없습니다', 'S2 품목 마스터(item_policy)에 없는 품목코드는 거절된다'
+);
+reset role;
+
+
+\echo '== S3 정상 요청 — 대기 중인 변경안과 연결된 승인 요청이 함께 생긴다 =='
+set role authenticated;
+select itempolicy_test.as_user(:'planner1') \g /dev/null
+select core.request_item_policy_change(:'item1', 30, 'MANUAL', 500, 1000, 50, 10, 100000, '분기 정책 조정') as s3_revision_id \gset
+reset role;
+select itempolicy_test.check(:'s3_revision_id' is not null, 'S3 변경 요청은 revision_id를 돌려준다');
+select approval_id as s3_approval_id, status as s3_status from core.item_policy_revision where revision_id = :'s3_revision_id' \gset
+select itempolicy_test.check(:'s3_status' = 'PENDING', 'S3 새 변경안은 PENDING 상태다');
+select itempolicy_test.check(:'s3_approval_id' is not null, 'S3 변경안 제출과 동시에 승인 요청이 연결된다');
+select itempolicy_test.check(
+  (select status = 'PENDING' and approval_type = 'ITEM_POLICY' and target_type = 'ITEM_POLICY_REVISION'
+     and target_id = :'s3_revision_id'
+     from core.approval_request where approval_id = :'s3_approval_id'),
+  'S3 승인 요청이 ITEM_POLICY · ITEM_POLICY_REVISION 대상으로 정확히 생성된다'
+);
+select itempolicy_test.check(
+  (select previous_target_dos_days is null and previous_allocation_mode = 'AUTO' and previous_moq is null
+     from core.item_policy_revision where revision_id = :'s3_revision_id'),
+  'S3 요청 시점의 기존 운영값(null · AUTO · MOQ null)이 스냅샷으로 저장된다'
+);
+
+
+\echo '== S4 승인 전 — 운영값은 그대로고 목표 DoS는 미승인이다 =='
+select itempolicy_test.check(
+  (select target_dos_days is null and allocation_mode = 'AUTO' from core.item_policy where item_id = :'item1'),
+  'S4 승인 전에는 core.item_policy 운영값이 바뀌지 않는다'
+);
+select itempolicy_test.check(
+  (select target_dos_approved = false and order_blocked = true and reason_code = 'TARGET_DOS_UNSET'
+     from analytics.v_item_policy where item_id = :'item1'),
+  'S4 승인 전에는 target_dos_approved=false · order_blocked=true다'
+);
+
+
+\echo '== S5 대기 중인 변경안이 있으면 같은 품목에 새 요청을 거절한다 =='
+set role authenticated;
+select itempolicy_test.as_user(:'planner2') \g /dev/null
+select itempolicy_test.expect_error(
+  format($f$select core.request_item_policy_change(%L, 25, 'AUTO', null, null, null, null, null, '중복 요청')$f$, :'item1'),
+  '이미 처리 대기 중인 품목 정책 변경안이 있습니다', 'S5 같은 품목은 대기 중인 변경안이 있으면 새로 요청할 수 없다(다른 요청자라도)'
+);
+reset role;
+
+
+\echo '== S6 요청자 본인은 자기 변경안을 승인할 수 없다 =='
+-- planner1은 ITEM_POLICY_APPROVE가 없어 이 경로로는 "권한 없음" 오류가 먼저 난다(그건 S7에서 검증한다).
+-- 요청 권한과 승인 권한을 동시에 가진 합성 계정(dualrole1, fixtures.psql 참고)으로 "자기 요청은
+-- 자기가 승인할 수 없다"는 규칙 자체를 검증한다.
+set role authenticated;
+select itempolicy_test.as_user(:'dualrole1') \g /dev/null
+select core.request_item_policy_change(:'item3', 20, 'AUTO', null, null, null, null, null, '셀프 승인 검증용 요청') as s6_revision_id \gset
+reset role;
+select approval_id as s6_approval_id from core.item_policy_revision where revision_id = :'s6_revision_id' \gset
+set role authenticated;
+select itempolicy_test.as_user(:'dualrole1') \g /dev/null
+select itempolicy_test.expect_error(
+  format($f$select core.decide_approval(%L, 'APPROVED', '셀프 승인 시도')$f$, :'s6_approval_id'),
+  '자신이 요청한 승인은 직접 결정할 수 없습니다', 'S6 승인 권한이 있어도 요청자 본인은 자기 정책 변경안을 승인할 수 없다'
+);
+reset role;
+
+
+\echo '== S7 승인 권한이 없으면 거절된다(요청 권한만으로는 승인할 수 없다) =='
+set role authenticated;
+select itempolicy_test.as_user(:'planner2') \g /dev/null
+select itempolicy_test.expect_error(
+  format($f$select core.decide_approval(%L, 'APPROVED', '권한 없음')$f$, :'s3_approval_id'),
+  '이 승인 유형을 결정할 업무 권한이 없습니다', 'S7 ITEM_POLICY_EDIT만 있고 ITEM_POLICY_APPROVE가 없으면 승인할 수 없다'
+);
+select itempolicy_test.as_user(:'marketing1') \g /dev/null
+select itempolicy_test.expect_error(
+  format($f$select core.decide_approval(%L, 'APPROVED', '권한 없음')$f$, :'s3_approval_id'),
+  '이 승인 유형을 결정할 업무 권한이 없습니다', 'S7 아무 권한도 없는 사용자(마케팅)도 승인할 수 없다'
+);
+reset role;
+
+
+\echo '== S8 정상 승인 — 같은 트랜잭션에서 운영값이 반영되고 이력·알림이 남는다 =='
+set role authenticated;
+select itempolicy_test.as_user(:'lead1') \g /dev/null
+select core.decide_approval(:'s3_approval_id', 'APPROVED', '정책 변경 승인');
+reset role;
+select itempolicy_test.check(
+  (select status = 'APPROVED' and decided_by = :'lead1'::uuid and decider_name is not null and decided_at is not null
+     from core.item_policy_revision where revision_id = :'s3_revision_id'),
+  'S8 승인되면 변경안 상태가 APPROVED로 바뀌고 결정자 정보가 채워진다'
+);
+select itempolicy_test.check(
+  (select target_dos_days = 30 and allocation_mode = 'MANUAL' and target_stock_qty = 500
+     and unit_price = 1000 and moq = 50 and pack_size = 10 and min_order_amount = 100000
+     from core.item_policy where item_id = :'item1'),
+  'S8 승인 즉시 core.item_policy 운영값이 제안값 그대로 반영된다'
+);
+select itempolicy_test.check(
+  (select target_dos_approved = true and order_blocked = false and reason_code is null
+     from analytics.v_item_policy where item_id = :'item1'),
+  'S8 목표 DoS를 제안한 변경안이 승인되면 target_dos_approved=true · order_blocked=false로 바뀐다'
+);
+select itempolicy_test.check(
+  (select count(*) = 1 from core.audit_log
+    where action = 'ITEM_POLICY_APPROVED' and target_type = 'item_policy' and target_id = :'item1'),
+  'S8 승인 시 before/after 이력이 core.audit_log에 남는다'
+);
+select itempolicy_test.check(
+  (select (before ->> 'target_dos_days') is null and (after ->> 'target_dos_days') = '30'
+     from core.audit_log
+    where action = 'ITEM_POLICY_APPROVED' and target_type = 'item_policy' and target_id = :'item1'),
+  'S8 이력의 before/after가 실제 변경 전후 값을 담고 있다'
+);
+select itempolicy_test.check(
+  (select count(*) = 2 from core.notification_outbox
+    where template_code = 'ITEM_POLICY_DECIDED' and recipient_user_id = :'planner1'::uuid
+      and payload ->> 'revision_id' = :'s3_revision_id'),
+  'S8 요청자(planner1)에게 결과 알림이 예약된다(IN_APP · EMAIL 각 한 건)'
+);
+
+
+\echo '== S9 반려 — 운영값은 그대로 남고 사유만 이력에 남는다 =='
+set role authenticated;
+select itempolicy_test.as_user(:'planner1') \g /dev/null
+select core.request_item_policy_change(:'item2', 15, 'MANUAL', null, null, null, null, null, '반려 검증용 요청') as s9_revision_id \gset
+select approval_id as s9_approval_id from core.item_policy_revision where revision_id = :'s9_revision_id' \gset
+reset role;
+set role authenticated;
+select itempolicy_test.as_user(:'lead1') \g /dev/null
+select itempolicy_test.expect_error(
+  format($f$select core.decide_approval(%L, 'REJECTED', '')$f$, :'s9_approval_id'),
+  '반려 의견은 필수', 'S9 반려 의견 없이는 반려할 수 없다(Task 2 공통 규칙)'
+);
+select core.decide_approval(:'s9_approval_id', 'REJECTED', '재고 정책 재검토 필요');
+reset role;
+select itempolicy_test.check(
+  (select status = 'REJECTED' and decision_comment = '재고 정책 재검토 필요' from core.item_policy_revision where revision_id = :'s9_revision_id'),
+  'S9 반려되면 변경안 상태가 REJECTED로 바뀌고 팀장 의견이 남는다'
+);
+select itempolicy_test.check(
+  (select target_dos_days is null and allocation_mode = 'AUTO' from core.item_policy where item_id = :'item2'),
+  'S9 반려되면 core.item_policy 운영값은 요청 전 그대로 유지된다'
+);
+select itempolicy_test.check(
+  (select target_dos_approved = false from analytics.v_item_policy where item_id = :'item2'),
+  'S9 반려된 변경안은 target_dos_approved에 영향을 주지 않는다'
+);
+
+
+\echo '== S10 승인 후에도 제안하지 않은 항목(빈 칸)은 기존값을 유지한다(null로 지우지 않는다) =='
+set role authenticated;
+select itempolicy_test.as_user(:'planner1') \g /dev/null
+-- 배정 방식만 제안하고 나머지는 비워 둔다 — item2의 기존 moq(30) · pack_size(6)를 건드리지 않아야 한다.
+select core.request_item_policy_change(:'item2', null, 'MANUAL', null, null, null, null, null, '배정 방식만 변경') as s10_revision_id \gset
+select approval_id as s10_approval_id from core.item_policy_revision where revision_id = :'s10_revision_id' \gset
+reset role;
+set role authenticated;
+select itempolicy_test.as_user(:'lead1') \g /dev/null
+select core.decide_approval(:'s10_approval_id', 'APPROVED', '배정 방식 변경 승인');
+reset role;
+select itempolicy_test.check(
+  (select allocation_mode = 'MANUAL' and moq = 30 and pack_size = 6 and target_dos_days is null
+     from core.item_policy where item_id = :'item2'),
+  'S10 제안하지 않은 항목(MOQ · 포장단위 · 목표 DoS)은 승인 후에도 기존값을 유지한다'
+);
+select itempolicy_test.check(
+  (select target_dos_approved = false from analytics.v_item_policy where item_id = :'item2'),
+  'S10 이 변경안은 목표 DoS를 제안하지 않았으므로 승인되어도 target_dos_approved는 여전히 false다'
+);
+
+
+\echo '== S11 승인 전 직접 쓰기 차단 — 운영값 컬럼은 authenticated가 직접 바꿀 수 없다 =='
+set role authenticated;
+select itempolicy_test.as_user(:'planner1') \g /dev/null
+select itempolicy_test.expect_error(
+  format($f$update core.item_policy set target_stock_qty = 999 where item_id = %L$f$, :'item1'),
+  'permission denied', 'S11 ITEM_POLICY_EDIT 권한이 있어도 target_stock_qty를 직접 UPDATE할 수 없다'
+);
+select itempolicy_test.expect_error(
+  format($f$update core.item_policy set unit_price = 999 where item_id = %L$f$, :'item1'),
+  'permission denied', 'S11 unit_price도 직접 UPDATE할 수 없다'
+);
+select itempolicy_test.expect_error(
+  format($f$update core.item_policy set moq = 999 where item_id = %L$f$, :'item1'),
+  'permission denied', 'S11 moq도 직접 UPDATE할 수 없다'
+);
+select itempolicy_test.expect_error(
+  format($f$update core.item_policy set target_dos_days = 999 where item_id = %L$f$, :'item1'),
+  'permission denied', 'S11 target_dos_days도 직접 UPDATE할 수 없다(Task 1부터 유지)'
+);
+select itempolicy_test.expect_error(
+  format($f$update core.item_policy set allocation_mode = 'AUTO' where item_id = %L$f$, :'item1'),
+  'permission denied', 'S11 allocation_mode도 직접 UPDATE할 수 없다(Task 1부터 유지)'
+);
+-- item_grade · service_level · unit_price_basis는 stage1 승인 규칙 대상이 아니므로 여전히 직접 쓸 수 있다.
+update core.item_policy set item_grade = 'C', unit_price_basis = '표준원가' where item_id = :'item1';
+reset role;
+select itempolicy_test.check(
+  (select item_grade = 'C' and unit_price_basis = '표준원가' from core.item_policy where item_id = :'item1'),
+  'S11 item_grade · unit_price_basis는 승인 절차 없이 직접 쓸 수 있다(stage1 승인 규칙 대상이 아니다)'
+);
+
+
+\echo '== S12 RLS — 요청·승인 권한이 모두 없는 사용자는 변경 이력을 볼 수 없다 =='
+set role authenticated;
+select itempolicy_test.as_user(:'marketing1') \g /dev/null
+select itempolicy_test.check(
+  (select count(*) = 0 from core.item_policy_revision),
+  'S12 ITEM_POLICY_EDIT · ITEM_POLICY_APPROVE가 모두 없고 요청자·결정자도 아니면 변경 이력이 보이지 않는다'
+);
+-- planner2는 item1 변경안을 요청하지도 결정하지도 않았다 — ITEM_POLICY_EDIT 권한만으로 보이는지 확인한다.
+select itempolicy_test.as_user(:'planner2') \g /dev/null
+select itempolicy_test.check(
+  (select count(*) >= 1 from analytics.v_item_policy_revision where item_id = :'item1'),
+  'S12 요청 권한(ITEM_POLICY_EDIT)이 있으면 자신이 요청·결정하지 않은 변경 이력도 조회할 수 있다(승인함과 같은 범위)'
+);
+reset role;

@@ -16,6 +16,7 @@ export const USER_MENU: MenuItem[] = [
   { href: '/dashboard', label: '전체 현황', description: '월간 발주계획 요약', icon: Gauge },
   { href: '/notifications', label: '알림', description: '승인·배정·제출 알림', icon: Bell },
   { href: '/procurement-plans', label: '발주계획', description: '최종 발주계획 확정과 승인', icon: Workflow, anyOf: WORK_ROUTE_PERMISSIONS['/procurement-plans'] },
+  { href: '/procurement-plans/item-policies', label: '품목 정책', description: '목표 DoS · 배정 방식 · MOQ 변경 요청과 승인 대기 현황', icon: Boxes, anyOf: WORK_ROUTE_PERMISSIONS['/procurement-plans/item-policies'] },
   { href: '/allocations', label: '배정', description: '배정 대기열 · 수동 확정배정 · 확정배정 취소', icon: Boxes, anyOf: WORK_ROUTE_PERMISSIONS['/allocations'] },
   { href: '/approvals', label: '승인함', description: '정책·배정·수요·발주계획 승인과 반려', icon: Workflow, anyOf: WORK_ROUTE_PERMISSIONS['/approvals'] },
   { href: '/orders', label: '주문', description: '영업 주문 등록 · 검토 요청(임시배정) · 수주 확정', icon: Workflow, anyOf: WORK_ROUTE_PERMISSIONS['/orders'] },

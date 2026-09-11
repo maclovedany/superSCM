@@ -58,9 +58,11 @@ export type ItemPolicy = {
   effectiveMoq: number;
   packSize: number | null;
   minOrderAmount: number | null;
-  /** 목표 DoS 미설정이면 true — 발주 확정을 막습니다 (stage1 §6) */
+  /** 목표 DoS가 승인 이력 없이 비어 있으면 true — 발주 확정을 막습니다 (stage1 §6 · Task 9a) */
   orderBlocked: boolean;
   reasonCode: string | null;
+  /** 목표 DoS를 승인한 이력이 있는가. 값이 있어도 승인 이력이 없으면 false입니다(Task 9a) */
+  targetDosApproved: boolean;
   updatedAt: string | null;
 };
 
@@ -155,6 +157,8 @@ export function normalizeItemPolicy(row: Record<string, unknown>): ItemPolicy {
     minOrderAmount: numberValue(row, ['min_order_amount']),
     orderBlocked: row.order_blocked === true,
     reasonCode: text(row, ['reason_code']),
+    // ★ 구형 뷰(target_dos_approved 없음)는 false로 봅니다 — 승인 이력을 임의로 만들지 않습니다.
+    targetDosApproved: row.target_dos_approved === true,
     updatedAt: text(row, ['updated_at']),
   };
 }

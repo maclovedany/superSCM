@@ -28,6 +28,35 @@
 | `column reference "notification_id" is ambiguous` | 반환 테이블 함수의 출력 열과 SQL 열 이름이 충돌 | [#20](#20-column-reference-notification_id-is-ambiguous) |
 | `permission denied for table purchase_order` (security_invoker 뷰) | `analytics` 뷰가 `raw` 테이블을 직접 참조함 | [#22](#22-permission-denied-for-table-purchase_order-security_invoker-뷰에서) |
 | 임시 DB에 `supabase/schema-dump/*.sql`을 복원하면 여러 오류가 연쇄로 남 | 스텁이 불완전하고 일부 마이그레이션이 정책 재적용에 취약함 | [#21](#21-schema-dumpsql-복원-임시-db-부트스트랩) |
+| 도메인별 승인 결과 알림이 예상한 template_code로 저장되지 않음(값은 있는데 내용이 일반 문구) | 같은 dedupe_key를 쓰는 다른 AFTER UPDATE 트리거가 이름 알파벳 순서상 먼저 실행되어 `on conflict do nothing`에 먼저 이김 | [#23](#23-승인-결과-알림이-일반-문구로만-남고-도메인-상세-알림이-안-보인다) |
+
+## #23 승인 결과 알림이 일반 문구로만 남고 도메인 상세 알림이 안 보인다
+
+**증상.** Task 9a에서 `core.apply_item_policy_decision()`이 승인 결과를 `core.enqueue_order_notice(
+'approval:' || new.approval_id || ':decision:' || new.status, 'ITEM_POLICY_DECIDED', ...)`로 예약했는데,
+`core.notification_outbox`를 확인하면 같은 dedupe_key 행이 `template_code = 'APPROVAL_DECIDED'`(Task 3의
+일반 승인 결과 알림)로만 남아 있고 `ITEM_POLICY_DECIDED`는 없었습니다.
+
+**원인.** `core.approval_request`에는 `after update of status` 트리거가 여러 개 걸려 있습니다 —
+Task 3의 `approval_notification_sync`(일반 결과 알림)와 도메인별 후처리 트리거(Task 9a의
+`item_policy_decision_apply` 등). PostgreSQL은 같은 시점의 트리거를 **트리거 이름의 알파벳 순서**로
+실행합니다. `core.enqueue_notification`은 `(dedupe_key, recipient_user_id, channel)`에
+`on conflict do nothing`을 걸어 두므로, 같은 dedupe_key(`approval:<id>:decision:<status>`)를 쓰면
+먼저 실행된 트리거가 그 키를 선점하고 뒤에 실행된 트리거의 삽입은 조용히 무시됩니다.
+`item_policy_decision_apply`는 `i`로 시작해 `a`로 시작하는 `approval_notification_sync`보다
+항상 나중에 실행되므로 도메인 알림이 매번 졌습니다(반대로 `alloc_priority_decision_apply`는 `a`+`l`이
+`a`+`p`보다 앞서 우연히 이깁니다 — 트리거 이름 순서에 기대는 설계는 이렇게 한쪽만 우연히 통과할 수
+있어 위험합니다).
+
+**해결.** 도메인 알림에는 Task 3 일반 알림과 **다른 dedupe_key**를 씁니다
+(`'item_policy_revision:' || v_revision.revision_id || ':decision:' || new.status`). 두 알림이 각자
+따로 쌓여 요청자는 일반 알림과 도메인 상세 알림을 모두 받습니다.
+
+**예방.** 여러 `after update` 트리거가 같은 원장 테이블에 걸려 있고 그중 하나가 다른 트리거와 같은
+`enqueue_notification` dedupe_key로 "내용을 덮어쓸" 생각이라면, 트리거 이름 알파벳 순서에 기대지 말고
+직접 `select relname from pg_trigger ... order by tgname`으로 실행 순서를 확인하거나, 애초에
+dedupe_key를 도메인별로 다르게 둡니다. DB 검증 스위트에 `notification_outbox`의 `template_code` ·
+`payload` 내용까지 확인하는 시나리오를 넣어야 이런 승자독식 충돌이 조용히 넘어가지 않습니다.
 
 ## #22 `permission denied for table purchase_order` (security_invoker 뷰에서)
 

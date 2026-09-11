@@ -1,0 +1,80 @@
+-- 품목 정책 변경·승인 검증 fixture — 로컬 임시 DB(scm_test_*) 전용. 운영 마이그레이션에 넣지 않는다
+\set ON_ERROR_STOP 1
+\ir guard.psql
+
+create schema if not exists itempolicy_test;
+grant usage on schema itempolicy_test to anon, authenticated;
+
+create or replace function itempolicy_test.as_user(p_user uuid) returns text language sql as $$
+  select set_config('request.jwt.claim.sub', p_user::text, false)
+$$;
+
+create or replace function itempolicy_test.check(p_ok boolean, p_label text) returns text language plpgsql as $$
+begin
+  if p_ok is distinct from true then
+    raise exception 'FAIL: %', p_label;
+  end if;
+  return 'PASS: ' || p_label;
+end $$;
+
+create or replace function itempolicy_test.expect_error(p_sql text, p_pattern text, p_label text) returns text language plpgsql as $$
+declare
+  v_state text;
+  v_message text;
+begin
+  begin
+    execute p_sql;
+  exception when others then
+    get stacked diagnostics v_state = returned_sqlstate, v_message = message_text;
+    if v_message !~ p_pattern then
+      raise exception 'FAIL: % — 다른 오류: % (%)', p_label, v_message, v_state;
+    end if;
+    return 'PASS: ' || p_label || ' → ' || v_state || ' ' || v_message;
+  end;
+  raise exception 'FAIL: % — 오류가 나지 않았습니다: %', p_label, p_sql;
+end $$;
+
+grant execute on all functions in schema itempolicy_test to anon, authenticated;
+
+insert into auth.users (id, email) values
+  ('00000000-0000-4000-8000-000000000301', 't9-planner1@example.test'),
+  ('00000000-0000-4000-8000-000000000302', 't9-planner2@example.test'),
+  ('00000000-0000-4000-8000-000000000303', 't9-lead1@example.test'),
+  ('00000000-0000-4000-8000-000000000304', 't9-marketing1@example.test'),
+  ('00000000-0000-4000-8000-000000000305', 't9-admin1@example.test'),
+  -- ITEM_POLICY_EDIT와 ITEM_POLICY_APPROVE를 동시에 가진 합성 계정 — "요청자 본인은 승인할 수
+  -- 없다" 검증 전용이다(실제 직책 중에는 두 권한을 함께 가진 직책이 없다 — 역할 분리가 이미
+  -- 이를 막는다. supabase/tests/approved_demand의 T8_DUAL_ROLE과 같은 목적).
+  ('00000000-0000-4000-8000-000000000306', 't9-dualrole1@example.test')
+on conflict (id) do nothing;
+
+insert into core.app_user (user_id, email, name, department, role, active, job_role) values
+  ('00000000-0000-4000-8000-000000000301', 't9-planner1@example.test', 'SCM품목담당1', 'SCM', 'USER', true, 'SCM_PLANNER'),
+  ('00000000-0000-4000-8000-000000000302', 't9-planner2@example.test', 'SCM품목담당2', 'SCM', 'USER', true, 'SCM_PLANNER'),
+  ('00000000-0000-4000-8000-000000000303', 't9-lead1@example.test', 'SCM팀장1', 'SCM', 'USER', true, 'SCM_LEAD'),
+  ('00000000-0000-4000-8000-000000000304', 't9-marketing1@example.test', '마케팅1', 'MARKETING', 'USER', true, 'MARKETING'),
+  ('00000000-0000-4000-8000-000000000305', 't9-admin1@example.test', '관리자1', null, 'ADMIN', true, null),
+  ('00000000-0000-4000-8000-000000000306', 't9-dualrole1@example.test', '겸직테스트', 'SCM', 'USER', true, 'T9_DUAL_ROLE')
+on conflict (user_id) do update
+  set job_role = excluded.job_role, department = excluded.department, role = excluded.role, name = excluded.name, active = true;
+
+insert into core.role_permission (job_role, permission_code) values
+  ('T9_DUAL_ROLE', 'ITEM_POLICY_EDIT'),
+  ('T9_DUAL_ROLE', 'ITEM_POLICY_APPROVE')
+on conflict (job_role, permission_code) do nothing;
+
+insert into raw.item_master ("품목코드", "품목명", "품목구분") values
+  ('ITEMT901', 'T9 정상 품목', '소모품'),
+  ('ITEMT902', 'T9 정상 품목 2', '소모품'),
+  ('ITEMT903', 'T9 정상 품목 3(셀프승인 검증 전용)', '소모품')
+on conflict do nothing;
+
+-- core.item_policy는 Task 1(20260911000300)부터 authenticated의 직접 INSERT가 막혀 있다 — 운영에서도
+-- 이 표의 최초 행은 관리 도구(슈퍼유저 · service_role)로만 만든다. fixture도 슈퍼유저로 직접 넣는다.
+insert into core.item_policy (item_id, moq, pack_size, item_grade, service_level) values
+  ('ITEMT901', null, null, 'A', 0.95),
+  ('ITEMT902', 30, 6, 'B', 0.9),
+  ('ITEMT903', null, null, 'A', 0.95)
+on conflict (item_id) do update set moq = excluded.moq, pack_size = excluded.pack_size;
+
+select 'fixtures ok';

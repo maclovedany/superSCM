@@ -61,6 +61,12 @@ const policyColumns: Column<ItemPolicy>[] = [
       : <>{row.targetDosDays}<span className="muted"> 일</span></>,
   },
   {
+    // Task 9a — 값이 있어도 core.item_policy_revision 승인 이력이 없으면 미승인이다(임의로 승인된
+    // 것으로 보지 않는다). 변경 요청은 /procurement-plans/item-policies에서 한다(여기는 조회 전용).
+    key: 'targetDosApproved', label: '목표 DoS 승인', align: 'center',
+    render: (row) => row.targetDosApproved ? <Badge status="SAFE">승인됨</Badge> : <Badge status="CRITICAL">미승인</Badge>,
+  },
+  {
     key: 'effectiveMoq', label: '최소주문수량', align: 'right',
     render: (row) => row.moq === null
       ? <span title="미설정이라 1 로 적용합니다">1 <span className="muted">(기본)</span></span>
@@ -130,7 +136,11 @@ export default async function MasterPage() {
 
         <div className="section card">
           <div className="card-title">
-            <div><h3>품목 정책</h3><span>목표 DoS 가 없으면 발주 확정을 차단합니다. 최소주문수량이 없으면 1 로 봅니다.</span></div>
+            <div>
+              <h3>품목 정책</h3>
+              <span>목표 DoS 가 승인 이력 없이 비어 있으면 발주 확정을 차단합니다. 최소주문수량이 없으면 1 로 봅니다.
+                변경 요청은 발주계획 &gt; 품목 정책(/procurement-plans/item-policies)에서 합니다.</span>
+            </div>
           </div>
           <DataTable columns={policyColumns} rows={policies.rows} rowKey={(row) => row.itemId} empty="품목 정책이 없습니다." />
         </div>
