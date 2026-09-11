@@ -326,3 +326,70 @@ $ git diff --check
 
 - **만료된 확정 전 주문에 수동 FIRM만 남는 경우.** 판정대로 수동 FIRM · 확보는 만료 뒤에도 허용되고 Task 6 판정은 "FIRM/확보가 남은 주문은 EXPIRED로 만들지 않는다"이다. 그런데 이제 수주 확정은 만료 뒤 거절되므로, 이런 주문은 확정할 방법이 없고 SCM 품목담당자의 확정배정 취소로만 끝난다. 의도라면 그대로, 아니라면 "임시배정이 없는 주문의 확정은 만료와 무관" 같은 예외 판정이 필요하다.
 - `allocate_to_order_line`은 만료 주문에서 0을 돌려주지 않고 예외를 던진다(지시대로 거절). Task 6의 입고 배정 루프가 만료된 확정 전 주문을 걸러내지 않으면 입고 트랜잭션 전체가 되돌려진다 — 머리말 계약에 적었다.
+
+### fix round 1 adjustment — 수주 확정 만료 차단 범위 축소 (커밋 `56b0726`)
+
+컨트롤러 판정(위 우려 1): stage1 §2의 30일 규칙은 임시배정에만 적용된다(68 · 97행 — 수동 FIRM은 만료 없음). 수주 확정은 만료 시각이 지났고 **해제되지 않은 TEMPORARY가 남아 있을 때만** 거절한다. 남은 배정이 FIRM · 승인대기 확보뿐이면 만료 뒤에도 확정한다(최종 주문번호 기록 → CONFIRMED, 남은 부족수량은 대기열 유지, 이후 배정은 FIRM). 우려 2는 Task 6으로 넘김(변경 없음).
+
+**변경.**
+- `core.confirm_sales_order`: `clock_timestamp() >= v_order.temporary_expires_at and exists (… a.status = 'TEMPORARY')`일 때만 `TEMPORARY_ALLOCATION_EXPIRED`. 잠금(재고 행 → 주문 행) 뒤, 상태 확인 직후에 판정한다.
+- 나머지 round 1 차단은 그대로: `allocate_to_order_line`(TEMPORARY 분기) · `create_stock_allocation(TEMPORARY)` · `transition_stock_allocation(TEMPORARY → FIRM)` · `request_order_review` 방어 확인. 따라서 만료 주문에 TEMPORARY가 남아 있으면 확정 경로의 전환도 여전히 막힌다.
+- 마이그레이션 머리말 계약 문구를 같은 범위로 고쳤다.
+- 계약 테스트: 확정 차단 식에 `exists (… a.status = 'TEMPORARY')`가 있어야 한다.
+- 커밋된 검증 스위트: fixture 품목 ITEMT11(재고 100), 시나리오 **S10** 추가, `run-all.sh` 요약 · README에 S10 반영.
+
+**S10 구성.** S9와 같은 테스트 전용 경로로 5초 뒤 만료되는 FA(50) · FB(40)를 만들고, 만료 전 FB에만 후속 임시배정 20을 만든 뒤 만료 시각까지 기다린다.
+- (a) FA에 만료 뒤 정상 순서 수동 FIRM 30 → 수주 확정 **성공**(`ERP-FIRM-ONLY`, 만료 시각 경과 상태에서), FIRM 30 · 부족 20, 대기 순번 유지, 확정 뒤 후속 배정 10은 FIRM, FA에는 TEMPORARY 생성 이력이 한 건도 없음.
+- (b) FB 우선순위를 1로 올려 정상 순서 수동 FIRM 10 → 임시 20 + FIRM 10이 남은 상태로 수주 확정 **거절**(`TEMPORARY_ALLOCATION_EXPIRED`), 주문 · 임시 20 · FIRM 10 그대로.
+- (c) Task 6 자동 해제 대역으로 기존 해제 경로 `core.transition_stock_allocation(…, 'RELEASED', null, '임시배정 만료 자동 해제(검증 대역)', 'EXPIRED')` + `core.apply_sales_order_status`로 FB 임시배정만 해제 → 수주 확정 **성공**(`ERP-FB`), FIRM 10 · 부족 30 대기, 해제된 임시배정은 RELEASED 유지(확정으로 전환되지 않음).
+
+**명령과 결과.**
+```
+$ node --test lib/orders/model.test.ts        # 계약 테스트 먼저 강화
+✖ 만료 시각이 지난 확정 전 주문은 임시배정 생성 · 확정 전환 · 수주 확정을 거절하고 수동 FIRM · 확보는 막지 않는다
+  AssertionError [ERR_ASSERTION]: 수주 확정은 만료 시각 뒤에도 해제되지 않은 임시배정이 남아 있을 때만 거절합니다(FIRM · 확보만 남은 주문은 확정 가능).
+ℹ tests 30 · pass 29 · fail 1                  # RED — 확정 차단이 TEMPORARY 존재를 보지 않아 기대한 실패
+
+$ bash supabase/tests/sales_order_allocation/run-all.sh      # 같은 시점, 커밋된 파일에서 실행
+scenarios:   PASS 156 · FAIL/ERROR 1
+  S10 PASS 3
+psql:…/scenarios.psql:466: ERROR:  TEMPORARY_ALLOCATION_EXPIRED: 임시배정 만료 시각(2026-09-12 01:32:58.714049+09)이 지난 주문은 수주 확정할 수 없습니다. …
+결과: 실패                                     # RED — S10 (a) FIRM만 남은 만료 주문 확정이 거절됨
+삭제: scm_test_order_alloc_20260912013246
+
+$ node --test lib/orders/model.test.ts        # 수정 후
+ℹ tests 30 · pass 30 · fail 0
+
+$ bash supabase/tests/sales_order_allocation/run-all.sh      # 수정 후, 커밋된 파일에서 실행
+DB: scm_test_order_alloc_20260912013356 · 로그: …/T//scm_test_order_alloc.A6uWeP
+bootstrap 완료: scm_test_order_alloc_20260912013356 (마이그레이션 전체 적용 + 20260911000600_stage1_sales_order_allocation.sql 재적용)
+scenarios:   PASS 166 · FAIL/ERROR 0
+  S2 PASS 12
+  S3 PASS 9
+  S4 PASS 29
+  S5 PASS 24
+  S6 PASS 16
+  S7 PASS 26
+  S8 PASS 25
+  S9 PASS 12
+  S10 PASS 13
+concurrency: PASS 16 · FAIL/ERROR 0
+  PASS: C1 재고 행 잠금을 기다리는 검토 요청 수 (2)
+  PASS: C2 재고 행 잠금을 기다리는 검토 요청 수 — 10건이 동시에 진행 중 (10)
+  PASS: C2 동시 10건 → 배정 합계 정확히 100 (초과 0)
+  PASS: C4 동시 10건 → 배정 합계 정확히 100
+  PASS: C4 선착순 30·30·30·10, 나머지 0 + 부족 표시
+invariants:  PASS 8 · FAIL/ERROR 0
+결과: 전부 통과
+삭제: scm_test_order_alloc_20260912013356
+run-all exit=0        (이후 scm_test_% DB 0개)
+
+$ npm test
+ℹ tests 162 · pass 162 · fail 0
+$ npm run build
+✓ Compiled successfully … ƒ /orders/[orderId] 180 B · ƒ /orders 165 B · ƒ /orders/new 163 B
+$ git diff --check
+(출력 없음)
+```
+
+**남은 우려.** 위 fix round 1의 우려 1은 이 판정으로 해소됐다. 우려 2(`allocate_to_order_line`이 만료 주문에서 예외)는 Task 6 판정으로 넘어갔다.
