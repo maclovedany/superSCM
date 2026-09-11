@@ -33,6 +33,7 @@
 | `function core.xxx(unknown, unknown, integer, ...) does not exist` (smallint 인자) | 정수 리터럴(int4)이 `smallint` 파라미터로 암시적 변환되지 않아 오버로드 해석 실패 | [#25](#25-function-corexxx-does-not-exist-smallint-인자) |
 | psql 스크립트에서 `syntax error at or near ":"` 또는 `column "f" does not exist` (`\gset` 뒤) | `\gset`은 NULL·빈 결과 컬럼의 변수를 **설정하지 않고**, bare(따옴표 없는) boolean 변수는 `f`/`t`로 치환돼 컬럼명처럼 파싱됨 | [#26](#26-gset-뒤-syntax-error-또는-column-f-does-not-exist) |
 | `column reference "schedule_id" is ambiguous` (`ON CONFLICT (열이름)`에서) | `RETURNS TABLE`의 출력 열 이름과 `ON CONFLICT (열이름)`의 대상 열 이름이 같음 | [#27](#27-on-conflict-열이름에서-column-reference-is-ambiguous) |
+| `Type 'MapIterator<...>' can only be iterated through when using the '--downlevelIteration' flag or with a '--target' of 'es2015' or higher` | `tsconfig.json`의 `target`이 `es5`라 `Map.entries()`를 바로 스프레드(`[...map.entries()]`)할 수 없음 | [#28](#28-mapiterator를-바로-스프레드할-수-없다) |
 
 ## #24 `cannot drop columns from view`
 
@@ -680,6 +681,25 @@ The following paths are ignored by one of your .gitignore files:
 적용 규칙을 확인하고, 사용자 지정 파일만 좁게 강제 추가합니다.
 
 ---
+
+## #28 `MapIterator`를 바로 스프레드할 수 없다
+
+**증상.** Task 11의 `app/(user)/allocations/page.tsx`에서 `Map`에 모은 MANUAL 품목 목록을 순회하려고
+`[...manualItems.entries()].map(...)`를 쓰자 `npm run build`가 다음 오류로 멈췄다.
+
+```text
+Type error: Type 'MapIterator<[string, string | null]>' can only be iterated through when
+using the '--downlevelIteration' flag or with a '--target' of 'es2015' or higher.
+```
+
+**원인.** `tsconfig.json`의 `target`이 `es5`다(`lib`는 `esnext`를 포함해 `Map`·`Map.entries()` 자체는
+쓸 수 있지만, es5 타깃에서는 이터레이터 스프레드 문법의 트랜스파일이 기본으로 막혀 있다).
+
+**해결.** 스프레드 대신 `Array.from(manualItems.entries())`로 바꿨다 — 이터레이터를 배열로 바꾸는
+호출 형태라 es5 타깃에서도 그대로 컴파일된다.
+
+**예방.** 이 저장소에서 `Map`·`Set`을 순회할 때는 `[...x]`가 아니라 `Array.from(x)`를 먼저 시도한다.
+`tsconfig.json`의 `target`을 올리는 것은 이 작업 범위 밖이라 건드리지 않았다.
 
 ## #25 `function core.xxx(unknown, unknown, integer, ...) does not exist`(smallint 인자)
 

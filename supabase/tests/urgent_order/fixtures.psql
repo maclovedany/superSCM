@@ -1,0 +1,67 @@
+-- 긴급발주 검증 fixture — 로컬 임시 DB(scm_test_*) 전용. 운영 마이그레이션에 넣지 않는다.
+-- 구조는 supabase/tests/item_policy · master_edit의 fixtures.psql과 같다.
+\set ON_ERROR_STOP 1
+\ir guard.psql
+
+create schema if not exists urgentorder_test;
+grant usage on schema urgentorder_test to anon, authenticated;
+
+create or replace function urgentorder_test.as_user(p_user uuid) returns text language sql as $$
+  select set_config('request.jwt.claim.sub', p_user::text, false)
+$$;
+
+create or replace function urgentorder_test.check(p_ok boolean, p_label text) returns text language plpgsql as $$
+begin
+  if p_ok is distinct from true then
+    raise exception 'FAIL: %', p_label;
+  end if;
+  return 'PASS: ' || p_label;
+end $$;
+
+create or replace function urgentorder_test.expect_error(p_sql text, p_pattern text, p_label text) returns text language plpgsql as $$
+declare
+  v_state text;
+  v_message text;
+begin
+  begin
+    execute p_sql;
+  exception when others then
+    get stacked diagnostics v_state = returned_sqlstate, v_message = message_text;
+    if v_message !~ p_pattern then
+      raise exception 'FAIL: % — 다른 오류: % (%)', p_label, v_message, v_state;
+    end if;
+    return 'PASS: ' || p_label || ' → ' || v_state || ' ' || v_message;
+  end;
+  raise exception 'FAIL: % — 오류가 나지 않았습니다: %', p_label, p_sql;
+end $$;
+
+grant execute on all functions in schema urgentorder_test to anon, authenticated;
+
+-- job_role은 STEP 19(20260911000200)의 실제 직책 권한을 그대로 쓴다(합성 역할을 만들지 않는다) —
+-- SCM_PLANNER는 ALLOC_MANUAL, SERVICE는 URGENT_ORDER_VIEW, SCM_LEAD는 STOCK_VIEW_ALL(쓰기 권한
+-- 없음), MARKETING은 STOCK_VIEW_PAPER(긴급발주 권한 전혀 없음)를 이미 갖고 있다.
+insert into auth.users (id, email) values
+  ('00000000-0000-4000-8000-000000000601', 't11-planner1@example.test'),
+  ('00000000-0000-4000-8000-000000000602', 't11-lead1@example.test'),
+  ('00000000-0000-4000-8000-000000000603', 't11-service1@example.test'),
+  ('00000000-0000-4000-8000-000000000604', 't11-marketing1@example.test'),
+  ('00000000-0000-4000-8000-000000000605', 't11-admin1@example.test')
+on conflict (id) do nothing;
+
+insert into core.app_user (user_id, email, name, department, role, active, job_role) values
+  ('00000000-0000-4000-8000-000000000601', 't11-planner1@example.test', 'SCM품목담당1', 'SCM', 'USER', true, 'SCM_PLANNER'),
+  ('00000000-0000-4000-8000-000000000602', 't11-lead1@example.test', 'SCM팀장1', 'SCM', 'USER', true, 'SCM_LEAD'),
+  ('00000000-0000-4000-8000-000000000603', 't11-service1@example.test', '서비스1', 'SERVICE', 'USER', true, 'SERVICE'),
+  ('00000000-0000-4000-8000-000000000604', 't11-marketing1@example.test', '마케팅1', 'MARKETING', 'USER', true, 'MARKETING'),
+  -- 관리자(role=ADMIN)이지만 job_role이 없다 — 시스템 관리 권한과 업무 권한은 다른 축이라는
+  -- lib/permission.ts의 전제를 그대로 확인한다(관리자라고 자동으로 ALLOC_MANUAL을 갖지 않는다).
+  ('00000000-0000-4000-8000-000000000605', 't11-admin1@example.test', '관리자1', null, 'ADMIN', true, null)
+on conflict (user_id) do update
+  set job_role = excluded.job_role, department = excluded.department, role = excluded.role, name = excluded.name, active = true;
+
+insert into raw.item_master ("품목코드", "품목명", "품목구분") values
+  ('URGT001', 'T11 소모품', '소모품'),
+  ('URGT002', 'T11 용지', '용지')
+on conflict do nothing;
+
+select 'fixtures ok';

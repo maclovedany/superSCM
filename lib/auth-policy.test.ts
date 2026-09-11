@@ -60,6 +60,7 @@ test('업무 메뉴 직접 URL은 해당 anyOf 권한이 없으면 403이다', a
     ['/allocations/priorities', 'ALLOC_PRIORITY_EDIT', 'ATP_VIEW'],
     ['/inventory', 'STOCK_VIEW_PAPER', 'DEMAND_SUBMIT'],
     ['/demand-submissions', 'DEMAND_SUBMIT', 'ATP_VIEW'],
+    ['/urgent-orders', 'ALLOC_MANUAL', 'DEMAND_SUBMIT'],
   ] as const;
 
   for (const [pathname, permissionCode, unrelatedPermissionCode] of routes) {
@@ -86,6 +87,25 @@ test('영업담당자의 ATP_VIEW는 /inventory를 열지만 다른 재고 권�
   assert.deepEqual(
     routeAccessDecision({ pathname: '/inventory', authenticated: true, active: true, role: 'USER', permissionCodes: ['ATP_VIEW'] }),
     { kind: 'ALLOW' },
+  );
+});
+
+// Task 11 — 긴급발주 등록·수정·상태 변경(SCM 품목담당자)과 조회(서비스부)는 서로 다른 권한이지만
+// 같은 경로를 연다. STOCK_VIEW_ALL(SCM팀장도 가짐)만으로는 열리지 않는다 — stage1 §2의 부서별
+// 화면 범위표에 SCM팀장의 긴급발주 화면은 없다(컨트롤러 판정 1).
+test('긴급발주 직접 URL은 SCM 품목담당자(ALLOC_MANUAL)·서비스부(URGENT_ORDER_VIEW) 모두 열지만 STOCK_VIEW_ALL만으로는 막힌다', async () => {
+  const { routeAccessDecision } = await import('./auth-policy.ts');
+  for (const permissionCode of ['ALLOC_MANUAL', 'URGENT_ORDER_VIEW']) {
+    assert.deepEqual(
+      routeAccessDecision({ pathname: '/urgent-orders', authenticated: true, active: true, role: 'USER', permissionCodes: [permissionCode] }),
+      { kind: 'ALLOW' },
+      `${permissionCode}는 /urgent-orders를 열 수 있어야 합니다.`,
+    );
+  }
+  assert.deepEqual(
+    routeAccessDecision({ pathname: '/urgent-orders', authenticated: true, active: true, role: 'USER', permissionCodes: ['STOCK_VIEW_ALL'] }),
+    { kind: 'FORBIDDEN' },
+    'STOCK_VIEW_ALL만으로는 /urgent-orders 메뉴 게이트를 열지 않습니다(ALLOC_MANUAL · URGENT_ORDER_VIEW만 허용).',
   );
 });
 
@@ -157,7 +177,7 @@ test('SCM 품목담당자(PLAN_CONFIRM)와 부서(DEMAND_SUBMIT)는 확정 수�
   }
 });
 
-test('업무 메뉴 7개 경로는 최소 서버 진입 페이지를 제공한다', () => {
+test('업무 메뉴 8개 경로는 최소 서버 진입 페이지를 제공한다', () => {
   const pages = [
     '../app/(user)/procurement-plans/page.tsx',
     '../app/(user)/allocations/page.tsx',
@@ -166,6 +186,7 @@ test('업무 메뉴 7개 경로는 최소 서버 진입 페이지를 제공한�
     '../app/(user)/allocations/priorities/page.tsx',
     '../app/(user)/inventory/page.tsx',
     '../app/(user)/demand-submissions/page.tsx',
+    '../app/(user)/urgent-orders/page.tsx',
   ];
 
   for (const page of pages) {

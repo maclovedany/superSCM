@@ -8,9 +8,11 @@
 import { createSupabaseServerClient } from '../supabase/server';
 import {
   normalizeAllocationQueueRow,
+  normalizeManualAllocationCandidateRow,
   normalizeSalesOrderRow,
   type AllocationChoice,
   type AllocationQueueRow,
+  type ManualAllocationCandidateRow,
   type SalesOrder,
 } from './model';
 
@@ -75,6 +77,21 @@ export async function getAllocationQueue(): Promise<{ rows: AllocationQueueRow[]
     return { rows: (data ?? []).map((row) => normalizeAllocationQueueRow(row as Record<string, unknown>)), error: null };
   } catch (error) {
     return { rows: [], error: errorMessage(error, '배정 대기열을 조회하지 못했습니다.') };
+  }
+}
+
+/**
+ * MANUAL 품목 한 개의 대기 순번 후보 — core.list_manual_allocation_candidates(Task 6, SCM 품목담당자
+ * ALLOC_MANUAL 전용). 계산은 DB 함수가 끝냈고 여기서는 옮기기만 한다(Task 11 컨트롤러 판정 3).
+ */
+export async function getManualAllocationCandidates(itemId: string): Promise<{ rows: ManualAllocationCandidateRow[]; error: string | null }> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase.schema('core').rpc('list_manual_allocation_candidates', { p_item_id: itemId });
+    if (error) return { rows: [], error: error.message };
+    return { rows: (Array.isArray(data) ? data : []).map((row) => normalizeManualAllocationCandidateRow(row as Record<string, unknown>)), error: null };
+  } catch (error) {
+    return { rows: [], error: errorMessage(error, `${itemId} 수동배정 대기 순번을 조회하지 못했습니다.`) };
   }
 }
 

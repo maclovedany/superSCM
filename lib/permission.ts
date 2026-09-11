@@ -61,6 +61,10 @@ export const WORK_ROUTE_PERMISSIONS = {
   // DEMAND_CONSOLIDATE 여부로 따로 가리므로(app/(user)/demand-submissions/consolidation/page.tsx) 팀장에게는
   // 보이지 않는다.
   '/demand-submissions/consolidation': ['DEMAND_SUBMIT', 'PLAN_CONFIRM', 'DEMAND_CONSOLIDATE', 'SUPPLY_MEETING_INPUT', 'EVENT_ORDER_APPROVE'],
+  // Task 11 — 등록·수정·상태 변경은 SCM 품목담당자(ALLOC_MANUAL)만, 조회는 서비스부
+  // (URGENT_ORDER_VIEW)만(컨트롤러 판정 1). SCM팀장이 가진 STOCK_VIEW_ALL만으로는 이 메뉴가
+  // 열리지 않는다 — stage1 §2의 부서별 화면 범위표에 SCM팀장의 긴급발주 화면은 없다.
+  '/urgent-orders': ['ALLOC_MANUAL', 'URGENT_ORDER_VIEW'],
 } as const satisfies Record<string, readonly Permission[]>;
 
 export function requiredPermissionsForPath(pathname: string): readonly Permission[] | null {

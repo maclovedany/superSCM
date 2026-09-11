@@ -4,7 +4,7 @@ import test from 'node:test';
 import { menuFor } from './menu.ts';
 import { JOB_ROLES, PERMISSIONS, PermissionSet, departmentLabel, isJobRole, jobRoleLabel, type JobRole } from './permission.ts';
 
-const businessMenuLabels = new Set(['발주계획', '배정', '승인함', '주문', '배정 우선순위', '재고', '수요 제출']);
+const businessMenuLabels = new Set(['발주계획', '배정', '승인함', '주문', '배정 우선순위', '재고', '긴급발주', '수요 제출']);
 const step19Sql = readFileSync(new URL('../supabase/migrations/20260911000200_step19_permission.sql', import.meta.url), 'utf8');
 
 function permissionsByJobRole(): Map<JobRole, string[]> {
@@ -74,13 +74,17 @@ test('STEP 19의 실제 전체 직책 권한으로 업무 메뉴를 노출한다
   const expected: Record<JobRole, string[]> = {
     // Task 7 — SCM 품목담당자(PLAN_CONFIRM)는 부서 취합 현황을 보고 합의를 확정하러
     // 같은 /demand-submissions 경로로 들어갑니다(RLS가 조회·쓰기 범위를 가릅니다).
-    SCM_PLANNER: ['발주계획', '배정', '재고', '수요 제출'],
+    // Task 11 — SCM 품목담당자는 ALLOC_MANUAL로 긴급발주 등록·수정·상태 변경 화면에도 들어갑니다.
+    SCM_PLANNER: ['발주계획', '배정', '재고', '긴급발주', '수요 제출'],
+    // SCM팀장은 STOCK_VIEW_ALL만으로는 /urgent-orders가 열리지 않습니다(ALLOC_MANUAL ·
+    // URGENT_ORDER_VIEW만 허용 — stage1 §2 부서별 화면 범위표에 SCM팀장의 긴급발주 화면은 없습니다).
     SCM_LEAD: ['발주계획', '승인함', '재고'],
     // Task 4 — 영업은 ATP_VIEW로 /inventory에 들어가 실제 주문 가능 수량을 봅니다.
     SALES_REP: ['주문', '재고'],
     BIZ_DEV: ['배정 우선순위'],
     MARKETING: ['재고', '수요 제출'],
-    SERVICE: ['재고', '수요 제출'],
+    // Task 11 — 서비스부는 URGENT_ORDER_VIEW로 긴급발주 현황을 조회만 합니다(소모품 범위).
+    SERVICE: ['재고', '긴급발주', '수요 제출'],
   };
 
   for (const role of JOB_ROLES) {

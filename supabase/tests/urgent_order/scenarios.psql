@@ -1,0 +1,214 @@
+-- 긴급발주 — 검증 시나리오. 로컬 임시 DB(scm_test_*) 전용, fixtures.psql 적용 뒤 실행.
+-- 구조는 supabase/tests/item_policy/scenarios.psql과 같다: 사용자 컨텍스트가 필요한 구간은
+-- `set role authenticated`(진짜 RLS · GRANT 적용) 안에서 as_user()로 auth.uid()를 지정하고,
+-- 결과 확인은 `reset role`(슈퍼유저) 뒤 원본 테이블 · 뷰를 직접 읽어 판정한다.
+\set ON_ERROR_STOP 1
+\ir guard.psql
+\pset tuples_only on
+\pset format unaligned
+
+\set planner1 '00000000-0000-4000-8000-000000000601'
+\set lead1 '00000000-0000-4000-8000-000000000602'
+\set service1 '00000000-0000-4000-8000-000000000603'
+\set marketing1 '00000000-0000-4000-8000-000000000604'
+\set admin1 '00000000-0000-4000-8000-000000000605'
+
+
+\echo '== S1 등록 — ALLOC_MANUAL이 없으면 거절된다 =='
+set role authenticated;
+select urgentorder_test.as_user(:'marketing1') \g /dev/null
+select urgentorder_test.expect_error(
+  $f$select core.create_urgent_order('URGT001', 10, current_date + 7, '사유')$f$,
+  '긴급발주 등록 권한', 'S1 마케팅부(STOCK_VIEW_PAPER만)는 등록할 수 없다'
+);
+reset role;
+
+set role authenticated;
+select urgentorder_test.as_user(:'lead1') \g /dev/null
+select urgentorder_test.expect_error(
+  $f$select core.create_urgent_order('URGT001', 10, current_date + 7, '사유')$f$,
+  '긴급발주 등록 권한', 'S1 SCM팀장(STOCK_VIEW_ALL만)은 등록할 수 없다 — ALLOC_MANUAL이 없다'
+);
+reset role;
+
+set role authenticated;
+select urgentorder_test.as_user(:'admin1') \g /dev/null
+select urgentorder_test.expect_error(
+  $f$select core.create_urgent_order('URGT001', 10, current_date + 7, '사유')$f$,
+  '긴급발주 등록 권한', 'S1 시스템 관리자(role=ADMIN)도 job_role이 없으면 등록할 수 없다'
+);
+reset role;
+
+set role authenticated;
+select urgentorder_test.as_user(:'service1') \g /dev/null
+select urgentorder_test.expect_error(
+  $f$select core.create_urgent_order('URGT001', 5, current_date, '사유')$f$,
+  '긴급발주 등록 권한', 'S1 서비스부(URGENT_ORDER_VIEW)는 조회만 하고 등록할 수 없다'
+);
+reset role;
+
+
+\echo '== S2 등록 — 입력 검증(SCM 품목담당자) =='
+set role authenticated;
+select urgentorder_test.as_user(:'planner1') \g /dev/null
+select urgentorder_test.expect_error(
+  $f$select core.create_urgent_order('', 10, current_date + 7, '사유')$f$,
+  '품목코드는 필수', 'S2 품목코드가 없으면 거절된다'
+);
+select urgentorder_test.expect_error(
+  $f$select core.create_urgent_order('NOTEXIST999', 10, current_date + 7, '사유')$f$,
+  '등록되지 않은 품목', 'S2 존재하지 않는 품목은 거절된다'
+);
+select urgentorder_test.expect_error(
+  $f$select core.create_urgent_order('URGT001', 0, current_date + 7, '사유')$f$,
+  '수량은 0보다', 'S2 수량 0은 거절된다'
+);
+select urgentorder_test.expect_error(
+  $f$select core.create_urgent_order('URGT001', -5, current_date + 7, '사유')$f$,
+  '수량은 0보다', 'S2 음수 수량은 거절된다'
+);
+select urgentorder_test.expect_error(
+  $f$select core.create_urgent_order('URGT001', 10, null, '사유')$f$,
+  '필요일은 필수', 'S2 필요일이 없으면 거절된다'
+);
+select urgentorder_test.expect_error(
+  $f$select core.create_urgent_order('URGT001', 10, current_date + 7, '')$f$,
+  '사유는 필수', 'S2 사유가 없으면 거절된다'
+);
+reset role;
+
+
+\echo '== S3 등록 — 정상 등록은 조회 · 이력에 남는다 =='
+set role authenticated;
+select urgentorder_test.as_user(:'planner1') \g /dev/null
+select core.create_urgent_order('URGT001', 10, current_date + 7, '소모품 재고 부족') as s3_consumable_id \gset
+select core.create_urgent_order('URGT002', 20, current_date + 5, '용지 부족') as s3_paper_id \gset
+reset role;
+
+select urgentorder_test.check(:'s3_consumable_id' is not null and :'s3_paper_id' is not null, 'S3 등록은 uuid를 돌려준다');
+select status as s3_status from core.urgent_order where urgent_order_id = :'s3_consumable_id' \gset
+select urgentorder_test.check(:'s3_status' = 'REQUESTED', 'S3 신규 등록은 REQUESTED 상태다');
+select owner_name as s3_owner from core.urgent_order where urgent_order_id = :'s3_consumable_id' \gset
+select urgentorder_test.check(:'s3_owner' = 'SCM품목담당1', 'S3 담당자는 등록한 사람이다');
+select urgentorder_test.check(
+  exists (select 1 from analytics.v_urgent_order_history
+           where urgent_order_id = :'s3_consumable_id' and action = 'URGENT_ORDER_CREATED'
+             and before is null and (after ->> 'qty')::numeric = 10 and (after ->> 'item_id') = 'URGT001'),
+  'S3 등록 이력이 core.audit_log(target_type=urgent_order)에 남는다(before=null, after=등록값)'
+);
+
+
+\echo '== S4 조회 범위 — SCM(STOCK_VIEW_ALL)은 전체, 서비스부(URGENT_ORDER_VIEW)는 소모품만 =='
+set role authenticated;
+select urgentorder_test.as_user(:'planner1') \g /dev/null
+select count(*) as s4_planner_n from analytics.v_urgent_order \gset
+reset role;
+select urgentorder_test.check(:s4_planner_n >= 2, 'S4 SCM은 소모품 · 용지 긴급발주를 모두 본다');
+
+set role authenticated;
+select urgentorder_test.as_user(:'service1') \g /dev/null
+select count(*) as s4_service_n from analytics.v_urgent_order \gset
+select bool_and(item_id = 'URGT001') as s4_service_only_consumable from analytics.v_urgent_order \gset
+reset role;
+select urgentorder_test.check(:s4_service_n >= 1, 'S4 서비스부는 최소 1건(소모품)을 본다');
+select urgentorder_test.check(:'s4_service_only_consumable' = 't', 'S4 서비스부는 용지(URGT002) 긴급발주를 보지 못한다');
+
+set role authenticated;
+select urgentorder_test.as_user(:'marketing1') \g /dev/null
+select count(*) as s4_marketing_n from analytics.v_urgent_order \gset
+reset role;
+select urgentorder_test.check(:s4_marketing_n = 0, 'S4 마케팅부(URGENT_ORDER_VIEW 없음)는 0행 — 오류가 아니라 빈 결과다');
+
+
+\echo '== S5 조회 범위 — 이력 뷰도 같은 범위를 적용한다 =='
+set role authenticated;
+select urgentorder_test.as_user(:'service1') \g /dev/null
+select bool_and(item_id = 'URGT001') as s5_service_history_scope from analytics.v_urgent_order_history \gset
+select count(*) as s5_service_history_n from analytics.v_urgent_order_history \gset
+reset role;
+select urgentorder_test.check(:s5_service_history_n >= 1, 'S5 서비스부는 소모품 이력을 본다');
+select urgentorder_test.check(:'s5_service_history_scope' = 't', 'S5 서비스부는 용지 이력을 보지 못한다');
+
+set role authenticated;
+select urgentorder_test.as_user(:'marketing1') \g /dev/null
+select count(*) as s5_marketing_history_n from analytics.v_urgent_order_history \gset
+reset role;
+select urgentorder_test.check(:s5_marketing_history_n = 0, 'S5 마케팅부는 긴급발주 이력을 하나도 보지 못한다');
+
+
+\echo '== S6 서비스부 · 마케팅부는 등록 · 수정 · 상태 변경을 전혀 할 수 없다(DB 수준) =='
+set role authenticated;
+select urgentorder_test.as_user(:'service1') \g /dev/null
+select urgentorder_test.expect_error(
+  format('select core.update_urgent_order(%L, 99, current_date, %L, %L)', :'s3_consumable_id', '사유', '변경사유'),
+  '긴급발주 수정 권한', 'S6 서비스부는 수정할 수 없다'
+);
+select urgentorder_test.expect_error(
+  format('select core.change_urgent_order_status(%L, %L, %L)', :'s3_consumable_id', 'IN_PROGRESS', '사유'),
+  '긴급발주 상태 변경 권한', 'S6 서비스부는 상태를 바꿀 수 없다'
+);
+select urgentorder_test.expect_error(
+  format(
+    'insert into core.urgent_order (item_id, qty, needed_by, reason, owner_user_id, owner_name) values (%L, 1, current_date, %L, %L, %L)',
+    'URGT001', '직접 삽입', :'service1', '우회 시도'
+  ),
+  'permission denied', 'S6 서비스부는 core.urgent_order에 직접 INSERT할 수 없다(authenticated GRANT 없음)'
+);
+reset role;
+
+
+\echo '== S7 수정 — 변경 사유 없이는 거절, 정상 수정은 이력에 before/after가 남는다 =='
+set role authenticated;
+select urgentorder_test.as_user(:'planner1') \g /dev/null
+select urgentorder_test.expect_error(
+  format('select core.update_urgent_order(%L, 15, current_date + 10, %L, %L)', :'s3_consumable_id', '수량 변경', ''),
+  '변경 사유는 필수', 'S7 변경 사유가 없으면 거절된다'
+);
+select core.update_urgent_order(:'s3_consumable_id', 15, current_date + 10, '소모품 재고 부족(수정)', '수량을 재확인해 15로 늘림') \g /dev/null
+reset role;
+
+select qty as s7_qty, reason as s7_reason from core.urgent_order where urgent_order_id = :'s3_consumable_id' \gset
+select urgentorder_test.check(:s7_qty = 15, 'S7 수정된 수량이 반영된다');
+select urgentorder_test.check(
+  exists (select 1 from analytics.v_urgent_order_history
+           where urgent_order_id = :'s3_consumable_id' and action = 'URGENT_ORDER_UPDATED'
+             and (before ->> 'qty')::numeric = 10 and (after ->> 'qty')::numeric = 15
+             and (after ->> 'change_reason') = '수량을 재확인해 15로 늘림'),
+  'S7 수정 이력에 변경 전(10) · 변경 후(15) 수량과 변경 사유가 함께 남는다'
+);
+
+
+\echo '== S8 상태 변경 — 순서대로 바뀌고, 같은 상태로는 바뀌지 않는다 =='
+set role authenticated;
+select urgentorder_test.as_user(:'planner1') \g /dev/null
+select urgentorder_test.expect_error(
+  format('select core.change_urgent_order_status(%L, %L, %L)', :'s3_consumable_id', 'REQUESTED', '사유'),
+  '이미 REQUESTED 상태입니다', 'S8 같은 상태로 바꾸면 거절된다'
+);
+select core.change_urgent_order_status(:'s3_consumable_id', 'IN_PROGRESS', '처리 시작') \g /dev/null
+reset role;
+select status as s8_status from core.urgent_order where urgent_order_id = :'s3_consumable_id' \gset
+select urgentorder_test.check(:'s8_status' = 'IN_PROGRESS', 'S8 상태가 IN_PROGRESS로 바뀐다');
+select urgentorder_test.check(
+  exists (select 1 from analytics.v_urgent_order_history
+           where urgent_order_id = :'s3_consumable_id' and action = 'URGENT_ORDER_STATUS_CHANGED'
+             and (before ->> 'status') = 'REQUESTED' and (after ->> 'status') = 'IN_PROGRESS'),
+  'S8 상태 변경 이력에 이전(REQUESTED) · 이후(IN_PROGRESS) 상태가 함께 남는다'
+);
+
+
+\echo '== S9 종료(COMPLETED) 이후에는 수정 · 상태 변경 모두 거절된다 =='
+set role authenticated;
+select urgentorder_test.as_user(:'planner1') \g /dev/null
+select core.change_urgent_order_status(:'s3_consumable_id', 'COMPLETED', '처리 완료') \g /dev/null
+select urgentorder_test.expect_error(
+  format('select core.change_urgent_order_status(%L, %L, %L)', :'s3_consumable_id', 'IN_PROGRESS', '사유'),
+  '이미 종료된 긴급발주입니다', 'S9 COMPLETED 이후 상태 변경은 거절된다'
+);
+select urgentorder_test.expect_error(
+  format('select core.update_urgent_order(%L, 5, current_date, %L, %L)', :'s3_consumable_id', '사유', '변경사유'),
+  '이미 종료된 긴급발주는 수정할 수 없습니다', 'S9 COMPLETED 이후 수정은 거절된다'
+);
+reset role;
+select status as s9_status from core.urgent_order where urgent_order_id = :'s3_consumable_id' \gset
+select urgentorder_test.check(:'s9_status' = 'COMPLETED', 'S9 상태는 COMPLETED로 유지된다');

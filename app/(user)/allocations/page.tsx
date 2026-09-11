@@ -1,14 +1,34 @@
 import PageHeader from '@/components/shell/page-header';
 import AllocationTable from '@/components/orders/allocation-table';
+import ManualAllocationQueue, { type ManualAllocationQueueGroup } from '@/components/orders/manual-allocation-queue';
 import { getPermissions, requireAnyPermission } from '@/lib/auth';
-import { getAllocationQueue } from '@/lib/orders/repository';
+import { getAllocationQueue, getManualAllocationCandidates } from '@/lib/orders/repository';
 import { WORK_ROUTE_PERMISSIONS } from '@/lib/permission';
 
 export const dynamic = 'force-dynamic';
 
+// MANUAL 품목 · 부족수량이 있는 품목만 core.list_manual_allocation_candidates를 부른다(Task 11
+// 컨트롤러 판정 3) — 계산 없이 대기 순번만 옮긴다. AUTO 품목이나 부족수량이 없는 품목은 대상이 아니다.
+async function loadManualAllocationGroups(rows: Awaited<ReturnType<typeof getAllocationQueue>>['rows']): Promise<ManualAllocationQueueGroup[]> {
+  const manualItems = new Map<string, string | null>();
+  for (const row of rows) {
+    if (row.allocationMode === 'MANUAL' && row.shortageQty !== null && row.shortageQty > 0) {
+      manualItems.set(row.itemId, row.itemName);
+    }
+  }
+  return Promise.all(
+    Array.from(manualItems.entries()).map(async ([itemId, itemName]) => {
+      const { rows: candidateRows, error } = await getManualAllocationCandidates(itemId);
+      return { itemId, itemName, rows: candidateRows, error };
+    }),
+  );
+}
+
 export default async function AllocationsPage() {
   await requireAnyPermission(...WORK_ROUTE_PERMISSIONS['/allocations']);
   const [permissions, { rows, error }] = await Promise.all([getPermissions(), getAllocationQueue()]);
+  const canManual = permissions.has('ALLOC_MANUAL');
+  const manualGroups = canManual && !error ? await loadManualAllocationGroups(rows) : [];
 
   return (
     <section className="analysis-page">
@@ -43,11 +63,13 @@ export default async function AllocationsPage() {
             <AllocationTable
               rows={rows}
               mode="SCM"
-              canManual={permissions.has('ALLOC_MANUAL')}
+              canManual={canManual}
               canCancelFirm={permissions.has('ALLOC_FIRM_CANCEL')}
             />
           </div>
         )}
+
+        {canManual ? <ManualAllocationQueue groups={manualGroups} /> : null}
       </div>
     </section>
   );

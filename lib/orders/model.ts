@@ -157,6 +157,19 @@ export type AllocationQueueRow = {
   activeAllocations: ActiveAllocation[];
 };
 
+/** core.list_manual_allocation_candidates(item_id) 한 행 — Task 11, MANUAL 품목 대기 순번 전용(계산 없음) */
+export type ManualAllocationCandidateRow = {
+  queueRank: number | null;
+  orderId: string;
+  orderNo: string;
+  lineId: string;
+  customerName: string;
+  ownerName: string;
+  allocationPriority: number | null;
+  firstReviewRequestedAt: string | null;
+  shortageQty: number | null;
+};
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function value(row: Record<string, unknown>, keys: string[]): unknown {
@@ -461,6 +474,21 @@ export function normalizeAllocationQueueRow(row: Record<string, unknown>): Alloc
     itemAvailableQty: numberValue(value(row, ['item_available_qty', '가용재고'])),
     reasonCode: nullableText(value(row, ['reason_code', '사유코드'])),
     activeAllocations: arrayValue(value(row, ['active_allocations'])).map(normalizeActiveAllocation),
+  };
+}
+
+/** core.list_manual_allocation_candidates가 돌려준 한 행 — 순번 · 시각 계산은 DB가 이미 끝냈다 */
+export function normalizeManualAllocationCandidateRow(row: Record<string, unknown>): ManualAllocationCandidateRow {
+  return {
+    queueRank: numberValue(value(row, ['queue_rank'])),
+    orderId: String(value(row, ['order_id']) ?? ''),
+    orderNo: String(value(row, ['order_no']) ?? ''),
+    lineId: String(value(row, ['line_id']) ?? ''),
+    customerName: String(value(row, ['customer_name']) ?? ''),
+    ownerName: String(value(row, ['owner_name']) ?? ''),
+    allocationPriority: numberValue(value(row, ['allocation_priority'])),
+    firstReviewRequestedAt: nullableText(value(row, ['first_review_requested_at'])),
+    shortageQty: numberValue(value(row, ['shortage_qty'])),
   };
 }
 
