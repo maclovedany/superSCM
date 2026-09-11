@@ -12,6 +12,7 @@ import { formatNumber } from '@/components/ui/data-table';
 import EmptyValue from '@/components/ui/empty-value';
 import type { OrderAvailableStockRow } from '@/lib/inventory/model';
 import {
+  cancelSalesOrderAction,
   confirmSalesOrderAction,
   copyCancelledOrderAction,
   createSalesOrderAction,
@@ -181,6 +182,25 @@ export function ConfirmOrderForm({ orderId }: { orderId: string }) {
       <p className="muted">확정하면 임시배정이 확정배정으로 바뀌어 30일 만료가 적용되지 않습니다. 남은 부족 수량은 기존 순번대로 대기합니다.</p>
       <FormMessage state={state} />
       <div className="button-row"><SubmitButton label="수주 확정" /></div>
+    </form>
+  );
+}
+
+export function CancelOrderForm({ orderId }: { orderId: string }) {
+  const [state, formAction] = useActionState(cancelSalesOrderAction, initialState);
+  return (
+    <form action={formAction} className="order-action-form">
+      <input type="hidden" name="orderId" value={orderId} />
+      <label>
+        <span>취소 사유 <small>필수</small></span>
+        <input className="form-input" name="reason" required maxLength={500} />
+      </label>
+      <p className="muted">
+        임시배정과 승인대기 확보를 모두 해제해 가용재고로 되돌리고, 대기 중인 우선 배정 승인 요청도 취소합니다.
+        취소한 주문은 복구할 수 없고 필요하면 새 주문으로 재등록합니다.
+      </p>
+      <FormMessage state={state} />
+      <div className="button-row"><SubmitButton label="주문 취소" className="button approval-reject" /></div>
     </form>
   );
 }

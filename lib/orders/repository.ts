@@ -144,3 +144,10 @@ export function cancelFirmAllocation(input: { allocationId: string; reason: stri
 export function copyCancelledOrder(input: { orderId: string }) {
   return callCommand<string>('copy_cancelled_order', { p_order_id: input.orderId }, '주문을 재등록하지 못했습니다.');
 }
+
+export function cancelSalesOrder(input: { orderId: string; reason: string }) {
+  return callCommand<string>('cancel_sales_order', {
+    p_order_id: input.orderId,
+    p_reason: input.reason,
+  }, '주문을 취소하지 못했습니다.');
+}

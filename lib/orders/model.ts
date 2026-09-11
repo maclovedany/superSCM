@@ -325,13 +325,30 @@ export function validateCopyOrder(input: { orderId: unknown }): Result<{ orderId
   return { ok: true, value: { orderId } };
 }
 
+export function validateCancelOrder(input: { orderId: unknown; reason: unknown }):
+  Result<{ orderId: string; reason: string }, 'ORDER_ID_INVALID' | 'CANCEL_REASON_REQUIRED'> {
+  const orderId = trimmed(input.orderId);
+  if (!UUID_PATTERN.test(orderId)) return orderIdFailure();
+  const reason = trimmed(input.reason);
+  if (reason === '') return fail('CANCEL_REASON_REQUIRED', '주문 취소 사유를 입력하세요.');
+  return { ok: true, value: { orderId, reason } };
+}
+
 /** 주문 상세 화면에서 보일 명령. 실제 허용 여부는 DB 함수가 다시 판정합니다 */
-export function orderActionsFor(order: { status: OrderStatus | null; replacedByOrderId: string | null }) {
+export function orderActionsFor(order: {
+  status: OrderStatus | null;
+  replacedByOrderId: string | null;
+  firmAllocatedQty: number | null;
+}) {
   const status = order.status;
+  const inReview = status === 'REVIEW_REQUESTED' || status === 'PARTIALLY_ALLOCATED' || status === 'WAITING_FULL';
+  const hasFirmAllocation = order.firmAllocatedQty !== null && order.firmAllocatedQty > 0;
   return {
     canRequestReview: status === 'DRAFT',
-    canConfirm: status === 'REVIEW_REQUESTED' || status === 'PARTIALLY_ALLOCATED' || status === 'WAITING_FULL',
+    canConfirm: inReview,
     canCopy: (status === 'CANCELLED' || status === 'EXPIRED') && order.replacedByOrderId === null,
+    // 확정배정이 있으면 주문 취소가 아니라 SCM 품목담당자의 확정배정 취소 경로다.
+    canCancel: (status === 'DRAFT' || inReview) && !hasFirmAllocation,
   };
 }
 
@@ -541,7 +558,9 @@ export function describeOrderEvent(event: Pick<SalesOrderEvent, 'eventType' | 'p
     case 'PRIORITY_CHANGED':
       return `우선순위 ${payloadText(payload.previous_priority)} → ${payloadText(payload.priority)}`;
     case 'CANCELLED':
-      return `확정배정 취소로 주문 취소 · 해제 수량 ${qtyText(payload.released_qty)}`;
+      return payload.kind === 'ORDER_CANCELLED'
+        ? `영업담당자 주문 취소 · 해제 수량 ${qtyText(payload.released_qty)}`
+        : `확정배정 취소로 주문 취소 · 해제 수량 ${qtyText(payload.released_qty)}`;
     case 'EXPIRED':
       return '임시배정 만료';
     case 'COPIED':

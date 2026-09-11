@@ -11,6 +11,7 @@ import { requirePermission } from '../auth';
 import {
   describeManualAllocationResult,
   describeReviewResult,
+  validateCancelOrder,
   validateConfirmOrder,
   validateCopyOrder,
   validateCreateOrder,
@@ -22,6 +23,7 @@ import {
 } from './model';
 import {
   cancelFirmAllocation,
+  cancelSalesOrder,
   changeAllocationPriority,
   confirmSalesOrder,
   copyCancelledOrder,
@@ -89,6 +91,17 @@ export async function copyCancelledOrderAction(_previous: OrderActionState, form
   if (result.error || !result.data) return { error: result.error ?? '재등록된 주문 ID를 받지 못했습니다.', success: null };
   revalidateOrderScreens(validation.value.orderId);
   redirect(`/orders/${result.data}`);
+}
+
+export async function cancelSalesOrderAction(_previous: OrderActionState, formData: FormData): Promise<OrderActionState> {
+  await requirePermission('ORDER_CREATE');
+  const validation = validateCancelOrder({ orderId: formData.get('orderId'), reason: formData.get('reason') });
+  if (!validation.ok) return { error: validation.message, success: null };
+
+  const result = await cancelSalesOrder(validation.value);
+  if (result.error) return { error: result.error, success: null };
+  revalidateOrderScreens(validation.value.orderId);
+  return { error: null, success: '주문을 취소했습니다. 임시배정 · 승인대기 확보는 가용재고로 돌아갔습니다.' };
 }
 
 export async function requestManualAllocationAction(_previous: OrderActionState, formData: FormData): Promise<OrderActionState> {

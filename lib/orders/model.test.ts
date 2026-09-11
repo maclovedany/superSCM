@@ -19,6 +19,7 @@ import {
   normalizeSalesOrderRow,
   orderActionsFor,
   orderStatusTone,
+  validateCancelOrder,
   validateConfirmOrder,
   validateCopyOrder,
   validateCreateOrder,
@@ -202,23 +203,43 @@ test('확정배정 취소는 배정 ID와 처리 사유가 필수다', () => {
   assert.deepEqual(validateCopyOrder({ orderId: ORDER_ID }), { ok: true, value: { orderId: ORDER_ID } });
 });
 
+test('영업담당자 주문 취소는 주문 ID와 취소 사유가 필수다', () => {
+  assert.deepEqual(validateCancelOrder({ orderId: ORDER_ID, reason: ' 고객 요청 철회 ' }), {
+    ok: true,
+    value: { orderId: ORDER_ID, reason: '고객 요청 철회' },
+  });
+  assert.deepEqual(validateCancelOrder({ orderId: ORDER_ID, reason: '  ' }), {
+    ok: false,
+    reasonCode: 'CANCEL_REASON_REQUIRED',
+    message: '주문 취소 사유를 입력하세요.',
+  });
+  assert.deepEqual(validateCancelOrder({ orderId: 'order-1', reason: '사유' }), {
+    ok: false,
+    reasonCode: 'ORDER_ID_INVALID',
+    message: '올바른 주문 ID가 필요합니다.',
+  });
+});
+
 test('주문 화면 동작은 상태로만 결정한다 — 재등록된 주문은 다시 복사할 수 없다', () => {
-  assert.deepEqual(orderActionsFor({ status: 'DRAFT', replacedByOrderId: null }), {
-    canRequestReview: true, canConfirm: false, canCopy: false,
+  assert.deepEqual(orderActionsFor({ status: 'DRAFT', replacedByOrderId: null, firmAllocatedQty: 0 }), {
+    canRequestReview: true, canConfirm: false, canCopy: false, canCancel: true,
   });
   for (const status of ['REVIEW_REQUESTED', 'PARTIALLY_ALLOCATED', 'WAITING_FULL'] as const) {
-    assert.deepEqual(orderActionsFor({ status, replacedByOrderId: null }), {
-      canRequestReview: false, canConfirm: true, canCopy: false,
+    assert.deepEqual(orderActionsFor({ status, replacedByOrderId: null, firmAllocatedQty: 0 }), {
+      canRequestReview: false, canConfirm: true, canCopy: false, canCancel: true,
     });
   }
-  assert.deepEqual(orderActionsFor({ status: 'CONFIRMED', replacedByOrderId: null }), {
-    canRequestReview: false, canConfirm: false, canCopy: false,
+  // 확정배정이 있으면 주문 취소가 아니라 확정배정 취소(SCM 품목담당자) 경로다.
+  assert.equal(orderActionsFor({ status: 'PARTIALLY_ALLOCATED', replacedByOrderId: null, firmAllocatedQty: 20 }).canCancel, false);
+  assert.deepEqual(orderActionsFor({ status: 'CONFIRMED', replacedByOrderId: null, firmAllocatedQty: 50 }), {
+    canRequestReview: false, canConfirm: false, canCopy: false, canCancel: false,
   });
-  assert.deepEqual(orderActionsFor({ status: 'CANCELLED', replacedByOrderId: null }).canCopy, true);
-  assert.deepEqual(orderActionsFor({ status: 'EXPIRED', replacedByOrderId: null }).canCopy, true);
-  assert.deepEqual(orderActionsFor({ status: 'EXPIRED', replacedByOrderId: ORDER_ID }).canCopy, false);
-  assert.deepEqual(orderActionsFor({ status: null, replacedByOrderId: null }), {
-    canRequestReview: false, canConfirm: false, canCopy: false,
+  assert.deepEqual(orderActionsFor({ status: 'CANCELLED', replacedByOrderId: null, firmAllocatedQty: 0 }).canCopy, true);
+  assert.deepEqual(orderActionsFor({ status: 'CANCELLED', replacedByOrderId: null, firmAllocatedQty: 0 }).canCancel, false);
+  assert.deepEqual(orderActionsFor({ status: 'EXPIRED', replacedByOrderId: null, firmAllocatedQty: 0 }).canCopy, true);
+  assert.deepEqual(orderActionsFor({ status: 'EXPIRED', replacedByOrderId: ORDER_ID, firmAllocatedQty: 0 }).canCopy, false);
+  assert.deepEqual(orderActionsFor({ status: null, replacedByOrderId: null, firmAllocatedQty: null }), {
+    canRequestReview: false, canConfirm: false, canCopy: false, canCancel: false,
   });
 });
 
@@ -369,6 +390,7 @@ test('주문 이력 문장은 DB 이력 payload에 저장된 값만 옮기고 �
   assert.equal(describeOrderEvent({ eventType: 'ALLOCATION_CHANGED', payload: { kind: 'APPROVAL_HOLD', qty: '30' } }), '순서 건너뜀 승인대기 확보 30');
   assert.equal(describeOrderEvent({ eventType: 'PRIORITY_CHANGED', payload: { previous_priority: 5, priority: 1 } }), '우선순위 5 → 1');
   assert.equal(describeOrderEvent({ eventType: 'CANCELLED', payload: { released_qty: '65' } }), '확정배정 취소로 주문 취소 · 해제 수량 65');
+  assert.equal(describeOrderEvent({ eventType: 'CANCELLED', payload: { kind: 'ORDER_CANCELLED', released_qty: 60 } }), '영업담당자 주문 취소 · 해제 수량 60');
   assert.equal(describeOrderEvent({ eventType: 'COPIED', payload: { new_order_no: 'SO-2' } }), '새 주문 SO-2로 재등록');
   assert.equal(describeOrderEvent({ eventType: 'REVIEW_REQUESTED', payload: {} }), '미상 선택 · 임시배정 미상 · 부족 미상');
 });
@@ -423,6 +445,7 @@ test('모든 공개 명령 함수는 스스로 로그인·업무 권한을 검�
     ['request_manual_allocation', 'ALLOC_MANUAL'],
     ['cancel_firm_allocation', 'ALLOC_FIRM_CANCEL'],
     ['copy_cancelled_order', 'ORDER_CREATE'],
+    ['cancel_sales_order', 'ORDER_CREATE'],
   ];
   for (const [name, permission] of commands) {
     const body = functionDefinition(sql, name);
@@ -442,7 +465,7 @@ test('배정을 바꾸는 모든 경로는 core.stock_balance 품목 행을 먼�
 
   for (const name of [
     'request_order_review', 'confirm_sales_order', 'request_manual_allocation',
-    'cancel_firm_allocation', 'change_allocation_priority', 'allocate_to_order_line',
+    'cancel_firm_allocation', 'change_allocation_priority', 'allocate_to_order_line', 'cancel_sales_order',
   ]) {
     const body = functionDefinition(sql, name);
     const lockAt = body.search(/core\.lock_stock_balance_items\(/i);
@@ -492,6 +515,29 @@ test('수동 배정은 대기 순서를 건너뛰면 승인대기 확보와 ALLO
   assert.match(sql, /create trigger alloc_priority_decision_apply\s+after update of status on core\.approval_request/i);
   assert.ok('alloc_priority_decision_apply' < 'approval_notification_sync', '결과 알림 중복 방지를 위해 Task 3 알림 트리거보다 먼저 실행돼야 합니다.');
   assert.match(sql, /create trigger alloc_priority_request_guard\s+before insert on core\.approval_request/i);
+});
+
+test('영업담당자 주문 취소는 확정 전 · 확정배정 없는 주문만 해제하고 대기 중인 우선 배정 요청을 취소한다', () => {
+  const sql = migrationSql();
+  const body = functionDefinition(sql, 'cancel_sales_order');
+  assert.match(body, /v_order\.owner_user_id <> v_actor/, '주문 등록자 본인만 취소할 수 있어야 합니다.');
+  assert.match(body, /CANCEL_REASON_REQUIRED/);
+  assert.match(body, /ORDER_ALREADY_CONFIRMED/);
+  assert.match(body, /ORDER_ALREADY_CLOSED/);
+  assert.match(body, /a\.status = 'FIRM'[\s\S]{0,200}FIRM_ALLOCATION_EXISTS/, '확정배정이 있으면 해제 전에 거절해야 합니다.');
+  assert.ok(body.search(/FIRM_ALLOCATION_EXISTS/) < body.search(/core\.release_order_allocations\(/), '거절 판정은 해제보다 먼저여야 합니다.');
+  assert.match(body, /status = 'CANCELLED'/);
+  assert.match(body, /core\.cancel_notification_series\('TEMP_ALLOCATION', v_order\.order_id::text\)/i);
+  assert.doesNotMatch(body, /'WAITING_FULL'/, '취소한 주문을 대기 상태로 되돌리면 안 됩니다.');
+
+  const release = functionDefinition(sql, 'release_order_allocations');
+  assert.match(release, /core\.transition_stock_allocation\(/);
+  assert.match(release, /core\.cancel_alloc_priority_approval\(/, '승인대기 확보를 풀 때 연결된 승인 요청도 취소해야 합니다.');
+  assert.match(functionDefinition(sql, 'cancel_firm_allocation'), /core\.release_order_allocations\(/);
+  assert.match(
+    functionDefinition(sql, 'sales_order_transition_allowed'),
+    /p_from = 'DRAFT' then p_to in \('REVIEW_REQUESTED', 'CANCELLED'\)/,
+  );
 });
 
 test('확정배정 취소는 사유를 요구하고 주문 전체를 취소하며 영업담당자에게 알린다', () => {

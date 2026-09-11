@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import PageHeader from '@/components/shell/page-header';
-import { ConfirmOrderForm, CopyOrderForm, ReviewRequestForm } from '@/components/orders/order-form';
+import { CancelOrderForm, ConfirmOrderForm, CopyOrderForm, ReviewRequestForm } from '@/components/orders/order-form';
 import DataTable, { formatNumber, type Column } from '@/components/ui/data-table';
 import EmptyValue from '@/components/ui/empty-value';
 import { getPermissions, requireAnyPermission } from '@/lib/auth';
@@ -72,6 +72,7 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ or
   const canReview = actions.canRequestReview && permissions.has('ORDER_REVIEW_REQUEST');
   const canConfirm = actions.canConfirm && permissions.has('ORDER_CREATE');
   const canCopy = actions.canCopy && permissions.has('ORDER_CREATE');
+  const canCancel = actions.canCancel && permissions.has('ORDER_CREATE');
 
   return (
     <section className="analysis-page">
@@ -131,6 +132,18 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ or
             {canReview ? <ReviewRequestForm orderId={order.orderId} /> : null}
             {canConfirm ? <ConfirmOrderForm orderId={order.orderId} /> : null}
             {canCopy ? <CopyOrderForm orderId={order.orderId} /> : null}
+          </div>
+        ) : null}
+
+        {canCancel ? (
+          <div className="section card">
+            <div className="card-title">
+              <div>
+                <h3>주문 취소</h3>
+                <span>수주 확정 전이고 확정배정이 없는 주문만 등록자가 취소할 수 있습니다.</span>
+              </div>
+            </div>
+            <CancelOrderForm orderId={order.orderId} />
           </div>
         ) : null}
 

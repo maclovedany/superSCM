@@ -24,6 +24,8 @@
 --     APPROVAL_HOLD + ALLOC_PRIORITY 승인 요청(사유 필수). 승인 → 즉시 FIRM, 반려 → 즉시 해제.
 --   - 수주 확정은 임시배정을 FIRM으로 바꾸고, 남은 부족수량은 대기열에 남으며 이후 배정은 곧바로 FIRM.
 --   - 재등록은 CANCELLED · EXPIRED 주문에서 새 주문을 만들고 replaces_order_id로 잇는다.
+--   - 확정 전 주문은 등록자가 core.cancel_sales_order로 취소한다(임시 · 확보 해제, 대기 중 우선 배정 요청 취소).
+--     확정배정이 있으면 거절하고 core.cancel_firm_allocation 경로로 보낸다.
 --   - 고객 마스터가 없으므로 고객코드 · 고객명 텍스트를 주문에 저장한다.
 --   - core.urgent_order는 테이블 · 뷰 · RLS만 만든다(등록 함수와 화면은 Task 11).
 --
@@ -318,7 +320,7 @@ set search_path = core, pg_temp
 as $$
   select case
     when p_from = p_to then true
-    when p_from = 'DRAFT' then p_to = 'REVIEW_REQUESTED'
+    when p_from = 'DRAFT' then p_to in ('REVIEW_REQUESTED', 'CANCELLED')
     when p_from in ('REVIEW_REQUESTED', 'PARTIALLY_ALLOCATED', 'WAITING_FULL')
       then p_to in ('REVIEW_REQUESTED', 'PARTIALLY_ALLOCATED', 'WAITING_FULL', 'CONFIRMED', 'EXPIRED', 'CANCELLED')
     when p_from = 'CONFIRMED' then p_to = 'CANCELLED'
@@ -874,6 +876,49 @@ begin
 
   insert into core.audit_log (actor, action, target_type, target_id, before, after)
   values (p_actor, 'APPROVAL_CANCELLED', 'APPROVAL_REQUEST', p_approval_id::text, v_before, v_after);
+end;
+$$;
+
+-- 주문의 활성 배정(임시 · 확정 · 승인대기 확보)을 모두 해제하고, 확보에 연결된 대기 중 우선 배정 승인 요청을
+-- 취소한다. 호출자가 재고 행 → 주문 행을 이미 잠갔다는 전제다(core.cancel_firm_allocation · core.cancel_sales_order).
+create or replace function core.release_order_allocations(p_order_id uuid, p_actor uuid, p_reason text, p_cause text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = core, public, pg_temp
+as $$
+declare
+  v_allocation record;
+  v_released jsonb := '[]'::jsonb;
+  v_released_qty numeric := 0;
+  v_cancelled_approval_count integer := 0;
+begin
+  for v_allocation in
+    select a.allocation_id, a.item_id, a.status, a.qty, a.approval_id
+      from core.stock_allocation a
+     where a.order_id = p_order_id
+       and a.status in ('TEMPORARY', 'APPROVAL_HOLD', 'FIRM')
+     order by a.item_id, a.created_at
+       for update
+  loop
+    perform core.transition_stock_allocation(v_allocation.allocation_id, 'RELEASED', p_actor, p_reason, p_cause);
+    v_released_qty := v_released_qty + v_allocation.qty;
+    v_released := v_released || jsonb_build_array(jsonb_build_object(
+      'allocation_id', v_allocation.allocation_id, 'item_id', v_allocation.item_id,
+      'previous_status', v_allocation.status, 'qty', v_allocation.qty
+    ));
+    -- 확보를 풀면 승인할 대상이 없어진다. 요청을 취소해야 Task 3 트리거가 팀장 10분 반복 알림을 멈춘다.
+    if v_allocation.status = 'APPROVAL_HOLD' and v_allocation.approval_id is not null then
+      perform core.cancel_alloc_priority_approval(
+        v_allocation.approval_id, p_actor, '주문이 취소되어 우선 배정 승인 요청을 취소합니다.'
+      );
+      v_cancelled_approval_count := v_cancelled_approval_count + 1;
+    end if;
+  end loop;
+
+  return jsonb_build_object(
+    'released', v_released, 'released_qty', v_released_qty, 'cancelled_approval_count', v_cancelled_approval_count
+  );
 end;
 $$;
 
@@ -1615,7 +1660,7 @@ declare
   v_target core.stock_allocation%rowtype;
   v_order core.sales_order%rowtype;
   v_item_ids text[];
-  v_other record;
+  v_others jsonb;
   v_released jsonb;
   v_released_total numeric;
   v_actor_name text;
@@ -1659,33 +1704,14 @@ begin
 
   v_actor_name := core.order_actor_name(v_actor);
   perform core.transition_stock_allocation(p_allocation_id, 'RELEASED', v_actor, v_reason, 'FIRM_CANCELLED');
-  v_released_total := v_target.qty;
-  v_released := jsonb_build_array(jsonb_build_object(
-    'allocation_id', v_target.allocation_id, 'item_id', v_target.item_id, 'previous_status', 'FIRM', 'qty', v_target.qty
-  ));
 
   -- 확정배정 취소는 주문 취소다. 같은 주문의 나머지 임시 · 확정 · 승인대기 확보도 모두 해제해 가용재고로
   -- 되돌리고, 주문을 배정 대기 상태로 되돌리지 않는다 (stage1 §2).
-  for v_other in
-    select a.allocation_id, a.item_id, a.status, a.qty, a.approval_id
-      from core.stock_allocation a
-     where a.order_id = v_order.order_id
-       and a.status in ('TEMPORARY', 'APPROVAL_HOLD', 'FIRM')
-     order by a.item_id, a.created_at
-       for update
-  loop
-    perform core.transition_stock_allocation(v_other.allocation_id, 'RELEASED', v_actor, v_reason, 'ORDER_CANCELLED');
-    v_released_total := v_released_total + v_other.qty;
-    v_released := v_released || jsonb_build_array(jsonb_build_object(
-      'allocation_id', v_other.allocation_id, 'item_id', v_other.item_id,
-      'previous_status', v_other.status, 'qty', v_other.qty
-    ));
-    if v_other.status = 'APPROVAL_HOLD' and v_other.approval_id is not null then
-      perform core.cancel_alloc_priority_approval(
-        v_other.approval_id, v_actor, '주문이 취소되어 우선 배정 승인 요청을 취소합니다.'
-      );
-    end if;
-  end loop;
+  v_others := core.release_order_allocations(v_order.order_id, v_actor, v_reason, 'ORDER_CANCELLED');
+  v_released_total := v_target.qty + (v_others ->> 'released_qty')::numeric;
+  v_released := jsonb_build_array(jsonb_build_object(
+    'allocation_id', v_target.allocation_id, 'item_id', v_target.item_id, 'previous_status', 'FIRM', 'qty', v_target.qty
+  )) || (v_others -> 'released');
 
   v_now := clock_timestamp();
   update core.sales_order
@@ -1700,7 +1726,7 @@ begin
   perform core.log_sales_order_event(
     v_order.order_id, 'CANCELLED', v_order.status, 'CANCELLED', v_actor, v_reason,
     jsonb_build_object(
-      'cancelled_allocation_id', p_allocation_id, 'item_id', v_target.item_id,
+      'kind', 'FIRM_CANCELLED', 'cancelled_allocation_id', p_allocation_id, 'item_id', v_target.item_id,
       'cancelled_firm_qty', v_target.qty, 'released_qty', v_released_total, 'released', v_released
     )
   );
@@ -1781,6 +1807,86 @@ begin
     jsonb_build_object('new_order_id', v_new_order_id, 'new_order_no', v_new_order_no)
   );
   return v_new_order_id;
+end;
+$$;
+
+
+-- 영업담당자가 수주 확정 전 주문을 취소한다 (stage1 §2 "임시배정은 주문이 반려 · 취소 또는 만료되면 해제").
+-- 임시배정 · 승인대기 확보를 풀고 대기 중인 우선 배정 요청을 취소한다. 확정배정이 있으면 주문 취소가 아니라
+-- SCM 품목담당자의 확정배정 취소 경로이므로 거절한다. 취소된 주문은 copy_cancelled_order로 재등록한다.
+create or replace function core.cancel_sales_order(p_order_id uuid, p_reason text)
+returns uuid
+language plpgsql
+security definer
+set search_path = core, public, pg_temp
+as $$
+declare
+  v_actor uuid := auth.uid();
+  v_reason text := nullif(btrim(p_reason), '');
+  v_order core.sales_order%rowtype;
+  v_item_ids text[];
+  v_result jsonb;
+begin
+  if v_actor is null or not core.is_active_user(v_actor) then
+    raise exception '로그인한 활성 사용자만 주문을 취소할 수 있습니다.' using errcode = '42501';
+  end if;
+  if not core.has_permission('ORDER_CREATE', v_actor) then
+    raise exception '주문 취소 권한(ORDER_CREATE)이 없습니다.' using errcode = '42501';
+  end if;
+  if v_reason is null then
+    raise exception 'CANCEL_REASON_REQUIRED: 주문 취소 사유는 필수입니다.' using errcode = '22023';
+  end if;
+
+  select * into v_order from core.sales_order o where o.order_id = p_order_id;
+  if not found then
+    raise exception '주문을 찾을 수 없습니다.' using errcode = 'P0002';
+  end if;
+  if v_order.owner_user_id <> v_actor then
+    raise exception '본인이 등록한 주문만 취소할 수 있습니다.' using errcode = '42501';
+  end if;
+
+  select array_agg(l.item_id order by l.item_id) into v_item_ids
+    from core.sales_order_line l
+   where l.order_id = p_order_id;
+
+  -- 잠금 순서 1) 재고 행(품목코드 순) → 2) 주문 행. 다품목 주문도 같은 순서라 교착이 생기지 않는다.
+  perform core.lock_stock_balance_items(v_item_ids, false);
+
+  select * into v_order
+    from core.sales_order
+   where order_id = p_order_id
+     for update;
+  if v_order.status = 'CONFIRMED' then
+    raise exception 'ORDER_ALREADY_CONFIRMED: 수주 확정된 주문은 주문 취소가 아니라 확정배정 취소(SCM 품목담당자)로 처리합니다.'
+      using errcode = '22023';
+  end if;
+  if v_order.status in ('CANCELLED', 'EXPIRED') then
+    raise exception 'ORDER_ALREADY_CLOSED: 이미 취소 · 만료된 주문입니다 (현재 %).', v_order.status using errcode = '22023';
+  end if;
+  if exists (
+    select 1 from core.stock_allocation a
+     where a.order_id = p_order_id and a.status = 'FIRM'
+  ) then
+    raise exception 'FIRM_ALLOCATION_EXISTS: 확정배정이 있는 주문은 SCM 품목담당자의 확정배정 취소(core.cancel_firm_allocation)로만 취소합니다.'
+      using errcode = '22023';
+  end if;
+
+  v_result := core.release_order_allocations(v_order.order_id, v_actor, v_reason, 'ORDER_CANCELLED');
+
+  update core.sales_order
+     set status = 'CANCELLED',
+         cancelled_at = clock_timestamp(),
+         cancelled_by = v_actor,
+         cancel_reason = v_reason
+   where order_id = v_order.order_id;
+  perform core.refresh_sales_order_line_totals(v_order.order_id);
+  perform core.cancel_notification_series('TEMP_ALLOCATION', v_order.order_id::text);
+
+  perform core.log_sales_order_event(
+    v_order.order_id, 'CANCELLED', v_order.status, 'CANCELLED', v_actor, v_reason,
+    v_result || jsonb_build_object('kind', 'ORDER_CANCELLED')
+  );
+  return v_order.order_id;
 end;
 $$;
 
@@ -2201,6 +2307,8 @@ grant execute on function core.change_allocation_priority(uuid, integer, text) t
 grant execute on function core.request_manual_allocation(uuid, text, numeric, text) to authenticated;
 grant execute on function core.cancel_firm_allocation(uuid, text) to authenticated;
 grant execute on function core.copy_cancelled_order(uuid) to authenticated;
+revoke all on function core.cancel_sales_order(uuid, text) from public, anon;
+grant execute on function core.cancel_sales_order(uuid, text) to authenticated;
 
 -- RLS 정책과 security_invoker 뷰가 호출자 권한으로 부르는 판정 함수.
 revoke all on function core.can_view_sales_order(uuid) from public, anon;
@@ -2222,6 +2330,7 @@ revoke all on function core.sales_order_notice_recipients(uuid, boolean) from pu
 revoke all on function core.enqueue_order_notice(text, text, uuid[], jsonb) from public, anon, authenticated;
 revoke all on function core.schedule_sales_order_expiry_notices(uuid) from public, anon, authenticated;
 revoke all on function core.cancel_alloc_priority_approval(uuid, uuid, text) from public, anon, authenticated;
+revoke all on function core.release_order_allocations(uuid, uuid, text, text) from public, anon, authenticated;
 revoke all on function core.insert_sales_order(uuid, text, text, text, jsonb, uuid) from public, anon, authenticated;
 revoke all on function core.allocate_to_order_line(bigint, numeric, text, uuid) from public, anon, authenticated;
 revoke all on function core.sales_order_transition_allowed(text, text) from public, anon, authenticated;
