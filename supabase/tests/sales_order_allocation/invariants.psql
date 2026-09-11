@@ -24,3 +24,11 @@ select order_test.check((select count(*) from core.stock_allocation a where a.st
 select order_test.check((select count(*) from core.stock_allocation a where a.status = 'APPROVAL_HOLD' and a.approval_id is null) = 0, 'INV 승인대기 확보는 항상 승인 요청과 연결');
 select order_test.check((select count(*) from core.sales_order where status <> 'DRAFT' and status <> 'CANCELLED'
   and temporary_expires_at <> first_review_requested_at + interval '30 days') = 0, 'INV 모든 주문 만료 = 최초 검토 요청 + 30일');
+select order_test.check((select count(*) from core.sales_order o join core.stock_allocation a using (order_id)
+   where o.status = 'EXPIRED' and a.status in ('TEMPORARY', 'APPROVAL_HOLD', 'FIRM')) = 0,
+  'INV Task 6 · EXPIRED 주문에는 활성 배정(TEMPORARY·APPROVAL_HOLD·FIRM)이 남지 않는다');
+select order_test.check((select count(*) from (
+  select 1 from core.notification_outbox
+   where template_code = 'TEMP_ALLOCATION_RELEASED'
+   group by dedupe_key, recipient_user_id, channel having count(*) > 1) x) = 0,
+  'INV Task 6 · 완료 알림은 (dedupe_key, 수신자, 채널) 조합당 한 건만 존재한다(재실행해도 중복 없음)');

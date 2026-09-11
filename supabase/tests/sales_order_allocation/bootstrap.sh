@@ -15,6 +15,7 @@ require_local_target "$DB"
 mkdir -p "$LOG_DIR"
 PSQL=(psql -X -q -v ON_ERROR_STOP=1)
 TARGET_MIGRATION="$REPO/supabase/migrations/20260911000600_stage1_sales_order_allocation.sql"
+TARGET_MIGRATION_2="$REPO/supabase/migrations/20260911000610_stage1_allocation_jobs.sql"
 
 # 덤프 · 마이그레이션이 GRANT하는 역할. 클러스터 공용이라 없을 때만 로그인 불가 역할로 만든다(error.md #14).
 "${PSQL[@]}" -d postgres > "$LOG_DIR/roles.log" 2>&1 <<'SQL'
@@ -66,4 +67,9 @@ if ! "${PSQL[@]}" -d "$DB" -f "$TARGET_MIGRATION" > "$LOG_DIR/migration-rerun.lo
   tail -5 "$LOG_DIR/migration-rerun.log" >&2
   exit 1
 fi
-echo "bootstrap 완료: $DB (마이그레이션 전체 적용 + $(basename "$TARGET_MIGRATION") 재적용)"
+if ! "${PSQL[@]}" -d "$DB" -f "$TARGET_MIGRATION_2" > "$LOG_DIR/migration-rerun-2.log" 2>&1; then
+  echo "재적용 실패: $(basename "$TARGET_MIGRATION_2")" >&2
+  tail -5 "$LOG_DIR/migration-rerun-2.log" >&2
+  exit 1
+fi
+echo "bootstrap 완료: $DB (마이그레이션 전체 적용 + $(basename "$TARGET_MIGRATION") · $(basename "$TARGET_MIGRATION_2") 재적용)"

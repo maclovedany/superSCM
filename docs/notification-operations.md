@@ -10,6 +10,12 @@ Vercel Pro 이상에서 운영하거나, 같은 주기를 보장하는 Supabase 
 외부 스케줄러를 사용할 때도 `Authorization: Bearer <CRON_SECRET>` 또는
 `x-cron-secret: <CRON_SECRET>` 헤더를 반드시 전달합니다.
 
+`/api/cron/allocations`(Task 6 · 30일 임시배정 자동 만료)도 같은 주기 · 같은 `CRON_SECRET`
+검증으로 10분마다 호출합니다. 이 라우트는 `core.expire_temporary_allocations` DB 함수만 부르고,
+만료 판정 · 배정 해제 · 주문 상태 전환 · 완료 알림 예약은 모두 그 함수 안에서 한 트랜잭션으로
+끝납니다. 신규 입고 후속 배정(AUTO/MANUAL)은 이 Cron이 아니라 입고 커밋(`core.commit_import_batch`)
+트랜잭션 안에서 바로 실행되므로 별도 스케줄러가 필요 없습니다.
+
 ## 처리 안전장치
 
 - 한 번 실행할 때 최대 25건을 가져옵니다.

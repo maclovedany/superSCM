@@ -5,6 +5,10 @@
     {
       "path": "/api/cron/notifications",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron/allocations",
+      "schedule": "*/10 * * * *"
     }
   ]
 }

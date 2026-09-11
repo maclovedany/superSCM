@@ -1,8 +1,10 @@
-# 영업 주문 · 재고 배정 DB 검증 (Task 5)
+# 영업 주문 · 재고 배정 DB 검증 (Task 5 · Task 6)
 
-`supabase/migrations/20260911000600_stage1_sales_order_allocation.sql`의 배정 규칙 · 동시성 · 권한을
-**로컬 PostgreSQL 임시 DB**에서 실제로 실행해 확인하는 테스트 전용 스크립트입니다.
-마이그레이션이 아니며, Supabase(원격) 프로젝트에는 절대 실행하지 않습니다.
+`supabase/migrations/20260911000600_stage1_sales_order_allocation.sql`(Task 5)와
+`supabase/migrations/20260911000610_stage1_allocation_jobs.sql`(Task 6 · 30일 자동 만료와
+입고 후 자동 배정)의 배정 규칙 · 동시성 · 권한을 **로컬 PostgreSQL 임시 DB**에서 실제로 실행해
+확인하는 테스트 전용 스크립트입니다. 마이그레이션이 아니며, Supabase(원격) 프로젝트에는 절대
+실행하지 않습니다.
 
 ## 준비
 
@@ -47,8 +49,8 @@ invariants:  PASS 8 · FAIL/ERROR 0
 | `guard.psql` | 모든 `.psql`이 먼저 포함하는 대상 DB 확인 |
 | `auth-stub.psql` | 최소 `auth.users` · `auth.uid()` 스텁(JWT claim 대역) |
 | `fixtures.psql` | 검증용 사용자 7명(직책별) · 품목 · 정상 창고재고, 검증 헬퍼 스키마 `order_test` |
-| `scenarios.psql` | S2 PARTIAL/WAIT_FULL · S3 만료 불변 · S4 확정/확정배정 취소/재등록 · S5 수동배정/승인 · S6 우선순위 · S7 권한/직접 쓰기 차단 · S8 주문 취소 · S9 만료 시각 이후 차단 · S10 만료 뒤 FIRM · 확보만 남은 주문의 수주 확정 |
-| `concurrency.sh` | 별도 psql 연결 C1(60+60) · C2(잠금 게이트 뒤 10건 동시) · C3(다른 품목 비차단) · C4(게이트 없는 10건) |
+| `scenarios.psql` | S2 PARTIAL/WAIT_FULL · S3 만료 불변 · S4 확정/확정배정 취소/재등록 · S5 수동배정/승인 · S6 우선순위 · S7 권한/직접 쓰기 차단 · S8 주문 취소 · S9 만료 시각 이후 차단 · S10 만료 뒤 FIRM · 확보만 남은 주문의 수주 확정 · **S11(Task 6) 30일 자동 만료 경계 · 재실행 · FIRM 유지 · 배정 0건 WAITING_FULL 만료** · **S12(Task 6) 입고 후 AUTO 자동 배정 대기 순번 · CONFIRMED FIRM · WAIT_FULL 스킵 · 만료 주문 건너뜀** · **S13(Task 6) MANUAL 품목 자동 배정 0건 · 처리 필요 알림 · 대기 순번 조회** |
+| `concurrency.sh` | 별도 psql 연결 C1(60+60) · C2(잠금 게이트 뒤 10건 동시) · C3(다른 품목 비차단) · C4(게이트 없는 10건) · **C5(Task 6) 만료 작업 · 입고 커밋 · 검토 요청 동시 실행** · **C6(Task 6) lock_timeout으로 한 주문 실패를 강제해 다른 주문 처리가 막히지 않는지 확인** |
 | `invariants.psql` | 초과 배정 0 · 줄 합계 = 배정 원장 · 이력 누락 0 · 만료 = 최초 검토 요청 + 30일 |
 
 ## 안전장치

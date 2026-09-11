@@ -502,3 +502,191 @@ select order_test.check((select o.status = 'CONFIRMED' and o.confirmed_order_no 
   'S10 (c) 만료 임시배정 해제 뒤에는 FIRM 10만 남은 주문으로 수주 확정 · 부족 30 대기');
 select order_test.check((select status = 'RELEASED' and release_reason = '임시배정 만료 자동 해제(검증 대역)' from core.stock_allocation where allocation_id = :'fb_temp'),
   'S10 (c) 해제된 임시배정은 확정으로 전환되지 않고 RELEASED 유지');
+
+\echo '== S11 Task 6 · core.expire_temporary_allocations 경계 · 재실행 · FIRM 유지 · 배정 0건 =='
+-- 한 주문의 실패가 다른 주문 처리를 막지 않는지(컨트롤러 판정 3)는 실제 잠금 대기를 동시에
+-- 만들어야 하므로 concurrency.sh C6(lock_timeout으로 실패를 강제)에서 검증한다.
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select core.create_sales_order(null, '고객 G1', '[{"item_id":"ITEMT20","qty":40}]'::jsonb) as g1 \gset
+select core.create_sales_order(null, '고객 G2', '[{"item_id":"ITEMT21","qty":30}]'::jsonb) as g2 \gset
+select core.create_sales_order(null, '고객 G3', '[{"item_id":"ITEMT22","qty":15}]'::jsonb) as g3 \gset
+reset role;
+
+-- 테스트 전용 경로(S9 · S10과 동일): 최초 검토 요청 시각을 소급해 6초 뒤 만료되는 주문 세 건을 만든다.
+select (clock_timestamp() - interval '30 days' + interval '6 seconds')::timestamptz as review_at \gset
+update core.sales_order
+   set status = 'REVIEW_REQUESTED', allocation_choice = 'PARTIAL', allocation_choice_by = owner_user_id,
+       first_review_requested_at = :'review_at', temporary_expires_at = :'review_at'::timestamptz + interval '30 days'
+ where order_id in (:'g1', :'g2');
+update core.sales_order
+   set status = 'REVIEW_REQUESTED', allocation_choice = 'WAIT_FULL', allocation_choice_by = owner_user_id,
+       first_review_requested_at = :'review_at', temporary_expires_at = :'review_at'::timestamptz + interval '30 days'
+ where order_id = :'g3';
+select core.log_sales_order_event(order_id, 'REVIEW_REQUESTED', 'DRAFT', status, owner_user_id, '검증용 최초 검토 요청 시각 소급', '{}'::jsonb)
+  from core.sales_order where order_id in (:'g1', :'g2', :'g3') \g /dev/null
+select core.apply_sales_order_status(order_id) from core.sales_order where order_id in (:'g1', :'g2', :'g3') \g /dev/null
+select order_test.check((select status = 'WAITING_FULL' from core.sales_order where order_id = :'g3'), 'S11 G3은 WAIT_FULL · 배정 0건이라 WAITING_FULL');
+
+select line_id as g1_line from core.sales_order_line where order_id = :'g1' \gset
+select line_id as g2_line from core.sales_order_line where order_id = :'g2' \gset
+select order_test.check(core.allocate_to_order_line(:'g1_line', 40, 'REVIEW_REQUEST', :'sales1') = 40, 'S11 G1 임시배정 40 생성(테스트 전용 경로)');
+select order_test.check(core.allocate_to_order_line(:'g2_line', 20, 'REVIEW_REQUEST', :'sales1') = 20, 'S11 G2 임시배정 20 생성(요청 30 중 20, 부족 10)');
+
+-- G2의 남은 부족 10은 정상 순서 수동 FIRM으로 채운다 — 만료 뒤에도 FIRM은 남아야 한다(컨트롤러 판정 2).
+set role authenticated;
+select order_test.as_user(:'planner1') \g /dev/null
+select core.request_manual_allocation(:'g2', 'ITEMT21', 10, null) ->> 'allocation_status' as g2_manual \gset
+select order_test.check(:'g2_manual' = 'FIRM', 'S11 G2 정상 순서 수동 FIRM 10 (임시 20 + FIRM 10 = 요청 30)');
+reset role;
+
+-- 경계 직전: 아직 만료 시각 전이므로 core.expire_temporary_allocations를 불러도 이 세 주문은
+-- 후보에 잡히지 않아야 한다(브리프 검증 1).
+with r as (select * from core.expire_temporary_allocations())
+select
+  (select count(*) from r where order_id = :'g1'::uuid) as g1_hits,
+  (select count(*) from r where order_id = :'g2'::uuid) as g2_hits,
+  (select count(*) from r where order_id = :'g3'::uuid) as g3_hits
+\gset pre_
+select order_test.check(:'pre_g1_hits' = '0' and :'pre_g2_hits' = '0' and :'pre_g3_hits' = '0',
+  'S11 경계 직전에는 세 주문 모두 만료 후보가 아니다');
+select order_test.check((select status = 'TEMPORARY' from core.stock_allocation where order_id = :'g1'), 'S11 경계 직전 G1 임시배정은 그대로 TEMPORARY');
+
+select pg_sleep(greatest(0, extract(epoch from (:'review_at'::timestamptz + interval '30 days' - clock_timestamp()))) + 0.5) \g /dev/null
+select order_test.check((select clock_timestamp() >= temporary_expires_at from core.sales_order where order_id = :'g1'), 'S11 만료 시각 경과');
+
+-- 경계 이후 1회차: G1(배정만) → EXPIRED, G2(FIRM 남음) → RELEASED(주문 유지), G3(배정 0건 WAIT_FULL)
+-- → EXPIRED. 한 번만 처리되는지(브리프 검증 2)를 재실행으로 같이 확인한다.
+with r as (select * from core.expire_temporary_allocations())
+select
+  (select count(*) from r where order_id = :'g1'::uuid and outcome = 'EXPIRED') as g1_expired,
+  (select count(*) from r where order_id = :'g2'::uuid and outcome = 'RELEASED') as g2_released,
+  (select count(*) from r where order_id = :'g3'::uuid and outcome = 'EXPIRED') as g3_expired
+\gset run1_
+select order_test.check(:'run1_g1_expired' = '1', 'S11 1회차 G1 EXPIRED 1건');
+select order_test.check(:'run1_g2_released' = '1', 'S11 1회차 G2 RELEASED(주문 유지) 1건');
+select order_test.check(:'run1_g3_expired' = '1', 'S11 1회차 G3(배정 0건 WAIT_FULL) EXPIRED 1건');
+
+select order_test.check((select status = 'EXPIRED' and expired_at is not null from core.sales_order where order_id = :'g1'), 'S11 G1 주문 EXPIRED · expired_at 기록');
+select order_test.check((select status = 'RELEASED' from core.stock_allocation where order_id = :'g1'), 'S11 G1 임시배정 RELEASED');
+select order_test.check((select status <> 'EXPIRED' and status <> 'CANCELLED' from core.sales_order where order_id = :'g2'), 'S11 G2 주문은 EXPIRED로 끝나지 않는다(FIRM 10 남음)');
+select order_test.check((select status = 'RELEASED' from core.stock_allocation where order_id = :'g2' and qty = 20), 'S11 G2 임시배정 20은 해제');
+select order_test.check((select status = 'FIRM' from core.stock_allocation where order_id = :'g2' and qty = 10), 'S11 G2 수동 FIRM 10은 그대로');
+select order_test.check((select shortage_qty = 20 from core.sales_order_line where order_id = :'g2'), 'S11 G2 부족수량 20으로 재계산(요청 30 − FIRM 10, 해제된 임시 20은 더 이상 차감하지 않는다)');
+select order_test.check((select status = 'EXPIRED' and expired_at is not null from core.sales_order where order_id = :'g3'), 'S11 G3 주문 EXPIRED(배정 이력 없어도 대기열 이탈)');
+
+select order_test.check((select count(*) from core.notification_outbox where template_code = 'TEMP_ALLOCATION_RELEASED' and payload ->> 'series_id' = :'g1') > 0,
+  'S11 G1은 실제 해제가 있었으므로 완료 알림 발송');
+select order_test.check((select count(*) from core.notification_outbox where template_code = 'TEMP_ALLOCATION_RELEASED' and payload ->> 'series_id' = :'g3') = 0,
+  'S11 G3은 해제한 임시배정이 없어 완료 알림을 보내지 않는다(released_qty=0)');
+select (select count(*) from core.notification_outbox where template_code = 'TEMP_ALLOCATION_RELEASED' and payload ->> 'series_id' = :'g1') as g1_notice_count_1 \gset
+
+-- 재실행: 이미 처리된 세 주문은 더 이상 후보가 아니다(브리프 검증 2 — 재실행은 no-op).
+with r as (select * from core.expire_temporary_allocations())
+select
+  (select count(*) from r where order_id = :'g1'::uuid) as g1_hits,
+  (select count(*) from r where order_id = :'g2'::uuid) as g2_hits,
+  (select count(*) from r where order_id = :'g3'::uuid) as g3_hits
+\gset run2_
+select order_test.check(:'run2_g1_hits' = '0' and :'run2_g2_hits' = '0' and :'run2_g3_hits' = '0',
+  'S11 재실행은 이미 처리된 세 주문을 다시 건드리지 않는다(이중 해제 · 이중 만료 없음)');
+select (select count(*) from core.notification_outbox where template_code = 'TEMP_ALLOCATION_RELEASED' and payload ->> 'series_id' = :'g1') as g1_notice_count_2 \gset
+select order_test.check(:'g1_notice_count_1' = :'g1_notice_count_2', 'S11 재실행 뒤에도 G1 완료 알림 건수 불변(중복 발송 없음, dedupe_key)');
+
+\echo '== S12 Task 6 · 입고 후 AUTO 후속 배정 — 대기 순번 · CONFIRMED FIRM · WAIT_FULL 스킵 · 만료 주문 건너뜀 =='
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select core.create_sales_order(null, '고객 I1', '[{"item_id":"ITEMT24","qty":25}]'::jsonb) as i1 \gset
+select core.request_order_review(:'i1', 'PARTIAL') \g /dev/null
+select core.create_sales_order(null, '고객 H1', '[{"item_id":"ITEMT24","qty":30}]'::jsonb) as h1 \gset
+select core.request_order_review(:'h1', 'PARTIAL') \g /dev/null
+select order_test.as_user(:'sales2') \g /dev/null
+select core.create_sales_order(null, '고객 H2', '[{"item_id":"ITEMT24","qty":20}]'::jsonb) as h2 \gset
+select core.request_order_review(:'h2', 'WAIT_FULL') \g /dev/null
+select core.create_sales_order(null, '고객 H3', '[{"item_id":"ITEMT24","qty":50}]'::jsonb) as h3 \gset
+select core.request_order_review(:'h3', 'PARTIAL') \g /dev/null
+reset role;
+select order_test.check((select coalesce(sum(shortage_qty), 0) from core.sales_order_line where order_id in (:'i1', :'h1', :'h2', :'h3')) = 125,
+  'S12 사전 조건: 네 주문 모두 부족수량만 쌓인 상태(재고 0)');
+
+-- I1을 최우선(1)으로 올린 뒤 수주 확정한다 — 확정 전 주문에도 FIRM을 걸 수 있으므로 confirm 전에는
+-- 우선순위만 바꾼다. 확정 뒤 후속 배정은 선택 방식과 무관하게 FIRM이어야 한다(컨트롤러 판정 5).
+set role authenticated;
+select order_test.as_user(:'bizdev') \g /dev/null
+select core.change_allocation_priority(:'i1', 1, 'S12 확정 주문 최우선 처리') \g /dev/null
+select order_test.as_user(:'sales1') \g /dev/null
+select core.confirm_sales_order(:'i1', 'ERP-S12-I1') \g /dev/null
+reset role;
+select order_test.check((select status = 'CONFIRMED' from core.sales_order where order_id = :'i1'), 'S12 I1 수주 확정(부족 25는 대기열에 남음)');
+
+-- 만료된 확정 전 주문 K1이 같은 품목 대기열에 있어도 입고 커밋이 성공하고 K1만 건너뛰는지 별도
+-- 품목(ITEMT26)으로 확인한다(브리프 검증 1 · 컨트롤러 판정 5).
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select core.create_sales_order(null, '고객 K1', '[{"item_id":"ITEMT26","qty":20}]'::jsonb) as k1 \gset
+reset role;
+select (clock_timestamp() - interval '30 days' + interval '5 seconds')::timestamptz as k1_review_at \gset
+update core.sales_order
+   set status = 'REVIEW_REQUESTED', allocation_choice = 'PARTIAL', allocation_choice_by = owner_user_id,
+       first_review_requested_at = :'k1_review_at', temporary_expires_at = :'k1_review_at'::timestamptz + interval '30 days'
+ where order_id = :'k1';
+select core.log_sales_order_event(:'k1', 'REVIEW_REQUESTED', 'DRAFT', 'REVIEW_REQUESTED', null, '검증용 최초 검토 요청 시각 소급', '{}'::jsonb) \g /dev/null
+set role authenticated;
+select order_test.as_user(:'sales2') \g /dev/null
+select core.create_sales_order(null, '고객 K2', '[{"item_id":"ITEMT26","qty":10}]'::jsonb) as k2 \gset
+select core.request_order_review(:'k2', 'PARTIAL') \g /dev/null
+reset role;
+select pg_sleep(greatest(0, extract(epoch from (:'k1_review_at'::timestamptz + interval '30 days' - clock_timestamp()))) + 0.5) \g /dev/null
+select order_test.check((select clock_timestamp() >= temporary_expires_at from core.sales_order where order_id = :'k1'), 'S12 K1 만료 시각 경과(자동 만료 작업 실행 전)');
+select order_test.commit_goods_receipt('ITEMT26', 25) as k_batch \gset
+select order_test.check((select temporary_allocated_qty = 0 and shortage_qty = 20 from core.sales_order_line where order_id = :'k1'),
+  'S12 만료된 확정 전 K1은 입고 배정 대기열에서 건너뛴다(입고 트랜잭션은 성공)');
+select order_test.check((select temporary_allocated_qty = 10 and shortage_qty = 0 from core.sales_order_line where order_id = :'k2'),
+  'S12 K1을 건너뛴 뒤 다음 순번 K2가 정상 배정된다');
+
+-- 본 입고: 45 → I1(FIRM 25, 최우선 확정) → H1(TEMPORARY 20, 부족 10 유지) → H2(WAIT_FULL, 20 필요인데
+-- 남은 재고 0 → 스킵) → H3(남은 재고 없어 0).
+select order_test.commit_goods_receipt('ITEMT24', 45) as h_batch \gset
+select order_test.check((select firm_allocated_qty = 25 and shortage_qty = 0 from core.sales_order_line where order_id = :'i1'),
+  'S12 I1(CONFIRMED·최우선) FIRM 25 전량 배정');
+select order_test.check((select temporary_allocated_qty = 20 and shortage_qty = 10 and status = 'PARTIALLY_ALLOCATED' from core.sales_order_line l join core.sales_order o using (order_id) where l.order_id = :'h1'),
+  'S12 H1 부족 20 중 남은 재고만큼(20) 배정, 부족 10 유지 · 대기 순번 그대로');
+select order_test.check((select temporary_allocated_qty = 0 and shortage_qty = 20 and status = 'WAITING_FULL' from core.sales_order_line l join core.sales_order o using (order_id) where l.order_id = :'h2'),
+  'S12 H2(WAIT_FULL)는 남은 재고(0)가 전량에 못 미쳐 배정하지 않는다');
+select order_test.check((select temporary_allocated_qty = 0 and shortage_qty = 50 from core.sales_order_line where order_id = :'h3'),
+  'S12 H3은 순번상 재고가 남지 않아 배정 없음(대기 순번 유지)');
+select order_test.check((select normal_qty = 45 from core.stock_balance where item_id = 'ITEMT24'), 'S12 입고 반영 후 정상 창고재고 45');
+select order_test.check((select coalesce(sum(qty), 0) from core.stock_allocation where item_id = 'ITEMT24' and status <> 'RELEASED') = 45,
+  'S12 배정 합계 45(초과 없음)');
+
+select order_test.check((select count(*) from core.notification_outbox where template_code = 'AUTO_ALLOCATION' and payload ->> 'order_id' = :'i1' and (payload ->> 'allocated_qty')::numeric = 25 and (payload ->> 'remaining_shortage_qty')::numeric = 0) > 0,
+  'S12 I1 자동 배정 알림에 배정수량 25 · 남은 부족 0 기록');
+select order_test.check((select count(*) from core.notification_outbox where template_code = 'AUTO_ALLOCATION' and payload ->> 'order_id' = :'h1' and (payload ->> 'allocated_qty')::numeric = 20 and (payload ->> 'remaining_shortage_qty')::numeric = 10) > 0,
+  'S12 H1 자동 배정 알림에 배정수량 20 · 남은 부족 10 · 품목 · 주문번호 기록');
+select order_test.check((select count(*) from core.notification_outbox where template_code = 'AUTO_ALLOCATION' and payload ->> 'order_id' in (:'h2', :'h3')) = 0,
+  'S12 배정이 0인 H2 · H3에는 자동 배정 알림이 없다');
+
+\echo '== S13 Task 6 · MANUAL 품목은 자동 배정 0건 + 처리 필요 알림, 대기 순번 조회만 제공 =='
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select core.create_sales_order(null, '고객 J1', '[{"item_id":"ITEMT25","qty":15}]'::jsonb) as j1 \gset
+select core.request_order_review(:'j1', 'PARTIAL') \g /dev/null
+reset role;
+select order_test.check((select shortage_qty = 15 from core.sales_order_line where order_id = :'j1'), 'S13 사전 조건: J1 부족 15(재고 0)');
+select order_test.commit_goods_receipt('ITEMT25', 15) as j_batch \gset
+select order_test.check((select temporary_allocated_qty = 0 and shortage_qty = 15 from core.sales_order_line where order_id = :'j1'),
+  'S13 MANUAL 품목은 입고되어도 자동 배정 0건 — J1 그대로');
+select order_test.check((select count(*) from core.stock_allocation where item_id = 'ITEMT25' and source = 'RECEIPT') = 0,
+  'S13 ITEMT25에는 RECEIPT 배정이 한 건도 생기지 않는다');
+select order_test.check((select normal_qty = 15 from core.stock_balance where item_id = 'ITEMT25'), 'S13 정상 창고재고 자체는 반영된다(15)');
+select order_test.check((select count(*) from core.notification_outbox where template_code = 'MANUAL_ALLOCATION_NEEDED' and payload ->> 'item_id' = 'ITEMT25' and (payload ->> 'received_qty')::numeric = 15) > 0,
+  'S13 SCM 품목담당자에게 처리 필요 알림(품목 · 입고수량) 발송');
+
+set role authenticated;
+select order_test.as_user(:'planner1') \g /dev/null
+select queue_rank, order_id, shortage_qty from core.list_manual_allocation_candidates('ITEMT25') \gset cand_
+select order_test.check(:'cand_queue_rank' = '1' and :'cand_order_id' = :'j1' and :'cand_shortage_qty' = '15',
+  'S13 core.list_manual_allocation_candidates는 계산 없이 대기 순번만 보여준다(J1 1순위 · 부족 15)');
+select order_test.as_user(:'sales1') \g /dev/null
+select order_test.expect_error('select core.list_manual_allocation_candidates(''ITEMT25'')', 'ALLOC_MANUAL', 'S13 ALLOC_MANUAL 권한 없는 사용자는 조회 거절');
+reset role;

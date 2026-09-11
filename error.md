@@ -133,6 +133,15 @@ PostgreSQL이 출력 변수와 실제 테이블 열 중 어느 것을 뜻하는�
 조건절의 열을 모두 별칭으로 한정합니다. 반환 테이블 함수를 변경한 뒤에는 정적 문자열 검사만 하지
 말고 임시 PostgreSQL에서 함수를 실제 호출해 모호한 열 오류까지 확인합니다.
 
+**같은 원인의 변형 (Task 6).** `core.expire_temporary_allocations`(`returns table (order_id uuid, ...)`)
+안의 `perform 1 from core.sales_order where order_id = v_order.order_id for update`와
+`update core.sales_order set status = 'EXPIRED' ... where order_id = v_order.order_id`도 별칭 없이
+`order_id`를 그대로 조건절에 썼다가 같은 `42702 column reference "order_id" is ambiguous` 오류가
+났다(WHERE 절 왼쪽의 `order_id`가 출력 변수와 충돌 — 오른쪽 `v_order.order_id`는 레코드 필드라
+문제없다). `core.sales_order s where s.order_id = ...`처럼 테이블 별칭을 붙여 해결했다. **예방.**
+`returns table (...)` 함수 안에서 그 출력 열과 이름이 같은 테이블 열을 조건절에 쓸 때는 SELECT뿐
+아니라 UPDATE · DELETE · PERFORM의 WHERE 절에도 예외 없이 별칭을 붙인다.
+
 ## #19 `<form action>`은 `Promise<void>`를 요구한다
 
 **증상**

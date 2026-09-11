@@ -41,6 +41,25 @@ create or replace function order_test.available(p_item text) returns numeric lan
   from core.stock_balance sb where sb.item_id = p_item
 $$;
 
+-- Task 6: 신규 입고 배치를 커밋된 core.apply_stock_receipts_from_batch 경로로 흉내 낸다
+-- (STEP4/Task4의 정식 경로와 같은 raw.goods_receipt 열을 그대로 쓴다).
+create or replace function order_test.commit_goods_receipt(
+  p_item_id text, p_qty numeric, p_source_record_id text default null, p_receipt_status text default 'COMPLETED'
+) returns uuid language plpgsql as $$
+declare
+  v_batch_id uuid := gen_random_uuid();
+  v_source_record_id text := coalesce(p_source_record_id, 'GR-' || replace(gen_random_uuid()::text, '-', ''));
+begin
+  insert into core.upload_batch (batch_id, file_name, import_type, import_mode, status)
+  values (v_batch_id, 'order_test-fixture.csv', 'goods_receipt', 'append', 'VALIDATED');
+
+  insert into raw.goods_receipt ("품목코드", "입고수량", "입고일", source_record_id, batch_id, receipt_status, source_type, loaded_at)
+  values (p_item_id, p_qty::text, now()::text, v_source_record_id, v_batch_id, p_receipt_status, 'FILE_UPLOAD', now());
+
+  perform core.apply_stock_receipts_from_batch(v_batch_id);
+  return v_batch_id;
+end $$;
+
 grant execute on all functions in schema order_test to anon, authenticated;
 
 insert into auth.users (id, email) values
@@ -83,7 +102,16 @@ insert into raw.item_master ("품목코드", "품목명", "품목구분") values
   ('ITEMT08', 'T5 확보 주문 취소', '소모품'),
   ('ITEMT09', 'T5 확정 주문 취소 거절', '소모품'),
   ('ITEMT10', 'T5 만료 시각 이후 차단', '소모품'),
-  ('ITEMT11', 'T5 만료 뒤 FIRM만 남은 주문 확정', '소모품');
+  ('ITEMT11', 'T5 만료 뒤 FIRM만 남은 주문 확정', '소모품'),
+  ('ITEMT20', 'T6 만료 경계·재실행', '소모품'),
+  ('ITEMT21', 'T6 만료 뒤 FIRM 유지', '소모품'),
+  ('ITEMT22', 'T6 배정 0건 WAITING_FULL 만료', '소모품'),
+  ('ITEMT24', 'T6 AUTO 입고 순서 배정', '소모품'),
+  ('ITEMT25', 'T6 MANUAL 입고 처리 필요', '소모품'),
+  ('ITEMT26', 'T6 만료 주문 입고 대기열 건너뜀', '소모품'),
+  ('ITEMCJ01', 'T6 동시성 만료·입고·검토요청', '소모품'),
+  ('ITEMCJ02', 'T6 동시성 만료 실패 격리 A', '소모품'),
+  ('ITEMCJ03', 'T6 동시성 만료 실패 격리 B', '소모품');
 
 insert into core.stock_balance (item_id, snapshot_qty, normal_qty, snapshot_at) values
   ('ITEMT01', 100, 100, now()),
@@ -98,6 +126,24 @@ insert into core.stock_balance (item_id, snapshot_qty, normal_qty, snapshot_at) 
   ('ITEMT08', 100, 100, now()),
   ('ITEMT09', 100, 100, now()),
   ('ITEMT10', 100, 100, now()),
-  ('ITEMT11', 100, 100, now());
+  ('ITEMT11', 100, 100, now()),
+  ('ITEMT20', 100, 100, now()),
+  ('ITEMT21', 50, 50, now()),
+  ('ITEMT22', 30, 30, now()),
+  ('ITEMT24', 0, 0, now()),
+  ('ITEMT25', 0, 0, now()),
+  ('ITEMT26', 0, 0, now()),
+  ('ITEMCJ01', 100, 100, now()),
+  ('ITEMCJ02', 100, 100, now()),
+  ('ITEMCJ03', 100, 100, now());
+
+-- Task 6: 품목별 배정 방식(core.item_policy.allocation_mode). ITEMT25는 MANUAL, 나머지는
+-- 정책이 없을 때 기본값 AUTO를 확인하는 대조군으로 일부만 명시적으로 넣는다.
+insert into core.item_policy (item_id, allocation_mode) values
+  ('ITEMT24', 'AUTO'),
+  ('ITEMT25', 'MANUAL'),
+  ('ITEMT26', 'AUTO'),
+  ('ITEMCJ01', 'AUTO')
+on conflict (item_id) do update set allocation_mode = excluded.allocation_mode;
 
 select 'fixtures ok';
