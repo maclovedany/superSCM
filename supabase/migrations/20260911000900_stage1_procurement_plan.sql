@@ -1171,4 +1171,4 @@ revoke all on function core.apply_procurement_plan_decision() from public, anon,
 -- (g) 뷰 security_invoker 확인.
 -- select c.relname, c.reloptions from pg_class c join pg_namespace n on n.oid = c.relnamespace
 --  where n.nspname = 'analytics' and c.relname like 'v_procurement_plan%';
--- 기대: 네 뷰 모두 security_invoker=true
+-- 기대: 다섯 뷰(plan · line · kpi · event · blocker) 모두 security_invoker=true
