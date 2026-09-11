@@ -32,6 +32,7 @@
 | `cannot drop columns from view` (앞 마이그레이션 재적용) | 뒤 마이그레이션이 같은 뷰 끝에 열을 덧붙인 뒤 앞 마이그레이션의 좁은 뷰 정의를 다시 실행 | [#24](#24-cannot-drop-columns-from-view) |
 | `function core.xxx(unknown, unknown, integer, ...) does not exist` (smallint 인자) | 정수 리터럴(int4)이 `smallint` 파라미터로 암시적 변환되지 않아 오버로드 해석 실패 | [#25](#25-function-corexxx-does-not-exist-smallint-인자) |
 | psql 스크립트에서 `syntax error at or near ":"` 또는 `column "f" does not exist` (`\gset` 뒤) | `\gset`은 NULL·빈 결과 컬럼의 변수를 **설정하지 않고**, bare(따옴표 없는) boolean 변수는 `f`/`t`로 치환돼 컬럼명처럼 파싱됨 | [#26](#26-gset-뒤-syntax-error-또는-column-f-does-not-exist) |
+| `column reference "schedule_id" is ambiguous` (`ON CONFLICT (열이름)`에서) | `RETURNS TABLE`의 출력 열 이름과 `ON CONFLICT (열이름)`의 대상 열 이름이 같음 | [#27](#27-on-conflict-열이름에서-column-reference-is-ambiguous) |
 
 ## #24 `cannot drop columns from view`
 
@@ -725,3 +726,35 @@ ERROR:  column "f" does not exist
 
 **예방.** psql 검증 스크립트에서 `\gset`은 "항상 값이 있는(NOT NULL이고 행이 반드시 존재하는)" 컬럼에만
 쓰고, boolean·nullable 컬럼은 따옴표로 감싸거나 존재/조건 자체를 서브쿼리로 확인합니다.
+
+## #27 `ON CONFLICT (열이름)`에서 `column reference is ambiguous`
+
+**증상.** Task 10b `core.build_procurement_schedule(p_plan_id) RETURNS TABLE (schedule_id uuid, ...)` 안에서
+`INSERT INTO core.receipt_schedule_result (...) ON CONFLICT (schedule_id) DO UPDATE ...`를 실행하자 다음
+오류가 났습니다.
+
+```text
+ERROR:  column reference "schedule_id" is ambiguous
+LINE 3:     on conflict (schedule_id) do update set confirmed_recei...
+DETAIL:  It could refer to either a PL/pgSQL variable or a table column.
+```
+
+**원인.** error.md #20(`RETURNING`)과 같은 종류지만 자리가 다릅니다. `RETURNS TABLE`의 출력 열은 함수
+본문 전체에서 암묵적인 PL/pgSQL 변수로도 취급됩니다. `INSERT ... RETURNING 열` · `UPDATE ... SET 열 = ...`의
+왼쪽은 문법상 반드시 테이블 열이라 안전하지만, `ON CONFLICT (열이름)` 충돌 대상 열 목록은 **테이블 별칭을
+붙일 수 없는 bare 식별자**라서 출력 변수와 이름이 겹치면 그대로 모호해집니다.
+
+**해결.** 열 이름 대신 제약 이름으로 지정합니다.
+
+```sql
+insert into core.receipt_schedule_result (schedule_id, confirmed_receipt_date)
+values (v_schedule_id, v_confirmed_receipt_date)
+on conflict on constraint receipt_schedule_result_schedule_id_key
+do update set confirmed_receipt_date = excluded.confirmed_receipt_date;
+```
+
+`\d core.<표>`로 자동 생성된 제약 이름(`<표>_<열>_key`)을 먼저 확인합니다.
+
+**예방.** `RETURNS TABLE (...)` 함수 안에서 그 출력 열과 이름이 같은 열에 `INSERT ... ON CONFLICT (열이름)`을
+쓸 때는 처음부터 `ON CONFLICT ON CONSTRAINT <제약이름>`을 씁니다(#20의 `RETURNING`·WHERE 별칭 규칙과
+같은 예방 습관을 ON CONFLICT 대상 열까지 넓힌다).

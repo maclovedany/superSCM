@@ -1,0 +1,211 @@
+-- Task 10b 발주 일정 · 입고 차이 검증 fixture — 로컬 임시 DB(scm_test_*) 전용. 운영 마이그레이션에 넣지 않는다
+--
+-- ★ 마스터 데이터(core.supply_entity · core.supplier · core.supplier_departure ·
+--   core.business_calendar_readiness)와 승인된 발주계획(core.procurement_plan/_line)은 여기서
+--   직접(슈퍼유저) 만든다 — Task 10a 관리자 함수와 Task 9b 확정 · 승인 함수는 각자 스위트에서
+--   이미 검증됐다. 여기서 만드는 계획 행은 그 함수들이 만드는 것과 똑같은 제약(가드 트리거 · CHECK)을
+--   그대로 통과하는 최종 상태다 — 다만 confirm/approve 단계를 실제 세션으로 거치지 않고 한 번에 만든다.
+-- ★ 12개월 준비기간이 있는 실제 5개 법인(JP·CN·VN·SG·NL)은 STEP 18이 이미 심어 둔 그대로(prep_days=0)
+--   써서 "준비기간 현업 확인 전" 상태에서 PREP_DAYS_UNSET이 실제로 재현되는지 보여준다(memory:
+--   realdata-has-no-inventory-or-leadtime와 같은 결의 검증).
+\set ON_ERROR_STOP 1
+\ir guard.psql
+
+create schema if not exists sched_test;
+grant usage on schema sched_test to anon, authenticated;
+
+create or replace function sched_test.as_user(p_user uuid) returns text language sql as $$
+  select set_config('request.jwt.claim.sub', p_user::text, false)
+$$;
+
+create or replace function sched_test.check(p_ok boolean, p_label text) returns text language plpgsql as $$
+begin
+  if p_ok is distinct from true then
+    raise exception 'FAIL: %', p_label;
+  end if;
+  return 'PASS: ' || p_label;
+end $$;
+
+create or replace function sched_test.expect_error(p_sql text, p_pattern text, p_label text) returns text language plpgsql as $$
+declare
+  v_state text;
+  v_message text;
+begin
+  begin
+    execute p_sql;
+  exception when others then
+    get stacked diagnostics v_state = returned_sqlstate, v_message = message_text;
+    if v_message !~ p_pattern then
+      raise exception 'FAIL: % — 다른 오류: % (%)', p_label, v_message, v_state;
+    end if;
+    return 'PASS: ' || p_label || ' → ' || v_state || ' ' || v_message;
+  end;
+  raise exception 'FAIL: % — 오류가 나지 않았습니다: %', p_label, p_sql;
+end $$;
+
+grant execute on all functions in schema sched_test to anon, authenticated;
+
+-- ══ 사용자 ══════════════════════════════════════════════════════
+
+insert into auth.users (id, email) values
+  ('00000000-0000-4000-8000-000000000501', 't10b-planner1@example.test'),
+  ('00000000-0000-4000-8000-000000000502', 't10b-lead1@example.test'),
+  ('00000000-0000-4000-8000-000000000503', 't10b-marketing1@example.test')
+on conflict (id) do nothing;
+
+insert into core.app_user (user_id, email, name, department, role, active, job_role) values
+  ('00000000-0000-4000-8000-000000000501', 't10b-planner1@example.test', 'SCM품목담당1', 'SCM', 'USER', true, 'SCM_PLANNER'),
+  ('00000000-0000-4000-8000-000000000502', 't10b-lead1@example.test', 'SCM팀장1', 'SCM', 'USER', true, 'SCM_LEAD'),
+  ('00000000-0000-4000-8000-000000000503', 't10b-marketing1@example.test', '마케팅1', 'MARKETING', 'USER', true, 'MARKETING')
+on conflict (user_id) do update
+  set job_role = excluded.job_role, department = excluded.department, role = excluded.role, name = excluded.name, active = true;
+
+\set planner1 '00000000-0000-4000-8000-000000000501'
+\set lead1 '00000000-0000-4000-8000-000000000502'
+\set marketing1 '00000000-0000-4000-8000-000000000503'
+
+-- ══ 마스터 데이터 — 해외법인 · 공급처 · 출항일 규칙 ═══════════════
+
+insert into core.supply_entity (entity_id, entity_name, country_code, prep_days, active, note) values
+  ('T10B', 'T10b 검증 법인', 'T1', 7, true, 'Task 10b 검증 전용'),
+  ('T10B2', 'T10b 검증 법인2', 'T2', 1, true, 'Task 10b 검증 전용 — 집계 뷰 다양성용')
+on conflict (entity_id) do update set prep_days = excluded.prep_days, active = true, valid_to = null;
+-- JP는 STEP 18 시드값(prep_days=0) 그대로 둔다 — PREP_DAYS_UNSET 재현용.
+
+insert into core.supplier (supplier_id, supplier_name, entity_id, lead_time_days, active, valid_from, valid_to) values
+  ('SUP-T10B-1', 'T10b 공급처1(정상)', 'T10B', 10, true, null, null),
+  ('SUP-T10B-2', 'T10b 공급처2(규칙 없음)', 'T10B', 10, true, null, null),
+  ('SUP-T10B-3', 'T10b 공급처3(규칙 중복)', 'T10B', 10, true, null, null),
+  ('SUP-T10B-4', 'T10b 공급처4(기간 만료)', 'T10B', 10, true, null, '2026-10-31'),
+  ('SUP-T10B-JP', 'T10b 공급처(JP 준비기간 미확인)', 'JP', 10, true, null, null),
+  ('SUP-T10B-6', 'T10b 공급처6(법인2)', 'T10B2', 10, true, null, null),
+  ('SUP-T10B-7', 'T10b 공급처7(매월 31일)', 'T10B', 10, true, null, null)
+on conflict (supplier_id) do update
+  set entity_id = excluded.entity_id, active = true, valid_from = excluded.valid_from, valid_to = excluded.valid_to;
+
+-- SUP-T10B-1 — 매월 20일 출항(정상 경로 · 8월 CALENDAR_NOT_READY 재현에도 재사용)
+insert into core.supplier_departure (supplier_id, day_of_month, active) values ('SUP-T10B-1', 20, true)
+on conflict do nothing;
+-- SUP-T10B-2 — 규칙 없음(DEPARTURE_RULE_UNSET)
+-- SUP-T10B-3 — 매주 수요일 규칙이 두 개(DEPARTURE_RULE_AMBIGUOUS)
+insert into core.supplier_departure (supplier_id, weekday, active) values ('SUP-T10B-3', 3, true), ('SUP-T10B-3', 3, true)
+on conflict do nothing;
+-- SUP-T10B-4 — 매월 20일이지만 공급처 자체가 2026-10-31까지만 유효(SUPPLIER_INACTIVE)
+insert into core.supplier_departure (supplier_id, day_of_month, active) values ('SUP-T10B-4', 20, true)
+on conflict do nothing;
+-- SUP-T10B-JP — 매월 20일(법인 JP의 준비기간 미확인 → PREP_DAYS_UNSET)
+insert into core.supplier_departure (supplier_id, day_of_month, active) values ('SUP-T10B-JP', 20, true)
+on conflict do nothing;
+-- SUP-T10B-6 — 매주 월요일(11월 두 번째 SCHEDULED 행 · 다른 법인)
+insert into core.supplier_departure (supplier_id, weekday, active) values ('SUP-T10B-6', 1, true)
+on conflict do nothing;
+-- SUP-T10B-7 — 매월 31일(12월 31일 출항 → ISO 연 경계 2026-W53)
+insert into core.supplier_departure (supplier_id, day_of_month, active) values ('SUP-T10B-7', 31, true)
+on conflict do nothing;
+
+-- 정리 — 이전 실행에서 남은 중복 규칙 방지를 위해 중복 조합을 제거한 뒤 위 값으로 다시 채운다.
+-- (day_of_month/weekday 규칙에 자연키가 없어 on conflict do nothing만으로는 재실행 시 중복 삽입을
+-- 막지 못한다 — 스위트가 매번 새 DB에서 실행되므로 실제로는 항상 빈 상태에서 시작한다.)
+
+-- ══ KR 영업일 달력 — 준비 상태와 공휴일 ══════════════════════════
+
+insert into core.business_calendar_readiness (country_code, cal_year, cal_month, ready, note, marked_by, marked_at) values
+  ('KR', 2026, 10, true, 'Task 10b 검증', :'planner1'::uuid, now()),
+  ('KR', 2026, 11, true, 'Task 10b 검증', :'planner1'::uuid, now()),
+  ('KR', 2026, 12, true, 'Task 10b 검증', :'planner1'::uuid, now())
+on conflict (country_code, cal_year, cal_month) do update set ready = true;
+-- 2026-08은 일부러 준비 상태로 표시하지 않는다(CALENDAR_NOT_READY 재현용).
+
+insert into core.business_calendar (country_code, calendar_date, is_business_day, holiday_name) values
+  ('KR', '2026-11-20', false, 'T10b 검증용 임시공휴일')
+on conflict (country_code, calendar_date) do update set is_business_day = false, holiday_name = excluded.holiday_name;
+
+-- ══ 품목 → 공급처 매핑 (raw.item_master, core.v_item_master가 그대로 노출한다) ══
+
+insert into raw.item_master ("품목코드", "품목명", "품목구분", "단위", "사용여부", supplier_id) values
+  ('T10BITM1', 'T10b 품목1(정상)', 'A', 'EA', 'Y', 'SUP-T10B-1'),
+  ('T10BITM2', 'T10b 품목2(공급처 매핑 없음)', 'A', 'EA', 'Y', null),
+  ('T10BITM3', 'T10b 품목3(출항일 규칙 없음)', 'A', 'EA', 'Y', 'SUP-T10B-2'),
+  ('T10BITM4', 'T10b 품목4(출항일 규칙 중복)', 'A', 'EA', 'Y', 'SUP-T10B-3'),
+  ('T10BITM5', 'T10b 품목5(공급처 비활성)', 'A', 'EA', 'Y', 'SUP-T10B-4'),
+  ('T10BITM6', 'T10b 품목6(준비기간 미확인 · JP)', 'A', 'EA', 'Y', 'SUP-T10B-JP'),
+  ('T10BITM7', 'T10b 품목7(달력 미준비 · 8월)', 'A', 'EA', 'Y', 'SUP-T10B-1'),
+  ('T10BITM8', 'T10b 품목8(12월 31일 · 연 경계)', 'A', 'EA', 'Y', 'SUP-T10B-7'),
+  ('T10BITM9', 'T10b 품목9(법인2 정상)', 'A', 'EA', 'Y', 'SUP-T10B-6'),
+  ('T10BITM10', 'T10b 품목10(존재하지 않는 공급처 코드)', 'A', 'EA', 'Y', 'SUP-UNKNOWN-CODE');
+
+-- ══ 승인된 발주계획 — Task 9b 확정 · 승인 함수와 같은 최종 상태를 직접 만든다 ══
+--
+-- (계산 · 확정 · 승인 파이프라인 자체는 supabase/tests/procurement_plan에서 이미 검증했다. 여기서는
+-- Task 10b가 읽는 "승인된 계획 + 1개월차 라인"이라는 전제만 재현한다.)
+
+create or replace function sched_test.make_approved_plan(
+  p_plan_month date, p_items text[], p_qtys numeric[]
+) returns uuid language plpgsql as $$
+declare
+  v_plan_id uuid;
+  v_approval_id uuid;
+  v_i int;
+begin
+  insert into core.procurement_plan (
+    plan_month, version, status, source_status, built_by, built_by_name
+  ) values (
+    p_plan_month, 1, 'DRAFT', 'VERIFIED', '00000000-0000-4000-8000-000000000501'::uuid, 'SCM품목담당1'
+  ) returning plan_id into v_plan_id;
+
+  for v_i in 1..array_length(p_items, 1) loop
+    insert into core.procurement_plan_line (
+      plan_id, item_id, month_no, target_month,
+      start_stock_qty, demand_qty, stockout_prevention_qty, dos_required_qty, selected_qty, selection_reason,
+      effective_moq, final_order_qty, projected_month_end_qty, projected_inventory_value,
+      calculation_status, reason_code, reason_codes
+    ) values (
+      v_plan_id, p_items[v_i], 1, p_plan_month,
+      0, p_qtys[v_i], p_qtys[v_i], p_qtys[v_i], p_qtys[v_i], 'DOS_TARGET',
+      1, p_qtys[v_i], 0, 0,
+      'CALCULATED', null, '{}'
+    );
+  end loop;
+
+  update core.procurement_plan
+     set status = 'PENDING_APPROVAL', confirmed_by = '00000000-0000-4000-8000-000000000501'::uuid,
+         confirmed_by_name = 'SCM품목담당1', confirmed_at = clock_timestamp()
+   where plan_id = v_plan_id;
+
+  insert into core.approval_request (approval_type, target_type, target_id, requested_by, requester_name)
+  values ('PURCHASE_PLAN', 'PROCUREMENT_PLAN', v_plan_id::text, '00000000-0000-4000-8000-000000000501'::uuid, 'SCM품목담당1')
+  returning approval_id into v_approval_id;
+
+  update core.procurement_plan set approval_id = v_approval_id where plan_id = v_plan_id;
+
+  update core.approval_request
+     set status = 'APPROVED', decided_by = '00000000-0000-4000-8000-000000000502'::uuid,
+         decider_name = 'SCM팀장1', decided_at = clock_timestamp()
+   where approval_id = v_approval_id;
+
+  return v_plan_id;
+end;
+$$;
+
+select sched_test.make_approved_plan(
+  '2026-11-01'::date,
+  array['T10BITM1','T10BITM2','T10BITM3','T10BITM4','T10BITM5','T10BITM6','T10BITM9','T10BITM10'],
+  array[100,50,30,40,60,70,20,10]::numeric[]
+) as plan_nov \gset
+
+select sched_test.make_approved_plan('2026-08-01'::date, array['T10BITM7'], array[15]::numeric[]) as plan_aug \gset
+select sched_test.make_approved_plan('2026-12-01'::date, array['T10BITM8'], array[25]::numeric[]) as plan_dec \gset
+
+-- 승인되지 않은 계획 두 개(build_procurement_schedule 거절 검증용) — 각각 DRAFT · PENDING_APPROVAL에서 멈춘다.
+insert into core.procurement_plan (plan_month, version, status, source_status, built_by, built_by_name)
+values ('2026-06-01'::date, 1, 'DRAFT', 'VERIFIED', :'planner1'::uuid, 'SCM품목담당1')
+returning plan_id as plan_draft \gset
+
+insert into core.procurement_plan (plan_month, version, status, source_status, built_by, built_by_name)
+values ('2026-07-01'::date, 1, 'DRAFT', 'VERIFIED', :'planner1'::uuid, 'SCM품목담당1')
+returning plan_id as plan_pending \gset
+update core.procurement_plan
+   set status = 'PENDING_APPROVAL', confirmed_by = :'planner1'::uuid, confirmed_by_name = 'SCM품목담당1', confirmed_at = clock_timestamp()
+ where plan_id = :'plan_pending';
+
+select 'fixtures ok' as fixtures_ok;

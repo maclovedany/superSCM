@@ -36,6 +36,12 @@ export const WORK_ROUTE_PERMISSIONS = {
   // Task 9a — 품목 정책 변경 요청·승인 대기 현황은 이 하위 경로 전용 항목을 쓴다(가장 구체적인
   // 경로가 우선한다). 계산·확정 화면(발주계획, Task 9b)과는 별도로 ITEM_POLICY_EDIT · APPROVE만으로 들어온다.
   '/procurement-plans/item-policies': ['ITEM_POLICY_EDIT', 'ITEM_POLICY_APPROVE'],
+  // Task 10b — 발주 일정 생성 · 실제 입고일 입력은 PLAN_CONFIRM, 조회는 PLAN_APPROVE도 함께(발주계획과
+  // 같은 경로 권한). analysis/receipt-gap은 analysis/* 중 유일하게 권한이 필요한 화면이라
+  // components/analysis/analysis-tabs.tsx가 이 목록으로 직접 걸러야 한다(모든 분석 탭을 무조건
+  // 보여주면 권한 없는 사용자에게도 탭 이름이 노출된다).
+  '/procurement-plans/schedule': ['PLAN_CONFIRM', 'PLAN_APPROVE'],
+  '/analysis/receipt-gap': ['PLAN_CONFIRM', 'PLAN_APPROVE'],
   '/allocations': ['ALLOC_MANUAL', 'ALLOC_FIRM_CANCEL'],
   '/approvals': ['ITEM_POLICY_APPROVE', 'ALLOC_PRIORITY_APPROVE', 'EVENT_ORDER_APPROVE', 'PLAN_APPROVE'],
   '/orders': ['ORDER_CREATE', 'ORDER_REVIEW_REQUEST'],
