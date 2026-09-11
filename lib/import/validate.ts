@@ -4,6 +4,8 @@ import type { ImportReferences, ImportRow, ImportType, ValidationIssue, Validati
 function text(value: unknown) { return typeof value === 'string' ? value.trim() : value; }
 function empty(value: unknown) { return value === null || value === undefined || text(value) === ''; }
 function validDate(value: unknown) { return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)); }
+// Task 7 — 필요월(need_month)은 일자가 없는 월 단위 값이라 'YYYY-MM' 형식만 받는다. 실제 있는 달(1~12)인지도 확인한다.
+function validMonth(value: unknown) { if (typeof value !== 'string' || !/^\d{4}-\d{2}$/.test(value)) return false; const month = Number(value.slice(5, 7)); return month >= 1 && month <= 12; }
 function numeric(value: unknown) { return typeof value === 'number' ? Number.isFinite(value) : typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value)); }
 
 export function validateRows(type: ImportType, rows: ImportRow[], references: ImportReferences): ValidationResult {
@@ -18,6 +20,7 @@ export function validateRows(type: ImportType, rows: ImportRow[], references: Im
       const value = data[rule.field];
       if (rule.required && empty(value)) { add(rule.field, 'REQUIRED_VALUE', '필수값이 없습니다.', value); continue; }
       if (!empty(value) && rule.kind === 'date' && !validDate(value)) add(rule.field, 'INVALID_DATE', '날짜 형식이 올바르지 않습니다.', value);
+      if (!empty(value) && rule.kind === 'month' && !validMonth(value)) add(rule.field, 'INVALID_DATE', '연월 형식(YYYY-MM)이 올바르지 않습니다.', value);
       if (!empty(value) && rule.kind === 'number' && !numeric(value)) add(rule.field, 'INVALID_NUMBER', '숫자 형식이 올바르지 않습니다.', value);
       if (!empty(value) && rule.quantity && numeric(value) && Number(value) < 0) add(rule.field, 'NEGATIVE_QUANTITY', '수량은 음수일 수 없습니다.', value);
       if (!empty(value) && rule.reference === 'item' && !references.itemIds.has(String(value).trim())) add(rule.field, 'UNKNOWN_ITEM', '품목 마스터에 없습니다.', value);

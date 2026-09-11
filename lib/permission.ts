@@ -38,7 +38,9 @@ export const WORK_ROUTE_PERMISSIONS = {
   '/orders': ['ORDER_CREATE', 'ORDER_REVIEW_REQUEST'],
   '/allocations/priorities': ['ALLOC_PRIORITY_EDIT'],
   '/inventory': ['STOCK_VIEW_ALL', 'STOCK_VIEW_PAPER', 'STOCK_VIEW_SUPPLY', 'ATP_VIEW'],
-  '/demand-submissions': ['DEMAND_SUBMIT'],
+  // Task 7 — 부서(DEMAND_SUBMIT)는 자기 제출본을, SCM 품목담당자(PLAN_CONFIRM)·취합 담당
+  // (DEMAND_CONSOLIDATE)은 전체 취합 현황을 같은 경로에서 본다(RLS가 조회 범위를 가른다).
+  '/demand-submissions': ['DEMAND_SUBMIT', 'PLAN_CONFIRM', 'DEMAND_CONSOLIDATE'],
 } as const satisfies Record<string, readonly Permission[]>;
 
 export function requiredPermissionsForPath(pathname: string): readonly Permission[] | null {

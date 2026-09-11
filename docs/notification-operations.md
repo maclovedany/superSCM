@@ -16,6 +16,16 @@ Vercel Pro 이상에서 운영하거나, 같은 주기를 보장하는 Supabase 
 끝납니다. 신규 입고 후속 배정(AUTO/MANUAL)은 이 Cron이 아니라 입고 커밋(`core.commit_import_batch`)
 트랜잭션 안에서 바로 실행되므로 별도 스케줄러가 필요 없습니다.
 
+`/api/cron/demand-submissions`(Task 7 · 부서 수요 미제출 반복 알림)도 같은 주기 · 같은
+`CRON_SECRET` 검증으로 10분마다 호출합니다. 이 라우트는 `core.raise_demand_submission_reminders`
+DB 함수만 부릅니다 — 마감일이 지났는데 아직 제출(`SUBMITTED`/`AGREED`)하지 않은 부서마다,
+"마감일 + 1일 00:00 Asia/Seoul"을 고정 시각으로 첫 알림을 예약합니다. 고정 시각을 쓰므로 10분마다
+다시 호출해도 `core.enqueue_notification`의 dedupe_key가 겹쳐 중복 예약되지 않습니다. 10분 반복
+자체는 이 Cron이 아니라 `core.finish_notification`이 `DEMAND_SUBMISSION_OVERDUE` 템플릿을 계속
+재예약하며 이어갑니다. 제출 완료 시 중단(`core.cancel_notification_series`)은
+`core.submit_demand_submission` 트랜잭션 안에서, 마감 후 회수 시 재개는
+`core.withdraw_demand_submission` 트랜잭션 안에서 바로 일어나므로 이 Cron과는 독립적입니다.
+
 ## 처리 안전장치
 
 - 한 번 실행할 때 최대 25건을 가져옵니다.

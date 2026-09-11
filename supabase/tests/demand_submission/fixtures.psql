@@ -1,0 +1,65 @@
+-- 부서별 월간 수요 제출 검증 fixture — 로컬 임시 DB(scm_test_*) 전용. 운영 마이그레이션에 넣지 않는다
+\set ON_ERROR_STOP 1
+\ir guard.psql
+
+create schema if not exists demand_test;
+grant usage on schema demand_test to anon, authenticated;
+
+create or replace function demand_test.as_user(p_user uuid) returns text language sql as $$
+  select set_config('request.jwt.claim.sub', p_user::text, false)
+$$;
+
+create or replace function demand_test.check(p_ok boolean, p_label text) returns text language plpgsql as $$
+begin
+  if p_ok is distinct from true then
+    raise exception 'FAIL: %', p_label;
+  end if;
+  return 'PASS: ' || p_label;
+end $$;
+
+create or replace function demand_test.expect_error(p_sql text, p_pattern text, p_label text) returns text language plpgsql as $$
+declare
+  v_state text;
+  v_message text;
+begin
+  begin
+    execute p_sql;
+  exception when others then
+    get stacked diagnostics v_state = returned_sqlstate, v_message = message_text;
+    if v_message !~ p_pattern then
+      raise exception 'FAIL: % — 다른 오류: % (%)', p_label, v_message, v_state;
+    end if;
+    return 'PASS: ' || p_label || ' → ' || v_state || ' ' || v_message;
+  end;
+  raise exception 'FAIL: % — 오류가 나지 않았습니다: %', p_label, p_sql;
+end $$;
+
+grant execute on all functions in schema demand_test to anon, authenticated;
+
+insert into auth.users (id, email) values
+  ('00000000-0000-4000-8000-000000000101', 't7-planner1@example.test'),
+  ('00000000-0000-4000-8000-000000000102', 't7-lead1@example.test'),
+  ('00000000-0000-4000-8000-000000000103', 't7-marketing1@example.test'),
+  ('00000000-0000-4000-8000-000000000104', 't7-marketing2@example.test'),
+  ('00000000-0000-4000-8000-000000000105', 't7-service1@example.test'),
+  ('00000000-0000-4000-8000-000000000106', 't7-admin1@example.test'),
+  ('00000000-0000-4000-8000-000000000107', 't7-nodept@example.test')
+on conflict (id) do nothing;
+
+insert into core.app_user (user_id, email, name, department, role, active, job_role) values
+  ('00000000-0000-4000-8000-000000000101', 't7-planner1@example.test', 'SCM품목담당1', 'SCM', 'USER', true, 'SCM_PLANNER'),
+  ('00000000-0000-4000-8000-000000000102', 't7-lead1@example.test', 'SCM팀장1', 'SCM', 'USER', true, 'SCM_LEAD'),
+  ('00000000-0000-4000-8000-000000000103', 't7-marketing1@example.test', '마케팅1', 'MARKETING', 'USER', true, 'MARKETING'),
+  ('00000000-0000-4000-8000-000000000104', 't7-marketing2@example.test', '마케팅2', 'MARKETING', 'USER', true, 'MARKETING'),
+  ('00000000-0000-4000-8000-000000000105', 't7-service1@example.test', '서비스1', 'SERVICE', 'USER', true, 'SERVICE'),
+  ('00000000-0000-4000-8000-000000000106', 't7-admin1@example.test', '관리자1', null, 'ADMIN', true, null),
+  -- 부서가 설정되지 않은 계정 — core.start_demand_submission의 "소속 부서가 설정되지 않았습니다" 경로를 검증한다.
+  ('00000000-0000-4000-8000-000000000107', 't7-nodept@example.test', '부서없음', null, 'USER', true, 'MARKETING')
+on conflict (user_id) do update
+  set job_role = excluded.job_role, department = excluded.department, role = excluded.role, name = excluded.name, active = true;
+
+insert into raw.item_master ("품목코드", "품목명", "품목구분") values
+  ('ITEMD01', 'T7 정상 품목', '소모품'),
+  ('ITEMD02', 'T7 정상 품목 2', '소모품');
+
+select 'fixtures ok';

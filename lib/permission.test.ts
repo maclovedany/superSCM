@@ -72,7 +72,9 @@ test('STEP 19의 실제 전체 직책 권한으로 업무 메뉴를 노출한다
   assert.deepEqual([...permissions.keys()].sort(), [...JOB_ROLES].sort());
 
   const expected: Record<JobRole, string[]> = {
-    SCM_PLANNER: ['발주계획', '배정', '재고'],
+    // Task 7 — SCM 품목담당자(PLAN_CONFIRM)는 부서 취합 현황을 보고 합의를 확정하러
+    // 같은 /demand-submissions 경로로 들어갑니다(RLS가 조회·쓰기 범위를 가릅니다).
+    SCM_PLANNER: ['발주계획', '배정', '재고', '수요 제출'],
     SCM_LEAD: ['발주계획', '승인함', '재고'],
     // Task 4 — 영업은 ATP_VIEW로 /inventory에 들어가 실제 주문 가능 수량을 봅니다.
     SALES_REP: ['주문', '재고'],

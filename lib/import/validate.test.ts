@@ -53,6 +53,22 @@ test('입고는 완료 상태가 필수이며 등록된 두 값(COMPLETED/PENDIN
   assert.ok(result.issues.some((issue) => issue.code === 'REQUIRED_VALUE' && issue.fieldName === 'receipt_status'));
 });
 
+test('부서 수요 제출 줄 — 품목코드 불일치·null 수량·잘못된 필요월을 행 오류로 남긴다 (Task 7)', () => {
+  const result = validateRows('demand_line', [
+    { item_id: 'ITEM001', qty: 10, need_month: '2026-04' },
+    { item_id: 'UNKNOWN', qty: 5, need_month: '2026-04' },
+    { item_id: 'ITEM001', qty: null, need_month: '2026-04' },
+    { item_id: 'ITEM001', qty: 5, need_month: '2026-13' },
+  ], references);
+
+  assert.equal(result.summary.successRows, 1);
+  assert.ok(result.issues.some((issue) => issue.code === 'UNKNOWN_ITEM' && issue.fieldName === 'item_id'));
+  assert.ok(result.issues.some((issue) => issue.code === 'REQUIRED_VALUE' && issue.fieldName === 'qty'));
+  assert.ok(result.issues.some((issue) => issue.code === 'INVALID_DATE' && issue.fieldName === 'need_month'));
+  // 조용히 제외하지 않는다 — 원본 값은 행에 그대로 남는다.
+  assert.equal(result.rows[2].data.qty, null);
+});
+
 test('오류와 경고 행만 원본 값과 함께 CSV로 내보낸다', async () => {
   const { errorRowsToCsv } = await import('./error-csv.ts');
   const csv = errorRowsToCsv([{ rowNumber: 2, data: { item_id: 'UNKNOWN', qty: null }, issues: [{ rowNumber: 2, fieldName: 'item_id', code: 'UNKNOWN_ITEM', message: '품목 마스터에 없습니다.', severity: 'ERROR', originalValue: 'UNKNOWN' }] }]);
