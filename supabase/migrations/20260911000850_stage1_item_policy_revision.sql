@@ -8,6 +8,7 @@
 -- 여기서 만드는 것
 --   core.item_policy_revision              변경안(제안값 · 요청 시점의 기존값 · 사유 · 승인 연결)
 --   core.request_item_policy_change(...)    변경안 제출 + Task 2 승인 요청 생성(ITEM_POLICY)
+--   core.cancel_item_policy_change(...)     대기 중 변경안을 요청자 본인이 취소(fix round 1)
 --   core.apply_item_policy_decision()       승인 결정과 같은 트랜잭션에서 운영값 반영(Task 5 · 8과 같은 방식)
 --   analytics.v_item_policy_revision        변경 이력 조회 뷰
 --   analytics.v_item_policy 재정의           target_dos_approved 추가 — 값 존재가 아니라 승인 이력으로 판정
@@ -24,6 +25,15 @@
 --   "승인된 변경안이 있었다"는 사실로 판정한다. 이 마이그레이션 이전에 이미 값이 들어 있던 행이
 --   있어도 그 값은 이 승인 절차를 거치지 않았으므로 승인된 것으로 보지 않는다(임의로 승인 이력을
 --   만들지 않는다) — Task 9b가 발주 확정을 막을 때 이 플래그를 쓴다.
+--
+-- fix round 1(리뷰 반영) — 대기 중인 변경안을 요청자가 스스로 취소할 방법이 없었다(오타를 제출해도
+--   팀장이 결정할 때까지 갇힌다 — 그동안 팀장은 10분 반복 알림을 계속 받는다). 아래를 추가한다.
+--   core.cancel_item_policy_change(p_revision_id, p_reason)  요청자 본인 + ITEM_POLICY_EDIT, PENDING만
+--   status CHECK에 CANCELLED 추가, core.apply_item_policy_decision()이 CANCELLED도 처리
+--   취소는 Task 5의 core.cancel_alloc_priority_approval(approval_id, actor, comment)을 그대로 재사용한다
+--   (이름과 달리 core.approval_request/approval_event/audit_log만 다루는 범용 취소 헬퍼라 ALLOC_PRIORITY
+--   전용 로직이 없다 — 새로 만들거나 베끼지 않는다). approval_request.status가 CANCELLED로 바뀌면
+--   Task 3의 approval_notification_sync가 알아서 반복 알림(APPROVAL_PENDING)을 취소한다(직접 손대지 않는다).
 --
 -- 다시 실행해도 안전합니다. 실제 Supabase 적용은 사용자가 SQL Editor에서 수동으로 수행합니다.
 
@@ -57,7 +67,11 @@ create table if not exists core.item_policy_revision (
   requester_name               text not null check (btrim(requester_name) <> ''),
   requested_at                 timestamptz not null default clock_timestamp(),
 
-  status                       text not null default 'PENDING' check (status in ('PENDING', 'APPROVED', 'REJECTED')),
+  -- fix round 1 — CANCELLED 추가(요청자 본인 취소). 이미 이 표가 만들어진 DB에서도 재실행이
+  -- 안전하도록 아래에서 두 CHECK를 이름으로 drop/재생성한다.
+  status                       text not null default 'PENDING'
+                                  constraint item_policy_revision_status_check
+                                  check (status in ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED')),
   approval_id                  uuid references core.approval_request(approval_id) on delete restrict,
   decided_by                   uuid references auth.users(id) on delete restrict,
   decider_name                 text,
@@ -67,9 +81,23 @@ create table if not exists core.item_policy_revision (
   unique (approval_id),
   constraint item_policy_revision_decision_check check (
     (status = 'PENDING' and decided_by is null and decided_at is null and decider_name is null)
-    or (status in ('APPROVED', 'REJECTED') and decided_by is not null and decided_at is not null
+    or (status in ('APPROVED', 'REJECTED', 'CANCELLED') and decided_by is not null and decided_at is not null
         and nullif(btrim(decider_name), '') is not null)
   )
+);
+
+-- fix round 1 — 이 마이그레이션을 이미 한 번 적용한 DB(구버전 CHECK가 남아 있는 표)에도
+-- CANCELLED를 안전하게 추가한다. create table if not exists는 기존 표를 건드리지 않으므로
+-- 이 ALTER가 없으면 재적용해도 옛 CHECK가 그대로 남는다.
+alter table core.item_policy_revision drop constraint if exists item_policy_revision_status_check;
+alter table core.item_policy_revision add constraint item_policy_revision_status_check
+  check (status in ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'));
+
+alter table core.item_policy_revision drop constraint if exists item_policy_revision_decision_check;
+alter table core.item_policy_revision add constraint item_policy_revision_decision_check check (
+  (status = 'PENDING' and decided_by is null and decided_at is null and decider_name is null)
+  or (status in ('APPROVED', 'REJECTED', 'CANCELLED') and decided_by is not null and decided_at is not null
+      and nullif(btrim(decider_name), '') is not null)
 );
 
 create index if not exists item_policy_revision_item_idx on core.item_policy_revision (item_id, requested_at desc);
@@ -206,6 +234,67 @@ comment on function core.request_item_policy_change(text, numeric, text, numeric
   'Task 8 EVENT_ORDER와 같은 방식)';
 
 
+-- ══ 2b. 변경 요청 취소 — 요청자 본인(fix round 1) ════════════════
+--
+-- 오타 등으로 잘못 제출한 대기 중 변경안을 팀장 결정 없이 요청자가 스스로 취소할 수 있게 한다.
+-- 취소하지 않으면 품목당 대기 1건 제약(item_policy_revision_one_pending_idx)에 걸려 다시 제출할
+-- 수 없고, 팀장은 그동안 계속 10분 반복 알림을 받는다.
+--
+-- core.cancel_alloc_priority_approval(approval_id, actor, comment)은 이름과 달리
+-- core.approval_request · core.approval_event · core.audit_log만 갱신하는 범용 취소 헬퍼다(대상
+-- 도메인 테이블을 전혀 건드리지 않는다) — Task 5(20260911000600)의 것을 그대로 재사용한다. 새 헬퍼로
+-- 다시 뽑아내지 않은 이유: 이미 있는 함수가 정확히 필요한 일(승인 취소 + 이력 + 감사로그)만 하고,
+-- 도메인에 특화된 부분이 전혀 없어 셋째 사본을 만드는 것이 오히려 중복이기 때문이다.
+create or replace function core.cancel_item_policy_change(
+  p_revision_id uuid,
+  p_reason text
+)
+returns void
+language plpgsql
+security definer
+set search_path = core, public, pg_temp
+as $$
+declare
+  v_actor uuid := auth.uid();
+  v_revision core.item_policy_revision%rowtype;
+begin
+  if v_actor is null or not core.is_active_user(v_actor) then
+    raise exception '로그인한 활성 사용자만 품목 정책 변경안을 취소할 수 있습니다.' using errcode = '42501';
+  end if;
+  if not core.has_permission('ITEM_POLICY_EDIT', v_actor) then
+    raise exception '품목 정책 변경 요청 권한이 없습니다.' using errcode = '42501';
+  end if;
+  if nullif(btrim(p_reason), '') is null then
+    raise exception '취소 사유는 필수입니다.' using errcode = '22023';
+  end if;
+
+  select * into v_revision from core.item_policy_revision where revision_id = p_revision_id for update;
+  if not found then
+    raise exception '품목 정책 변경안을 찾을 수 없습니다.' using errcode = 'P0002';
+  end if;
+  if v_revision.requested_by <> v_actor then
+    raise exception '요청자 본인만 자신의 품목 정책 변경안을 취소할 수 있습니다.' using errcode = '42501';
+  end if;
+  if v_revision.status <> 'PENDING' then
+    raise exception '대기 중인 변경안만 취소할 수 있습니다.' using errcode = '22023';
+  end if;
+  if v_revision.approval_id is null then
+    -- request_item_policy_change가 같은 트랜잭션에서 항상 채우므로 정상 흐름에서는 발생하지 않는다.
+    raise exception '이 변경안에는 연결된 승인 요청이 없습니다.' using errcode = 'P0002';
+  end if;
+
+  -- approval_request.status를 CANCELLED로 바꾼다. 그 UPDATE가 다음을 같은 트랜잭션에서 연쇄시킨다:
+  --   Task 3 approval_notification_sync   → 대기 중인 10분 반복 알림(APPROVAL_PENDING) 취소
+  --   core.apply_item_policy_decision()   → item_policy_revision을 CANCELLED로, 운영값은 그대로 둠
+  perform core.cancel_alloc_priority_approval(v_revision.approval_id, v_actor, btrim(p_reason));
+end;
+$$;
+
+comment on function core.cancel_item_policy_change(uuid, text) is
+  'Task 9a fix round 1 — 요청자 본인이 대기 중(PENDING) 품목 정책 변경안을 취소한다. '
+  '운영값 반영 경로가 아니므로 core.item_policy는 건드리지 않는다';
+
+
 -- ══ 3. ITEM_POLICY 승인 요청 가드 ═══════════════════════════════
 --
 -- 승인대기 확보 없이 만든 우선 배정 승인과 같은 이유다 — core.request_item_policy_change가 만든
@@ -258,7 +347,10 @@ declare
   v_before jsonb;
   v_after jsonb;
 begin
-  if new.approval_type <> 'ITEM_POLICY' or old.status <> 'PENDING' or new.status not in ('APPROVED', 'REJECTED') then
+  -- fix round 1 — CANCELLED도 여기서 처리한다(core.cancel_item_policy_change가 approval_request를
+  -- CANCELLED로 바꾸면 이 트리거가 걸린다). 그전에는 이 WHEN에서 걸러지지 않아 item_policy_revision이
+  -- 영원히 PENDING으로 남았다(요청자가 새로 요청할 수 없었다).
+  if new.approval_type <> 'ITEM_POLICY' or old.status <> 'PENDING' or new.status not in ('APPROVED', 'REJECTED', 'CANCELLED') then
     return new;
   end if;
 
@@ -310,11 +402,20 @@ begin
     'ITEM_POLICY_DECIDED',
     array[new.requested_by],
     jsonb_build_object(
-      'title', case new.status when 'APPROVED' then '품목 정책 변경이 승인되었습니다' else '품목 정책 변경이 반려되었습니다' end,
+      'title', case new.status
+                 when 'APPROVED' then '품목 정책 변경이 승인되었습니다'
+                 when 'REJECTED' then '품목 정책 변경이 반려되었습니다'
+                 else '품목 정책 변경 요청이 취소되었습니다'
+               end,
+      -- fix round 1 — CANCELLED는 요청자 본인이 취소한 것이라 "팀장 의견"이 아니라 "처리 의견"으로 둔다.
       'message', format(
-        '품목 %s · 결과 %s · 팀장 의견: %s',
+        '품목 %s · 결과 %s · 처리 의견: %s',
         v_revision.item_id,
-        case new.status when 'APPROVED' then '승인(운영값 반영)' else '반려(운영값 유지)' end,
+        case new.status
+          when 'APPROVED' then '승인(운영값 반영)'
+          when 'REJECTED' then '반려(운영값 유지)'
+          else '취소(운영값 유지)'
+        end,
         coalesce(nullif(btrim(new.decision_comment), ''), '없음')
       ),
       'target_id', v_revision.item_id,
@@ -437,6 +538,8 @@ grant select on analytics.v_item_policy to authenticated;
 
 revoke all on function core.request_item_policy_change(text, numeric, text, numeric, numeric, numeric, numeric, numeric, text) from public, anon;
 grant execute on function core.request_item_policy_change(text, numeric, text, numeric, numeric, numeric, numeric, numeric, text) to authenticated;
+revoke all on function core.cancel_item_policy_change(uuid, text) from public, anon;
+grant execute on function core.cancel_item_policy_change(uuid, text) to authenticated;
 revoke all on function core.guard_item_policy_approval_request() from public, anon, authenticated;
 revoke all on function core.apply_item_policy_decision() from public, anon, authenticated;
 

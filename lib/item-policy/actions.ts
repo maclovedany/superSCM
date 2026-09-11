@@ -10,8 +10,8 @@
 
 import { revalidatePath } from 'next/cache';
 import { requirePermission } from '../auth';
-import { validateRequestItemPolicyChange } from './model';
-import { requestItemPolicyChange } from './repository';
+import { validateCancelItemPolicyChange, validateRequestItemPolicyChange } from './model';
+import { cancelItemPolicyChange, requestItemPolicyChange } from './repository';
 
 export type ItemPolicyActionState = { error: string | null; success: string | null };
 
@@ -47,4 +47,23 @@ export async function requestItemPolicyChangeAction(
     error: null,
     success: 'SCM팀장에게 승인을 요청했습니다. 승인 전까지 운영값은 바뀌지 않고, 반려되면 사유만 이력에 남습니다.',
   };
+}
+
+/** fix round 1 — 요청자 본인이 대기 중(PENDING)인 자신의 변경안을 취소한다(승인·반려 대상 아님) */
+export async function cancelItemPolicyChangeAction(
+  _previousState: ItemPolicyActionState,
+  formData: FormData,
+): Promise<ItemPolicyActionState> {
+  await requirePermission('ITEM_POLICY_EDIT');
+  const validation = validateCancelItemPolicyChange({
+    revisionId: formData.get('revisionId'),
+    reason: formData.get('reason'),
+  });
+  if (!validation.ok) return { error: validation.message, success: null };
+
+  const result = await cancelItemPolicyChange(validation.value);
+  if (result.error) return { error: result.error, success: null };
+
+  revalidateItemPolicyScreens();
+  return { error: null, success: '변경안을 취소했습니다. 같은 품목으로 다시 제출할 수 있습니다.' };
 }

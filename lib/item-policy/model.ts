@@ -229,3 +229,33 @@ export function validateRequestItemPolicyChange(input: {
     },
   };
 }
+
+// ══ 변경안 취소 — 요청자 본인(fix round 1) ═══════════════════════
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export type ValidatedCancelItemPolicyChange = {
+  revisionId: string;
+  reason: string;
+};
+
+export type CancelItemPolicyChangeReasonCode = 'REVISION_ID_INVALID' | 'REASON_REQUIRED';
+
+/**
+ * 대기 중인 품목 정책 변경안 취소 입력 검증 — 순수 함수.
+ *
+ * ★ 소유권(요청자 본인인가) · 상태(PENDING인가)는 여기서 판정하지 않는다. DB 명령 함수
+ *   (core.cancel_item_policy_change)가 다시 확인한다 — 화면은 형식만 걸러낸다.
+ */
+export function validateCancelItemPolicyChange(input: {
+  revisionId: unknown;
+  reason: unknown;
+}): Result<ValidatedCancelItemPolicyChange, CancelItemPolicyChangeReasonCode> {
+  const revisionId = trimmed(input.revisionId);
+  if (!UUID_PATTERN.test(revisionId)) return fail('REVISION_ID_INVALID', '올바른 변경안 ID가 필요합니다.');
+
+  const reason = trimmed(input.reason);
+  if (reason === '') return fail('REASON_REQUIRED', '취소 사유를 입력하세요.');
+
+  return { ok: true, value: { revisionId, reason } };
+}

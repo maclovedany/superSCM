@@ -1,9 +1,10 @@
 // 품목 정책 변경 요청 저장소 — Task 9a
 //
-// ★ 조회는 analytics 뷰만, 변경은 core.request_item_policy_change(RPC) 하나만 쓴다. 승인·반려는
-//   이 도메인에서 만들지 않는다 — 공통 승인함(lib/approvals · core.decide_approval)을 그대로 쓴다.
-// ★ 여기서 권한·검증을 판정하지 않는다. DB 명령 함수가 로그인 · ITEM_POLICY_EDIT 권한 · 대기 중인
-//   변경안 중복 여부를 스스로 확인한다. 이 파일은 DB 결과와 오류 문구를 그대로 돌려준다.
+// ★ 조회는 analytics 뷰만, 변경은 core.request_item_policy_change · core.cancel_item_policy_change
+//   (RPC) 만 쓴다. 승인·반려는 이 도메인에서 만들지 않는다 — 공통 승인함(lib/approvals ·
+//   core.decide_approval)을 그대로 쓴다.
+// ★ 여기서 권한·검증을 판정하지 않는다. DB 명령 함수가 로그인 · ITEM_POLICY_EDIT 권한 · 요청자
+//   본인 여부 · 상태(PENDING)를 스스로 확인한다. 이 파일은 DB 결과와 오류 문구를 그대로 돌려준다.
 
 import { createSupabaseServerClient } from '../supabase/server';
 import {
@@ -77,5 +78,23 @@ export async function requestItemPolicyChange(input: {
     return { data: data ? String(data) : null, error: null };
   } catch (error) {
     return { data: null, error: errorMessage(error, '품목 정책 변경 요청을 저장하지 못했습니다.') };
+  }
+}
+
+/** 요청자 본인(ITEM_POLICY_EDIT) — 대기 중(PENDING)인 자신의 변경안을 취소한다(fix round 1) */
+export async function cancelItemPolicyChange(input: {
+  revisionId: string;
+  reason: string;
+}): Promise<ItemPolicyMutationResult<null>> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { error } = await supabase.schema('core').rpc('cancel_item_policy_change', {
+      p_revision_id: input.revisionId,
+      p_reason: input.reason,
+    });
+    if (error) return { data: null, error: error.message };
+    return { data: null, error: null };
+  } catch (error) {
+    return { data: null, error: errorMessage(error, '품목 정책 변경안을 취소하지 못했습니다.') };
   }
 }

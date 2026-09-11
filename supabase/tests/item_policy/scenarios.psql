@@ -272,3 +272,93 @@ select itempolicy_test.check(
   'S12 요청 권한(ITEM_POLICY_EDIT)이 있으면 자신이 요청·결정하지 않은 변경 이력도 조회할 수 있다(승인함과 같은 범위)'
 );
 reset role;
+
+
+-- fix round 1 (리뷰 반영) — 요청자 본인 취소. S6에서 만든 item3의 대기 변경안(dualrole1 요청,
+-- 아직 결정되지 않음, revision s6_revision_id / approval s6_approval_id)을 재사용한다.
+
+\echo '== S13 취소 — 요청자 본인이 아니면 거절된다 =='
+set role authenticated;
+select itempolicy_test.as_user(:'planner1') \g /dev/null
+select itempolicy_test.expect_error(
+  format($f$select core.cancel_item_policy_change(%L, '내가 취소해본다')$f$, :'s6_revision_id'),
+  '요청자 본인만 자신의 품목 정책 변경안을 취소할 수 있습니다', 'S13 요청자가 아니면(ITEM_POLICY_EDIT 권한이 있어도) 취소할 수 없다'
+);
+reset role;
+
+
+\echo '== S14 취소 — 사유 필수, 대기 중인 자신의 변경안만 취소할 수 있다 =='
+set role authenticated;
+select itempolicy_test.as_user(:'dualrole1') \g /dev/null
+select itempolicy_test.expect_error(
+  format($f$select core.cancel_item_policy_change(%L, '')$f$, :'s6_revision_id'),
+  '취소 사유는 필수입니다', 'S14 취소 사유 없이는 취소할 수 없다'
+);
+-- 취소 전 대기 중인 10분 반복 알림(APPROVAL_PENDING)이 있는지 먼저 확인한다.
+reset role;
+select itempolicy_test.check(
+  (select count(*) > 0 from core.notification_outbox
+    where template_code = 'APPROVAL_PENDING' and status = 'PENDING'
+      and payload ->> 'approval_id' = :'s6_approval_id'),
+  'S14 취소 전에는 대기 중인 10분 반복 알림(팀장 몫)이 있다'
+);
+set role authenticated;
+select itempolicy_test.as_user(:'dualrole1') \g /dev/null
+select core.cancel_item_policy_change(:'s6_revision_id', '오타를 발견해 취소합니다');
+reset role;
+select itempolicy_test.check(
+  (select status = 'CANCELLED' from core.approval_request where approval_id = :'s6_approval_id'),
+  'S14 취소되면 연결된 승인 요청도 CANCELLED로 바뀐다'
+);
+select itempolicy_test.check(
+  (select status = 'CANCELLED' and decision_comment = '오타를 발견해 취소합니다'
+     from core.item_policy_revision where revision_id = :'s6_revision_id'),
+  'S14 취소되면 변경안 상태도 CANCELLED로 바뀌고(이전에는 PENDING에 영원히 갇혔다) 사유가 남는다'
+);
+select itempolicy_test.check(
+  (select count(*) = 0 from core.notification_outbox
+    where template_code = 'APPROVAL_PENDING' and status = 'PENDING'
+      and payload ->> 'approval_id' = :'s6_approval_id'),
+  'S14 취소되면 대기 중인 10분 반복 알림이 모두 취소된다(Task 3 approval_notification_sync)'
+);
+select itempolicy_test.check(
+  (select target_dos_days is null and allocation_mode = 'AUTO' from core.item_policy where item_id = :'item3'),
+  'S14 취소는 운영값을 건드리지 않는다'
+);
+select itempolicy_test.check(
+  (select target_dos_approved = false from analytics.v_item_policy where item_id = :'item3'),
+  'S14 취소된 변경안은 target_dos_approved에 영향을 주지 않는다'
+);
+
+
+\echo '== S15 취소 후에는 같은 품목에 새로 요청할 수 있다(대기 1건 제약이 풀린다) =='
+set role authenticated;
+select itempolicy_test.as_user(:'dualrole1') \g /dev/null
+select core.request_item_policy_change(:'item3', 25, 'AUTO', null, null, null, null, null, '재요청') as s15_revision_id \gset
+reset role;
+select itempolicy_test.check(:'s15_revision_id' is not null, 'S15 취소 후 같은 품목에 새 변경안을 제출할 수 있다');
+
+
+\echo '== S16 팀장은 취소된 요청을 승인할 수 없다 =='
+set role authenticated;
+select itempolicy_test.as_user(:'lead1') \g /dev/null
+select itempolicy_test.expect_error(
+  format($f$select core.decide_approval(%L, 'APPROVED', '뒤늦은 승인 시도')$f$, :'s6_approval_id'),
+  '이미 처리되었거나 취소된 승인 요청입니다', 'S16 이미 취소된 승인 요청은 팀장도 승인할 수 없다'
+);
+reset role;
+
+
+\echo '== S17 이미 결정된(APPROVED · REJECTED) 변경안은 취소할 수 없다 =='
+set role authenticated;
+-- s3_revision_id(item1, S8에서 APPROVED)와 s9_revision_id(item2, S9에서 REJECTED)를 재사용한다.
+select itempolicy_test.as_user(:'planner1') \g /dev/null
+select itempolicy_test.expect_error(
+  format($f$select core.cancel_item_policy_change(%L, '뒤늦은 취소 시도')$f$, :'s3_revision_id'),
+  '대기 중인 변경안만 취소할 수 있습니다', 'S17 이미 승인된 변경안은 취소할 수 없다'
+);
+select itempolicy_test.expect_error(
+  format($f$select core.cancel_item_policy_change(%L, '뒤늦은 취소 시도')$f$, :'s9_revision_id'),
+  '대기 중인 변경안만 취소할 수 있습니다', 'S17 이미 반려된 변경안은 취소할 수 없다'
+);
+reset role;

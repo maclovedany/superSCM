@@ -9,28 +9,16 @@ import DataTable, { type Column } from '@/components/ui/data-table';
 import EmptyValue from '@/components/ui/empty-value';
 import Badge from '@/components/ui/badge';
 import ItemPolicyChangeForm from '@/components/procurement/item-policy-form';
+import ItemPolicyRevisionTable from '@/components/procurement/item-policy-revision-table';
 import { getPermissions, requireAnyPermission } from '@/lib/auth';
 import { WORK_ROUTE_PERMISSIONS } from '@/lib/permission';
 import { getItemPolicies, getItemPolicyRevisions } from '@/lib/item-policy/repository';
-import type { ItemPolicy, ItemPolicyRevision } from '@/lib/item-policy/model';
+import type { ItemPolicy } from '@/lib/item-policy/model';
 
 export const dynamic = 'force-dynamic';
 
 function formatQty(value: number | null): string | null {
   return value === null ? null : value.toLocaleString('ko-KR');
-}
-
-function formatDateTime(value: string | null): string {
-  if (!value) return '—';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', dateStyle: 'medium', timeStyle: 'short' }).format(date);
-}
-
-function allocationModeLabel(mode: 'AUTO' | 'MANUAL' | null): string {
-  if (mode === 'MANUAL') return '수동';
-  if (mode === 'AUTO') return '자동';
-  return '—';
 }
 
 const policyColumns: Column<ItemPolicy>[] = [
@@ -59,43 +47,8 @@ const policyColumns: Column<ItemPolicy>[] = [
   { key: 'minOrderAmount', label: '최소주문금액', align: 'right', render: (row) => formatQty(row.minOrderAmount) ?? <span className="muted">— (저장만)</span> },
 ];
 
-const revisionColumns: Column<ItemPolicyRevision>[] = [
-  {
-    key: 'itemId', label: '품목',
-    render: (row) => <><b>{row.itemId}</b><br /><span className="muted">{row.itemName ?? '—'}</span></>,
-  },
-  {
-    key: 'status', label: '상태', align: 'center',
-    render: (row) => {
-      if (row.status === 'PENDING') return <Badge status="WARNING">승인 대기</Badge>;
-      if (row.status === 'APPROVED') return <Badge status="SAFE">승인됨</Badge>;
-      if (row.status === 'REJECTED') return <Badge status="CRITICAL">반려됨</Badge>;
-      return <Badge status="CALCULATION_UNAVAILABLE">취소됨</Badge>;
-    },
-  },
-  {
-    key: 'proposedTargetDosDays', label: '목표 DoS 제안', align: 'right',
-    render: (row) => <>{formatQty(row.proposedTargetDosDays) ?? '변경 없음'}<span className="muted"> (기존 {formatQty(row.previousTargetDosDays) ?? '—'})</span></>,
-  },
-  {
-    key: 'proposedAllocationMode', label: '배정 방식 제안', align: 'center',
-    render: (row) => <>{allocationModeLabel(row.proposedAllocationMode)}<span className="muted"> (기존 {allocationModeLabel(row.previousAllocationMode)})</span></>,
-  },
-  { key: 'reason', label: '변경 사유', render: (row) => row.reason },
-  {
-    key: 'requesterName', label: '요청',
-    render: (row) => <>{row.requesterName}<br /><span className="muted">{formatDateTime(row.requestedAt)}</span></>,
-  },
-  {
-    key: 'deciderName', label: '처리',
-    render: (row) => row.deciderName
-      ? <>{row.deciderName}<br /><span className="muted">{formatDateTime(row.decidedAt)}</span></>
-      : <span className="muted">대기 중</span>,
-  },
-];
-
 export default async function ItemPoliciesPage() {
-  await requireAnyPermission(...WORK_ROUTE_PERMISSIONS['/procurement-plans/item-policies']);
+  const current = await requireAnyPermission(...WORK_ROUTE_PERMISSIONS['/procurement-plans/item-policies']);
   const permissions = await getPermissions();
 
   const [{ rows: policies, error: policyError }, { rows: revisions, error: revisionError }] = await Promise.all([
@@ -128,14 +81,14 @@ export default async function ItemPoliciesPage() {
           )}
         </Panel>
 
-        <Panel title="변경 요청 이력" description="대기 · 승인 · 반려 전체 이력입니다. 반려되면 기존 운영값이 유지된 채로 사유만 남습니다.">
+        <Panel title="변경 요청 이력" description="대기 · 승인 · 반려 · 취소 전체 이력입니다. 반려·취소되면 기존 운영값이 유지된 채로 사유만 남습니다. 대기 중인 자신의 변경안은 취소할 수 있습니다.">
           {revisionError ? (
             <>
               <p className="text-danger">조회에 실패했습니다.</p>
               <p className="muted">{revisionError}</p>
             </>
           ) : (
-            <DataTable columns={revisionColumns} rows={revisions} rowKey={(row) => row.revisionId} empty="변경 요청 이력이 없습니다." />
+            <ItemPolicyRevisionTable rows={revisions} currentUserId={current.profile.userId} />
           )}
         </Panel>
       </div>

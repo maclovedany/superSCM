@@ -3,8 +3,10 @@ import test from 'node:test';
 
 import {
   ITEM_POLICY_ALLOCATION_MODES,
+  ITEM_POLICY_REVISION_STATUSES,
   normalizeItemPolicy,
   normalizeItemPolicyRevisionRow,
+  validateCancelItemPolicyChange,
   validateRequestItemPolicyChange,
 } from './model.ts';
 
@@ -218,4 +220,46 @@ test('변경 이력 행 정규화 — 알 수 없는 status는 PENDING으로 보
     approval_id: null, status: 'UNKNOWN_STATUS', decided_by: null, decider_name: null, decided_at: null, decision_comment: null,
   });
   assert.equal(row.status, 'PENDING');
+});
+
+test('변경 이력 행 정규화 — CANCELLED 상태를 그대로 옮긴다(fix round 1)', () => {
+  const row = normalizeItemPolicyRevisionRow({
+    revision_id: 'r-3', item_id: 'ITEM001', item_name: null,
+    proposed_target_dos_days: 30, proposed_allocation_mode: 'AUTO', proposed_target_stock_qty: null,
+    proposed_unit_price: null, proposed_moq: null, proposed_pack_size: null, proposed_min_order_amount: null,
+    previous_target_dos_days: null, previous_allocation_mode: 'AUTO', previous_target_stock_qty: null,
+    previous_unit_price: null, previous_moq: null, previous_pack_size: null, previous_min_order_amount: null,
+    reason: '오타 수정', requested_by: 'u-1', requester_name: '요청자', requested_at: '2026-05-01T00:00:00Z',
+    approval_id: 'a-3', status: 'CANCELLED', decided_by: 'u-1', decider_name: '요청자', decided_at: '2026-05-01T00:10:00Z',
+    decision_comment: '오타 발견',
+  });
+  assert.equal(row.status, 'CANCELLED');
+  assert.equal(row.decisionComment, '오타 발견');
+});
+
+// ══ ITEM_POLICY_REVISION_STATUSES · validateCancelItemPolicyChange(fix round 1) ══════
+
+test('변경안 상태는 PENDING · APPROVED · REJECTED · CANCELLED 네 가지다', () => {
+  assert.deepEqual(ITEM_POLICY_REVISION_STATUSES, ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED']);
+});
+
+test('취소 요청 검증 — 정상 입력은 통과한다', () => {
+  const result = validateCancelItemPolicyChange({ revisionId: 'b1c104fb-e176-4e24-809e-bf3f86b754bc', reason: '오타를 발견해 취소합니다' });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.value, { revisionId: 'b1c104fb-e176-4e24-809e-bf3f86b754bc', reason: '오타를 발견해 취소합니다' });
+});
+
+test('취소 요청 검증 — revisionId가 UUID 형식이 아니면 거절', () => {
+  const result = validateCancelItemPolicyChange({ revisionId: 'not-a-uuid', reason: '사유' });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.reasonCode, 'REVISION_ID_INVALID');
+});
+
+test('취소 요청 검증 — 사유가 없으면 거절(누가·언제·왜 취소했는지 이력에 남아야 한다)', () => {
+  const result = validateCancelItemPolicyChange({ revisionId: 'b1c104fb-e176-4e24-809e-bf3f86b754bc', reason: '   ' });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.reasonCode, 'REASON_REQUIRED');
 });
