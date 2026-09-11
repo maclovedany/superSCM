@@ -232,6 +232,8 @@ test('반복 알림의 다음 10분 회차는 개별 채널 발송 성공 여부
   assert.match(sql, /v_is_recurring\s*:=\s*v_notice\.template_code\s+in\s*\(\s*'APPROVAL_PENDING',\s*'DEMAND_SUBMISSION_OVERDUE'\s*\)/i);
   assert.match(sql, /v_retry_scheduled\s*:=\s*not p_success[\s\S]{0,180}not v_is_recurring/i);
   assert.match(sql, /v_notice\.template_code\s*=\s*'APPROVAL_PENDING'[\s\S]{0,700}interval '10 minutes'/i);
+  assert.match(sql, /date_bin\(\s*interval '10 minutes',\s*clock_timestamp\(\)/i);
+  assert.doesNotMatch(sql, /greatest\(v_notice\.scheduled_at\s*\+\s*interval '10 minutes',\s*clock_timestamp\(\)\s*\+\s*interval '10 minutes'\)/i);
   assert.doesNotMatch(sql, /if\s+p_success\s+and\s+v_notice\.template_code\s*=\s*'APPROVAL_PENDING'/i);
   assert.match(sql, /attempt_count,\s*v_retry_scheduled,/i);
 });

@@ -881,13 +881,17 @@ begin
         where r.approval_id::text = v_notice.payload ->> 'approval_id'
           and r.status = 'PENDING'
      ) then
-    v_next_at := greatest(v_notice.scheduled_at + interval '10 minutes', clock_timestamp() + interval '10 minutes');
+    v_next_at := date_bin(
+      interval '10 minutes', clock_timestamp(), timestamptz '2000-01-01 00:00:00+00'
+    ) + interval '10 minutes';
     perform core.enqueue_notification(
       'approval:' || (v_notice.payload ->> 'approval_id') || ':pending:' || extract(epoch from v_next_at)::bigint,
       'APPROVAL_PENDING', v_notice.recipient_user_id, v_notice.channel, v_next_at, v_notice.payload
     );
   elsif v_notice.template_code = 'DEMAND_SUBMISSION_OVERDUE' then
-    v_next_at := greatest(v_notice.scheduled_at + interval '10 minutes', clock_timestamp() + interval '10 minutes');
+    v_next_at := date_bin(
+      interval '10 minutes', clock_timestamp(), timestamptz '2000-01-01 00:00:00+00'
+    ) + interval '10 minutes';
     perform core.enqueue_notification(
       'demand:' || (v_notice.payload ->> 'series_id') || ':overdue:' || extract(epoch from v_next_at)::bigint,
       'DEMAND_SUBMISSION_OVERDUE', v_notice.recipient_user_id, v_notice.channel, v_next_at, v_notice.payload
