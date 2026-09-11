@@ -435,3 +435,70 @@ select core.decide_approval(:'ap5', 'APPROVED', '승인대기 확보는 시간 �
 reset role;
 select order_test.check((select count(*) filter (where status = 'FIRM') = 2 and sum(qty) filter (where status = 'FIRM') = 15
   from core.stock_allocation where order_id = :'ex'), 'S9 만료 뒤 확보 승인 → FIRM 전환 허용 (수동 10 + 승인 5)');
+
+\echo '== S10 만료 뒤 FIRM · 확보만 남은 주문은 수주 확정, 임시배정이 남아 있으면 거절 (ITEMT11) =='
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select core.create_sales_order(null, '고객 FA', '[{"item_id":"ITEMT11","qty":50}]'::jsonb) as fa \gset
+select core.create_sales_order(null, '고객 FB', '[{"item_id":"ITEMT11","qty":40}]'::jsonb) as fb \gset
+reset role;
+-- 테스트 전용 경로(S9와 같음): 최초 검토 요청 시각을 처음 한 번 소급 기록해 5초 뒤 만료되는 주문 두 건을 만든다.
+update core.sales_order o
+   set status = 'REVIEW_REQUESTED', allocation_choice = 'PARTIAL', allocation_choice_by = :'sales1',
+       first_review_requested_at = t.review_at, temporary_expires_at = t.review_at + interval '30 days'
+  from (select clock_timestamp() - interval '30 days' + interval '5 seconds' as review_at) t
+ where o.order_id in (:'fa', :'fb');
+select core.log_sales_order_event(o.order_id, 'REVIEW_REQUESTED', 'DRAFT', 'REVIEW_REQUESTED', :'sales1', '검증용 최초 검토 요청 시각 소급', '{}'::jsonb)
+  from core.sales_order o where o.order_id in (:'fa', :'fb') \g /dev/null
+select core.apply_sales_order_status(o.order_id) from core.sales_order o where o.order_id in (:'fa', :'fb') \g /dev/null
+select line_id as fa_line from core.sales_order_line where order_id = :'fa' \gset
+select line_id as fb_line from core.sales_order_line where order_id = :'fb' \gset
+select order_test.check(core.allocate_to_order_line(:'fb_line', 20, 'RECEIPT', null) = 20, 'S10 만료 전 FB 임시배정 20 (FA는 임시배정 없음)');
+select pg_sleep(greatest(0, extract(epoch from ((select max(temporary_expires_at) from core.sales_order where order_id in (:'fa', :'fb')) - clock_timestamp()))) + 0.5) \g /dev/null
+select order_test.check((select bool_and(clock_timestamp() >= temporary_expires_at) from core.sales_order where order_id in (:'fa', :'fb')), 'S10 두 주문 모두 만료 시각 경과');
+
+-- (a) 만료 뒤, 수동 FIRM만 남은 주문 → 수주 확정 성공, 임시배정은 생기지 않는다
+set role authenticated;
+select order_test.as_user(:'planner1') \g /dev/null
+select core.request_manual_allocation(:'fa', 'ITEMT11', 30, null) ->> 'allocation_status' as fa_manual \gset
+select order_test.check(:'fa_manual' = 'FIRM', 'S10 (a) 만료 뒤 FA 정상 순서 수동 FIRM 30');
+select order_test.as_user(:'sales1') \g /dev/null
+select core.confirm_sales_order(:'fa', 'ERP-FIRM-ONLY') \g /dev/null
+reset role;
+select order_test.check((select status = 'CONFIRMED' and confirmed_order_no = 'ERP-FIRM-ONLY' and clock_timestamp() >= temporary_expires_at
+  from core.sales_order where order_id = :'fa'), 'S10 (a) 만료 뒤라도 임시배정 없이 FIRM만 남은 주문은 수주 확정');
+select order_test.check((select shortage_qty = 20 and firm_allocated_qty = 30 and temporary_allocated_qty = 0 from core.sales_order_line where order_id = :'fa'),
+  'S10 (a) 최종 번호 기록 · FIRM 30 · 부족 20');
+select order_test.check((select count(*) from core.v_allocation_queue_line where order_id = :'fa' and queue_rank is not null) = 1, 'S10 (a) 확정 주문의 부족 20은 대기열에 남는다');
+select order_test.check(core.allocate_to_order_line(:'fa_line', 10, 'RECEIPT', null) = 10, 'S10 (a) 확정 뒤 후속 배정 10');
+select order_test.check((select count(*) filter (where status = 'TEMPORARY') = 0 and count(*) filter (where status = 'FIRM') = 2
+  and not exists (select 1 from core.stock_allocation_event e where e.order_id = :'fa' and e.next_status = 'TEMPORARY')
+  from core.stock_allocation where order_id = :'fa'), 'S10 (a) FA에는 임시배정이 한 건도 생기지 않았고 후속 배정도 FIRM');
+
+-- (b) 만료 뒤, 임시배정과 FIRM이 함께 남은 주문 → 수주 확정 거절
+set role authenticated;
+select order_test.as_user(:'bizdev') \g /dev/null
+select core.change_allocation_priority(:'fb', 1, '만료 주문 확정 검증') \g /dev/null
+select order_test.as_user(:'planner1') \g /dev/null
+select core.request_manual_allocation(:'fb', 'ITEMT11', 10, null) ->> 'allocation_status' as fb_manual \gset
+select order_test.check(:'fb_manual' = 'FIRM', 'S10 (b) 우선순위 1인 FB 정상 순서 수동 FIRM 10');
+select order_test.as_user(:'sales1') \g /dev/null
+select order_test.expect_error(format('select core.confirm_sales_order(%L, %L)', :'fb', 'ERP-FB'), 'TEMPORARY_ALLOCATION_EXPIRED',
+  'S10 (b) 만료 뒤 임시배정 20 · FIRM 10이 함께 남은 주문은 수주 확정 거절');
+reset role;
+select order_test.check((select o.status <> 'CONFIRMED' and l.temporary_allocated_qty = 20 and l.firm_allocated_qty = 10
+  from core.sales_order o join core.sales_order_line l using (order_id) where o.order_id = :'fb'), 'S10 (b) 거절 뒤 주문 · 임시 20 · FIRM 10 그대로');
+
+-- (c) 같은 주문의 만료 임시배정을 기존 해제 경로로 푼 뒤(Task 6 자동 해제 대역) → 수주 확정 성공
+select allocation_id as fb_temp from core.stock_allocation where order_id = :'fb' and status = 'TEMPORARY' \gset
+select core.transition_stock_allocation(:'fb_temp', 'RELEASED', null, '임시배정 만료 자동 해제(검증 대역)', 'EXPIRED') \g /dev/null
+select core.apply_sales_order_status(:'fb') \g /dev/null
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select core.confirm_sales_order(:'fb', 'ERP-FB') \g /dev/null
+reset role;
+select order_test.check((select o.status = 'CONFIRMED' and o.confirmed_order_no = 'ERP-FB' and l.temporary_allocated_qty = 0 and l.firm_allocated_qty = 10
+  and l.shortage_qty = 30 from core.sales_order o join core.sales_order_line l using (order_id) where o.order_id = :'fb'),
+  'S10 (c) 만료 임시배정 해제 뒤에는 FIRM 10만 남은 주문으로 수주 확정 · 부족 30 대기');
+select order_test.check((select status = 'RELEASED' and release_reason = '임시배정 만료 자동 해제(검증 대역)' from core.stock_allocation where allocation_id = :'fb_temp'),
+  'S10 (c) 해제된 임시배정은 확정으로 전환되지 않고 RELEASED 유지');

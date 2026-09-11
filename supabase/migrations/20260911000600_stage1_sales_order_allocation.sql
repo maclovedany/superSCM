@@ -33,8 +33,9 @@
 --   core.allocate_to_order_line(p_line_id, p_max_qty, p_source, p_actor)   주문 품목 1건 후속 배정
 --     ★ 확정 전 주문의 만료 시각이 지났으면 TEMPORARY_ALLOCATION_EXPIRED로 거절한다(예외 — 트랜잭션 전체가
 --       되돌려진다). 신규 입고 배정은 대기열에서 만료된 확정 전 주문을 먼저 해제하거나 건너뛰어야 한다.
---   만료 시각 이후에는 임시배정 생성 · 임시 → 확정 전환 · 수주 확정을 모두 거절한다. 수동 FIRM과 승인대기
---   확보(생성 · 승인)는 시간 제한이 없다(stage1 §2 68 · 83행).
+--   만료 시각 이후에는 임시배정 생성과 임시 → 확정 전환을 거절하고, 해제되지 않은 임시배정이 남은 주문의 수주
+--   확정도 거절한다. 남은 배정이 FIRM · 승인대기 확보뿐인 주문은 만료 뒤에도 확정할 수 있다. 수동 FIRM과 승인대기
+--   확보(생성 · 승인)는 시간 제한이 없다(stage1 §2 68 · 83 · 97행).
 --   core.transition_stock_allocation(p_allocation_id, p_next_status, p_actor, p_reason, p_cause, p_payload)
 --   core.apply_sales_order_status(p_order_id)                               주문 상태 재계산
 --   core.log_sales_order_event(p_order_id, p_event_type, ...)               주문 이력
@@ -1438,10 +1439,17 @@ begin
   if v_order.status not in ('REVIEW_REQUESTED', 'PARTIALLY_ALLOCATED', 'WAITING_FULL') then
     raise exception '검토 요청 이후 확정 전 주문만 수주 확정할 수 있습니다 (현재 %).', v_order.status using errcode = '22023';
   end if;
-  -- 만료 시각이 지나면 임시배정은 이미 효력이 없다. 확정해 FIRM(만료 없음)으로 바꾸면 30일 규칙을 우회하므로,
-  -- 자동 해제 작업(Task 6)이 늦게 돌더라도 여기서 막는다 (stage1 §2 44 · 46행).
-  if clock_timestamp() >= v_order.temporary_expires_at then
-    raise exception 'TEMPORARY_ALLOCATION_EXPIRED: 임시배정 만료 시각(%)이 지난 주문은 수주 확정할 수 없습니다. 새 주문으로 재등록합니다.',
+  -- 만료 시각이 지나면 임시배정은 이미 효력이 없다. 해제되지 않은 임시배정이 남은 채 확정해 FIRM(만료 없음)으로
+  -- 바꾸면 30일 규칙을 우회하므로, 자동 해제 작업(Task 6)이 늦게 돌더라도 여기서 막는다 (stage1 §2 44 · 46행).
+  -- 30일 규칙은 임시배정에만 적용된다(68 · 97행). 남은 배정이 FIRM · 승인대기 확보뿐이면 만료 뒤에도 확정할 수 있다.
+  if clock_timestamp() >= v_order.temporary_expires_at
+     and exists (
+       select 1
+         from core.stock_allocation a
+        where a.order_id = p_order_id
+          and a.status = 'TEMPORARY'
+     ) then
+    raise exception 'TEMPORARY_ALLOCATION_EXPIRED: 임시배정 만료 시각(%)이 지나 해제되지 않은 임시배정이 남은 주문은 수주 확정할 수 없습니다. 만료 임시배정이 해제된 뒤 FIRM · 확보만 남으면 확정할 수 있습니다.',
       v_order.temporary_expires_at using errcode = '55000';
   end if;
   if exists (

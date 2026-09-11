@@ -530,6 +530,11 @@ test('만료 시각이 지난 확정 전 주문은 임시배정 생성 · 확정
     '전환 차단은 TEMPORARY → FIRM에만 적용합니다(해제는 언제든 허용).',
   );
   assert.match(functionDefinition(sql, 'allocate_to_order_line'), /v_order\.status <> 'CONFIRMED'[\s\S]{0,300}TEMPORARY_ALLOCATION_EXPIRED/, '확정 주문의 FIRM 후속 배정은 만료와 무관합니다.');
+  assert.match(
+    functionDefinition(sql, 'confirm_sales_order'),
+    /clock_timestamp\(\) >= v_order\.temporary_expires_at\s+and exists \([\s\S]{0,200}a\.status = 'TEMPORARY'[\s\S]{0,300}TEMPORARY_ALLOCATION_EXPIRED/,
+    '수주 확정은 만료 시각 뒤에도 해제되지 않은 임시배정이 남아 있을 때만 거절합니다(FIRM · 확보만 남은 주문은 확정 가능).',
+  );
   for (const name of ['request_manual_allocation', 'apply_alloc_priority_decision', 'cancel_sales_order', 'cancel_firm_allocation']) {
     assert.doesNotMatch(functionDefinition(sql, name), /TEMPORARY_ALLOCATION_EXPIRED/, `${name}에는 시간 제한이 없습니다(stage1 §2 68 · 83행).`);
   }
@@ -552,7 +557,7 @@ test('주문 · 배정 DB 검증 스크립트는 저장소에 있고 로컬 임�
     assert.doesNotMatch(readFileSync(new URL(file, base), 'utf8'), /PGPASSWORD=|password\s*=|supabase\.co|sb_secret_|postgres(ql)?:\/\//i, `${file}에 접속 정보가 있으면 안 됩니다.`);
   }
   const scenarios = readFileSync(new URL('scenarios.psql', base), 'utf8');
-  for (const scenario of ['S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9']) assert.match(scenarios, new RegExp(`== ${scenario} `));
+  for (const scenario of ['S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10']) assert.match(scenarios, new RegExp(`== ${scenario} `));
   assert.match(scenarios, /TEMPORARY_ALLOCATION_EXPIRED/);
   assert.match(readFileSync(new URL('run-all.sh', base), 'utf8'), /trap cleanup EXIT/);
   // supabase test db(pg_prove)가 이 폴더의 .sql을 테스트로 실행하지 않도록 .sql 파일을 두지 않는다.

@@ -47,7 +47,7 @@ invariants:  PASS 8 · FAIL/ERROR 0
 | `guard.psql` | 모든 `.psql`이 먼저 포함하는 대상 DB 확인 |
 | `auth-stub.psql` | 최소 `auth.users` · `auth.uid()` 스텁(JWT claim 대역) |
 | `fixtures.psql` | 검증용 사용자 7명(직책별) · 품목 · 정상 창고재고, 검증 헬퍼 스키마 `order_test` |
-| `scenarios.psql` | S2 PARTIAL/WAIT_FULL · S3 만료 불변 · S4 확정/확정배정 취소/재등록 · S5 수동배정/승인 · S6 우선순위 · S7 권한/직접 쓰기 차단 · S8 주문 취소 · S9 만료 시각 이후 차단 |
+| `scenarios.psql` | S2 PARTIAL/WAIT_FULL · S3 만료 불변 · S4 확정/확정배정 취소/재등록 · S5 수동배정/승인 · S6 우선순위 · S7 권한/직접 쓰기 차단 · S8 주문 취소 · S9 만료 시각 이후 차단 · S10 만료 뒤 FIRM · 확보만 남은 주문의 수주 확정 |
 | `concurrency.sh` | 별도 psql 연결 C1(60+60) · C2(잠금 게이트 뒤 10건 동시) · C3(다른 품목 비차단) · C4(게이트 없는 10건) |
 | `invariants.psql` | 초과 배정 0 · 줄 합계 = 배정 원장 · 이력 누락 0 · 만료 = 최초 검토 요청 + 30일 |
 

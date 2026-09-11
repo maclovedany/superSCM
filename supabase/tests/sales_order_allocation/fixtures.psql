@@ -82,7 +82,8 @@ insert into raw.item_master ("품목코드", "품목명", "품목구분") values
   ('ITEMT07', 'T5 주문 취소', '소모품'),
   ('ITEMT08', 'T5 확보 주문 취소', '소모품'),
   ('ITEMT09', 'T5 확정 주문 취소 거절', '소모품'),
-  ('ITEMT10', 'T5 만료 시각 이후 차단', '소모품');
+  ('ITEMT10', 'T5 만료 시각 이후 차단', '소모품'),
+  ('ITEMT11', 'T5 만료 뒤 FIRM만 남은 주문 확정', '소모품');
 
 insert into core.stock_balance (item_id, snapshot_qty, normal_qty, snapshot_at) values
   ('ITEMT01', 100, 100, now()),
@@ -96,6 +97,7 @@ insert into core.stock_balance (item_id, snapshot_qty, normal_qty, snapshot_at) 
   ('ITEMT07', 100, 100, now()),
   ('ITEMT08', 100, 100, now()),
   ('ITEMT09', 100, 100, now()),
-  ('ITEMT10', 100, 100, now());
+  ('ITEMT10', 100, 100, now()),
+  ('ITEMT11', 100, 100, now());
 
 select 'fixtures ok';
