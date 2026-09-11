@@ -40,10 +40,18 @@ export const WORK_ROUTE_PERMISSIONS = {
   '/inventory': ['STOCK_VIEW_ALL', 'STOCK_VIEW_PAPER', 'STOCK_VIEW_SUPPLY', 'ATP_VIEW'],
   // Task 7 — 부서(DEMAND_SUBMIT)는 자기 제출본을, SCM 품목담당자(PLAN_CONFIRM)·취합 담당
   // (DEMAND_CONSOLIDATE)은 전체 취합 현황을 같은 경로에서 본다(RLS가 조회 범위를 가른다).
-  // Task 8 — /demand-submissions/consolidation(확정 수요 화면)도 이 경로 아래라 SUPPLY_MEETING_INPUT
-  // (수급회의 결과 대리 입력)을 더한다. 실제로는 SCM_PLANNER만 가지므로 PLAN_CONFIRM·DEMAND_CONSOLIDATE와
-  // 항상 함께 있지만, 권한 판정을 core.has_permission 하나로 유지하기 위해 코드를 그대로 나열한다.
+  // Task 8 — SUPPLY_MEETING_INPUT(수급회의 결과 대리 입력)도 더한다. 실제로는 SCM_PLANNER만
+  // 가지므로 PLAN_CONFIRM·DEMAND_CONSOLIDATE와 항상 함께 있지만, 권한 판정을 core.has_permission
+  // 하나로 유지하기 위해 코드를 그대로 나열한다.
   '/demand-submissions': ['DEMAND_SUBMIT', 'PLAN_CONFIRM', 'DEMAND_CONSOLIDATE', 'SUPPLY_MEETING_INPUT'],
+  // Task 8 fix round 1 — 확정 수요 화면은 이 하위 경로 전용 항목으로 따로 둔다(requiredPermissionsForPath는
+  // 가장 긴(구체적인) 일치 경로를 고른다). core.v_approved_demand_source의 조회 권한 게이트(마이그레이션
+  // 20260911000800 §4)는 이미 EVENT_ORDER_APPROVE(SCM팀장)를 포함한다 — 승인 전 문맥 확인용 읽기 전용
+  // 접근이다. 팀장은 이 경로만 더 열리고 부서 제출 목록·상세(/demand-submissions, /demand-submissions/<id>)는
+  // 여전히 막힌다(부모 경로 권한에 EVENT_ORDER_APPROVE가 없다). 쓰기 폼은 화면이 SUPPLY_MEETING_INPUT·
+  // DEMAND_CONSOLIDATE 여부로 따로 가리므로(app/(user)/demand-submissions/consolidation/page.tsx) 팀장에게는
+  // 보이지 않는다.
+  '/demand-submissions/consolidation': ['DEMAND_SUBMIT', 'PLAN_CONFIRM', 'DEMAND_CONSOLIDATE', 'SUPPLY_MEETING_INPUT', 'EVENT_ORDER_APPROVE'],
 } as const satisfies Record<string, readonly Permission[]>;
 
 export function requiredPermissionsForPath(pathname: string): readonly Permission[] | null {

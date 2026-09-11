@@ -103,6 +103,60 @@ test('배정 우선순위 직접 URL은 부모 배정 권한으로 열리지 않
   );
 });
 
+// Task 8 fix round 1 — core.v_approved_demand_source(20260911000800 §4)는 EVENT_ORDER_APPROVE(SCM팀장)에게
+// 조회 권한을 이미 주는데, 화면 경로가 부모 /demand-submissions 권한만 썼다면 팀장은 그 데이터를 보는
+// 화면에 아예 못 들어간다. 확정 수요 화면만 따로 여는 하위 경로 항목으로 고쳤다 — 부모 경로(부서 제출
+// 목록·상세)는 그대로 막혀 있어야 한다.
+test('SCM팀장(EVENT_ORDER_APPROVE)은 확정 수요 화면만 읽기로 들어가고 부서 제출 목록·상세는 막힌다', async () => {
+  const { routeAccessDecision } = await import('./auth-policy.ts');
+  assert.deepEqual(
+    routeAccessDecision({
+      pathname: '/demand-submissions/consolidation',
+      authenticated: true,
+      active: true,
+      role: 'USER',
+      permissionCodes: ['EVENT_ORDER_APPROVE'],
+    }),
+    { kind: 'ALLOW' },
+    'SCM팀장은 확정 수요 화면에 들어갈 수 있어야 합니다.',
+  );
+  for (const pathname of ['/demand-submissions', '/demand-submissions/example-submission-id']) {
+    assert.deepEqual(
+      routeAccessDecision({ pathname, authenticated: true, active: true, role: 'USER', permissionCodes: ['EVENT_ORDER_APPROVE'] }),
+      { kind: 'FORBIDDEN' },
+      `SCM팀장이 ${pathname}에 들어가면 안 됩니다(부서 제출 목록·상세는 그대로 막혀 있어야 합니다).`,
+    );
+  }
+});
+
+test('SCM 품목담당자(PLAN_CONFIRM)와 부서(DEMAND_SUBMIT)는 확정 수요 화면 접근이 이번 수정으로 바뀌지 않는다', async () => {
+  const { routeAccessDecision } = await import('./auth-policy.ts');
+  for (const permissionCode of ['PLAN_CONFIRM', 'DEMAND_CONSOLIDATE', 'SUPPLY_MEETING_INPUT', 'DEMAND_SUBMIT']) {
+    assert.deepEqual(
+      routeAccessDecision({
+        pathname: '/demand-submissions/consolidation',
+        authenticated: true,
+        active: true,
+        role: 'USER',
+        permissionCodes: [permissionCode],
+      }),
+      { kind: 'ALLOW' },
+      `${permissionCode}는 계속 확정 수요 화면에 들어갈 수 있어야 합니다.`,
+    );
+    assert.deepEqual(
+      routeAccessDecision({
+        pathname: '/demand-submissions',
+        authenticated: true,
+        active: true,
+        role: 'USER',
+        permissionCodes: [permissionCode],
+      }),
+      { kind: 'ALLOW' },
+      `${permissionCode}의 /demand-submissions 접근이 바뀌면 안 됩니다.`,
+    );
+  }
+});
+
 test('업무 메뉴 7개 경로는 최소 서버 진입 페이지를 제공한다', () => {
   const pages = [
     '../app/(user)/procurement-plans/page.tsx',

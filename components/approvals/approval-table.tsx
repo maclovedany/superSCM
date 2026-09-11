@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useActionState } from 'react';
 import { useFormStatus } from 'react-dom';
 import { decideApprovalAction } from '@/app/(user)/approvals/actions';
@@ -58,6 +59,11 @@ export default function ApprovalTable({ rows }: { rows: ApprovalRow[] }) {
                     <summary>상세 내용</summary>
                     <p>{formatApprovalPayload(row.payload)}</p>
                   </details>
+                  {row.approvalType === 'EVENT_ORDER' ? (
+                    // Task 8 fix round 1 — 확정 수요 화면 전용 메뉴는 두지 않고, 팀장이 승인 전
+                    // 문맥(원천별 상세·월간 합계)을 확인할 최소 동선만 여기서 연결한다(읽기 전용).
+                    <Link href="/demand-submissions/consolidation" className="muted">확정 수요 현황 보기</Link>
+                  ) : null}
                 </td>
                 <td>
                   <b>{row.requesterName || row.requestedBy}</b><br />

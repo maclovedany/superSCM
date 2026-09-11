@@ -9,7 +9,10 @@ import { getApprovedDemandDetail, getApprovedDemandMonthly } from '@/lib/demand/
 export const dynamic = 'force-dynamic';
 
 export default async function DemandConsolidationPage() {
-  await requireAnyPermission(...WORK_ROUTE_PERMISSIONS['/demand-submissions']);
+  // Task 8 fix round 1 — 이 화면은 /demand-submissions의 부모 권한이 아니라 자기 경로 전용 항목을
+  // 쓴다. SCM팀장(EVENT_ORDER_APPROVE)은 이벤트 승인 전 문맥 확인을 위해 읽기 전용으로 들어올 수
+  // 있지만, 쓰기 폼은 아래 permissions.has(...) 조건이 계속 가린다.
+  await requireAnyPermission(...WORK_ROUTE_PERMISSIONS['/demand-submissions/consolidation']);
   const permissions = await getPermissions();
 
   const [{ rows: monthlyRows, error: monthlyError }, { rows: detailRows, error: detailError }] = await Promise.all([
