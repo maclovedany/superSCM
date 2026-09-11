@@ -590,6 +590,10 @@ zsh: no matches found: app/(user)/approvals/page.tsx
 
 **예방.** 괄호·대괄호가 포함된 App Router 경로는 모든 셸 명령에서 항상 따옴표로 감쌉니다.
 
+**같은 원인의 변형 (Task 5).** `grep -rln readFileSync lib --include=*.test.ts`도 zsh가 `--include=*.test.ts`를
+먼저 glob으로 풀려다 `zsh: no matches found: --include=*.test.ts`로 멈췄습니다. 옵션 값에 `*`가 들어가면
+`--include='*.test.ts'`처럼 값을 따옴표로 감쌉니다.
+
 ---
 
 ## #18 `The following paths are ignored`
