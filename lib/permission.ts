@@ -40,7 +40,10 @@ export const WORK_ROUTE_PERMISSIONS = {
   '/inventory': ['STOCK_VIEW_ALL', 'STOCK_VIEW_PAPER', 'STOCK_VIEW_SUPPLY', 'ATP_VIEW'],
   // Task 7 — 부서(DEMAND_SUBMIT)는 자기 제출본을, SCM 품목담당자(PLAN_CONFIRM)·취합 담당
   // (DEMAND_CONSOLIDATE)은 전체 취합 현황을 같은 경로에서 본다(RLS가 조회 범위를 가른다).
-  '/demand-submissions': ['DEMAND_SUBMIT', 'PLAN_CONFIRM', 'DEMAND_CONSOLIDATE'],
+  // Task 8 — /demand-submissions/consolidation(확정 수요 화면)도 이 경로 아래라 SUPPLY_MEETING_INPUT
+  // (수급회의 결과 대리 입력)을 더한다. 실제로는 SCM_PLANNER만 가지므로 PLAN_CONFIRM·DEMAND_CONSOLIDATE와
+  // 항상 함께 있지만, 권한 판정을 core.has_permission 하나로 유지하기 위해 코드를 그대로 나열한다.
+  '/demand-submissions': ['DEMAND_SUBMIT', 'PLAN_CONFIRM', 'DEMAND_CONSOLIDATE', 'SUPPLY_MEETING_INPUT'],
 } as const satisfies Record<string, readonly Permission[]>;
 
 export function requiredPermissionsForPath(pathname: string): readonly Permission[] | null {

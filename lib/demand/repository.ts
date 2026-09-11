@@ -12,6 +12,12 @@ import {
   type DemandSubmission,
   type DemandSubmissionLine,
 } from './model';
+import {
+  normalizeApprovedDemandDetailRow,
+  normalizeApprovedDemandMonthlyRow,
+  type ApprovedDemandDetailRow,
+  type ApprovedDemandMonthlyRow,
+} from './approved-model';
 
 export type DemandMutationResult<T> = { data: T | null; error: string | null };
 
@@ -155,4 +161,78 @@ export function agreeDemandSubmission(input: { submissionId: string }) {
   return callCommand<Record<string, unknown>>('agree_demand_submission', {
     p_submission_id: input.submissionId,
   }, '합의를 확정하지 못했습니다.');
+}
+
+// ══ Task 8 — 확정 수요 구성과 이벤트 추가 수요 승인 ══════════════════════
+//
+// ★ 조회는 analytics.v_approved_demand_detail · v_approved_demand_monthly만 쓴다. 합계는
+//   두 뷰가 이미 계산했으므로 여기서 다시 더하지 않는다.
+
+/** 원천별 상세(제외 사유 포함) — analytics.v_approved_demand_detail. planMonth를 주면 그 달만 */
+export async function getApprovedDemandDetail(planMonth?: string): Promise<{ rows: ApprovedDemandDetailRow[]; error: string | null }> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    let query = supabase
+      .schema('analytics')
+      .from('v_approved_demand_detail')
+      .select('*')
+      .order('plan_month', { ascending: false })
+      .order('item_id')
+      .order('source_code');
+    if (planMonth) query = query.eq('plan_month', planMonth);
+    const { data, error } = await query;
+    if (error) return { rows: [], error: error.message };
+    return { rows: (data ?? []).map((row) => normalizeApprovedDemandDetailRow(row as Record<string, unknown>)), error: null };
+  } catch (error) {
+    return { rows: [], error: errorMessage(error, '확정 수요 상세를 조회하지 못했습니다.') };
+  }
+}
+
+/** 월간 합계(발주 계산 입력) — analytics.v_approved_demand_monthly */
+export async function getApprovedDemandMonthly(planMonth?: string): Promise<{ rows: ApprovedDemandMonthlyRow[]; error: string | null }> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    let query = supabase
+      .schema('analytics')
+      .from('v_approved_demand_monthly')
+      .select('*')
+      .order('plan_month', { ascending: false })
+      .order('item_id');
+    if (planMonth) query = query.eq('plan_month', planMonth);
+    const { data, error } = await query;
+    if (error) return { rows: [], error: error.message };
+    return { rows: (data ?? []).map((row) => normalizeApprovedDemandMonthlyRow(row as Record<string, unknown>)), error: null };
+  } catch (error) {
+    return { rows: [], error: errorMessage(error, '확정 수요 월간 합계를 조회하지 못했습니다.') };
+  }
+}
+
+/** SCM 품목담당자(SUPPLY_MEETING_INPUT) — 수급회의 결과 입력·수정 */
+export function setSupplyMeetingResult(input: {
+  planMonth: string;
+  itemId: string;
+  qty: number;
+  approved: boolean;
+  basisSubmissionLineId?: string | null;
+  reason?: string | null;
+}) {
+  return callCommand<string>('set_supply_meeting_result', {
+    p_plan_month: input.planMonth,
+    p_item_id: input.itemId,
+    p_qty: input.qty,
+    p_approved: input.approved,
+    p_basis_submission_line_id: input.basisSubmissionLineId ?? null,
+    p_reason: input.reason ?? null,
+  }, '수급회의 결과를 저장하지 못했습니다.');
+}
+
+/** DEMAND_CONSOLIDATE — 이벤트 추가 수요 등록(SCM팀장 승인 요청까지 함께 처리) */
+export function requestEventDemand(input: { planMonth: string; itemId: string; customerName: string; qty: number; reason: string }) {
+  return callCommand<string>('request_event_demand', {
+    p_plan_month: input.planMonth,
+    p_item_id: input.itemId,
+    p_customer_name: input.customerName,
+    p_qty: input.qty,
+    p_reason: input.reason,
+  }, '이벤트 추가 수요 요청을 저장하지 못했습니다.');
 }

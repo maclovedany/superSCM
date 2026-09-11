@@ -1,0 +1,359 @@
+-- Task 8 확정 수요 구성 — 검증 시나리오. 로컬 임시 DB(scm_test_*) 전용, fixtures.psql 적용 뒤 실행.
+-- 구조는 supabase/tests/demand_submission/scenarios.psql과 같다: 사용자 컨텍스트가 필요한 구간은
+-- `set role authenticated`(진짜 RLS·GRANT 적용) 안에서 as_user()로 auth.uid()를 지정하고,
+-- 결과 확인은 `reset role`(슈퍼유저) 뒤 원본 테이블을 직접 읽어 판정한다. RLS 자체를 검증하는
+-- 구간(S13)은 확인도 authenticated 롤 안에서 한다.
+\set ON_ERROR_STOP 1
+\ir guard.psql
+\pset tuples_only on
+\pset format unaligned
+
+\set planner1 '00000000-0000-4000-8000-000000000201'
+\set lead1 '00000000-0000-4000-8000-000000000202'
+\set marketing1 '00000000-0000-4000-8000-000000000203'
+\set admin1 '00000000-0000-4000-8000-000000000204'
+\set dualrole1 '00000000-0000-4000-8000-000000000205'
+\set item1 'ITEMT801'
+\set item2 'ITEMT802'
+\set agreed_line '00000000-0000-4000-8000-0000000002e1'
+\set submitted_line '00000000-0000-4000-8000-0000000002e2'
+
+
+\echo '== S1 수급회의 결과 입력 — 권한 · 검증 =='
+set role authenticated;
+select approved_test.as_user(:'marketing1') \g /dev/null
+select approved_test.expect_error(
+  format($f$select core.set_supply_meeting_result('2026-05-01'::date, %L, 10, true)$f$, :'item1'),
+  '수급회의 결과 입력 권한', 'S1 권한 없는 사용자(마케팅)는 수급회의 결과를 입력할 수 없다'
+);
+select approved_test.as_user(:'planner1') \g /dev/null
+select approved_test.expect_error(
+  format($f$select core.set_supply_meeting_result('2026-05-01'::date, %L, 10, true)$f$, 'NO-SUCH-ITEM'),
+  'ITEM_NOT_FOUND', 'S1 품목 마스터에 없는 품목코드는 거절된다'
+);
+select approved_test.expect_error(
+  format($f$select core.set_supply_meeting_result('2026-05-01'::date, %L, -1, true)$f$, :'item1'),
+  'QTY_INVALID', 'S1 음수 수량은 거절된다'
+);
+select core.set_supply_meeting_result('2026-05-01'::date, :'item1', 100, false) as s1_result_id \gset
+reset role;
+select approved_test.check(:'s1_result_id' is not null, 'S1 정상 입력은 result_id를 돌려준다');
+select approved_test.check(
+  (select approved = false and qty = 100 from core.supply_meeting_result where result_id = :'s1_result_id'),
+  'S1 첫 입력은 approved=false · qty=100으로 저장된다'
+);
+select approved_test.check(
+  (select entered_by = :'planner1'::uuid and updated_by = :'planner1'::uuid from core.supply_meeting_result where result_id = :'s1_result_id'),
+  'S1 입력자가 entered_by · updated_by에 보존된다'
+);
+
+
+\echo '== S2 수급회의 결과 수정 — 이전 값이 이력에 남는다 =='
+set role authenticated;
+select approved_test.as_user(:'planner1') \g /dev/null
+select core.set_supply_meeting_result('2026-05-01'::date, :'item1', 150, true, null, '회의 재확정');
+reset role;
+select approved_test.check(
+  (select count(*) = 2 from core.supply_meeting_result_event where result_id = :'s1_result_id'),
+  'S2 두 번째 입력도 같은 (계획월,품목) 행을 갱신하고 이력 행을 하나 더 남긴다'
+);
+select approved_test.check(
+  (select previous_qty = 100 and qty = 150 and previous_approved = false and approved = true
+     from core.supply_meeting_result_event
+    where result_id = :'s1_result_id' order by at desc limit 1),
+  'S2 이력 행이 수정 전 값(100 · false)과 수정 후 값(150 · true)을 모두 보존한다'
+);
+select approved_test.check(
+  (select qty = 150 and approved = true from core.supply_meeting_result where result_id = :'s1_result_id'),
+  'S2 현재 행은 최신 값으로 갱신된다'
+);
+select approved_test.expect_error(
+  format($f$update core.supply_meeting_result_event set qty = 999 where result_id = %L$f$, :'s1_result_id'),
+  '수정하거나 삭제할 수 없습니다', 'S2 수급회의 결과 이력은 append-only다'
+);
+
+
+\echo '== S3 근거 제출 항목(basis_submission_line_id) 검증 =='
+set role authenticated;
+select approved_test.as_user(:'planner1') \g /dev/null
+select approved_test.expect_error(
+  format($f$select core.set_supply_meeting_result('2026-05-01'::date, %L, 10, true, %L)$f$, :'item2', :'submitted_line'),
+  'BASIS_LINE_NOT_AGREED', 'S3 아직 합의되지 않은(SUBMITTED) 제출 항목은 근거로 쓸 수 없다'
+);
+select core.set_supply_meeting_result('2026-05-01'::date, :'item2', 10, true, :'agreed_line');
+reset role;
+select approved_test.check(
+  (select basis_submission_line_id = :'agreed_line'::uuid from core.supply_meeting_result where plan_month = '2026-05-01' and item_id = :'item2'),
+  'S3 합의(AGREED)된 제출 항목은 근거로 연결된다'
+);
+
+
+\echo '== S4 이벤트 추가 수요 등록 — 권한 · 검증(고객 · 기종 · 수량 · 사유 필수) =='
+set role authenticated;
+select approved_test.as_user(:'marketing1') \g /dev/null
+select approved_test.expect_error(
+  format($f$select core.request_event_demand('2026-05-01'::date, %L, '고객A', 50, '이벤트')$f$, :'item1'),
+  '이벤트 추가 수요 등록 권한', 'S4 권한 없는 사용자(마케팅)는 이벤트 추가 수요를 등록할 수 없다'
+);
+select approved_test.as_user(:'planner1') \g /dev/null
+select approved_test.expect_error(
+  format($f$select core.request_event_demand('2026-05-01'::date, '', '고객A', 50, '이벤트')$f$),
+  'EVENT_MODEL_REQUIRED', 'S4 기종(품목)이 없으면 거절된다'
+);
+select approved_test.expect_error(
+  format($f$select core.request_event_demand('2026-05-01'::date, %L, '', 50, '이벤트')$f$, :'item1'),
+  'EVENT_CUSTOMER_REQUIRED', 'S4 고객이 없으면 거절된다'
+);
+select approved_test.expect_error(
+  format($f$select core.request_event_demand('2026-05-01'::date, %L, '고객A', 0, '이벤트')$f$, :'item1'),
+  'EVENT_QUANTITY_REQUIRED', 'S4 수량 0 이하는 거절된다'
+);
+select approved_test.expect_error(
+  format($f$select core.request_event_demand('2026-05-01'::date, %L, '고객A', 50, '')$f$, :'item1'),
+  'EVENT_REASON_REQUIRED', 'S4 사유가 없으면 거절된다'
+);
+reset role;
+
+
+\echo '== S5 이벤트 승인 전 0건 =='
+set role authenticated;
+select approved_test.as_user(:'planner1') \g /dev/null
+select core.request_event_demand('2026-05-01'::date, :'item1', 'B사', 200, 'B사 프로모션 대응(품목 ITEMT801, 200대)') as s5_event_id \gset
+select approval_id as s5_approval_id from core.event_demand where event_demand_id = :'s5_event_id' \gset
+reset role;
+select approved_test.check(:'s5_event_id' is not null, 'S5 이벤트 등록은 event_demand_id를 돌려준다');
+select approved_test.check(:'s5_approval_id' is not null, 'S5 등록과 동시에 EVENT_ORDER 승인 요청이 연결된다');
+select approved_test.check(
+  (select status = 'PENDING' from core.approval_request where approval_id = :'s5_approval_id'
+     and approval_type = 'EVENT_ORDER' and target_type = 'EVENT_DEMAND' and target_id = :'s5_event_id'),
+  'S5 승인 요청이 EVENT_ORDER · EVENT_DEMAND 대상으로 정확히 생성된다'
+);
+
+set role authenticated;
+select approved_test.as_user(:'admin1') \g /dev/null
+select approved_test.check(
+  (select bool_and(counted = false) and bool_and(exclusion_reason = 'EVENT_NOT_APPROVED') and count(*) = 1
+     from analytics.v_approved_demand_detail
+    where source_code = 'EVENT_DEMAND' and reference_id = :'s5_event_id'::text),
+  'S5 승인 전 이벤트는 상세에 보이지만 counted=false · EVENT_NOT_APPROVED다'
+);
+select approved_test.check(
+  (select coalesce(sum(event_demand_qty), 0) = 0 from analytics.v_approved_demand_monthly
+    where plan_month = '2026-05-01' and item_id = :'item1'),
+  'S5 승인 전 이벤트 수량은 월간 합계에 포함되지 않는다'
+);
+reset role;
+
+
+\echo '== S6 요청자 본인은 승인할 수 없다 =='
+-- 실제 직책 중에는 DEMAND_CONSOLIDATE(요청)와 EVENT_ORDER_APPROVE(승인)를 함께 가진 직책이 없다
+-- (역할 분리가 이미 이를 막는다). 이 검증만을 위해 fixtures.psql이 둘 다 가진 합성 계정을 만들었다.
+set role authenticated;
+select approved_test.as_user(:'dualrole1') \g /dev/null
+select core.request_event_demand('2026-05-01'::date, :'item1', 'C사', 30, 'C사 자기승인 검증용(품목 ITEMT801, 30대)') as s6_event_id \gset
+select approval_id as s6_approval_id from core.event_demand where event_demand_id = :'s6_event_id' \gset
+select approved_test.expect_error(
+  format($f$select core.decide_approval(%L::uuid, 'APPROVED')$f$, :'s6_approval_id'),
+  '직접 결정할 수 없습니다', 'S6 요청자 본인(dualrole1)은 자신이 요청한 이벤트를 승인할 수 없다'
+);
+reset role;
+
+
+\echo '== S7 이벤트 승인 후 전량 반영 =='
+set role authenticated;
+select approved_test.as_user(:'lead1') \g /dev/null
+select core.decide_approval(:'s5_approval_id'::uuid, 'APPROVED', '재고 여유 확인, 승인');
+reset role;
+select approved_test.check(
+  (select status = 'APPROVED' and decided_by = :'lead1'::uuid and decided_at is not null
+     from core.event_demand where event_demand_id = :'s5_event_id'),
+  'S7 승인되면 core.event_demand도 APPROVED로 갱신된다'
+);
+
+set role authenticated;
+select approved_test.as_user(:'admin1') \g /dev/null
+select approved_test.check(
+  (select counted = true and exclusion_reason is null and qty = 200
+     from analytics.v_approved_demand_detail
+    where source_code = 'EVENT_DEMAND' and reference_id = :'s5_event_id'::text),
+  'S7 승인 후 상세에서 counted=true · 전량(200) 반영'
+);
+select approved_test.check(
+  (select event_demand_qty = 200 from analytics.v_approved_demand_monthly
+    where plan_month = '2026-05-01' and item_id = :'item1'),
+  'S7 승인 후 월간 합계의 event_demand_qty가 정확히 200이다'
+);
+reset role;
+
+
+\echo '== S8 이벤트 반려 후 0건 =='
+set role authenticated;
+select approved_test.as_user(:'planner1') \g /dev/null
+select core.request_event_demand('2026-05-01'::date, :'item2', 'D사', 77, 'D사 반려 검증용(품목 ITEMT802, 77대)') as s8_event_id \gset
+select approval_id as s8_approval_id from core.event_demand where event_demand_id = :'s8_event_id' \gset
+select approved_test.as_user(:'lead1') \g /dev/null
+select core.decide_approval(:'s8_approval_id'::uuid, 'REJECTED', '이번 달 재고 부족으로 반려');
+reset role;
+select approved_test.check(
+  (select status = 'REJECTED' from core.event_demand where event_demand_id = :'s8_event_id'),
+  'S8 반려되면 core.event_demand도 REJECTED로 갱신된다'
+);
+
+set role authenticated;
+select approved_test.as_user(:'admin1') \g /dev/null
+select approved_test.check(
+  (select counted = false and exclusion_reason = 'EVENT_REJECTED'
+     from analytics.v_approved_demand_detail
+    where source_code = 'EVENT_DEMAND' and reference_id = :'s8_event_id'::text),
+  'S8 반려 후 상세에서 counted=false · EVENT_REJECTED'
+);
+select approved_test.check(
+  (select coalesce(sum(event_demand_qty), 0) = 0 from analytics.v_approved_demand_monthly
+    where plan_month = '2026-05-01' and item_id = :'item2'),
+  'S8 반려 후 월간 합계에 반영되지 않는다'
+);
+reset role;
+
+
+\echo '== S9 수급회의 미승인 건 — 제외 사유 표시, 합계 미반영 =='
+-- item1의 수급회의 결과(S1 행)는 S2에서 approved=true로 바뀌었으므로, 미승인 사례는 다른
+-- 계획월(6월)로 새로 하나 만든다.
+set role authenticated;
+select approved_test.as_user(:'planner1') \g /dev/null
+select core.set_supply_meeting_result('2026-06-01'::date, :'item1', 40, false) as s9_result_id \gset
+reset role;
+
+set role authenticated;
+select approved_test.as_user(:'admin1') \g /dev/null
+select approved_test.check(
+  (select counted = false and exclusion_reason = 'MEETING_NOT_APPROVED' and qty = 40
+     from analytics.v_approved_demand_detail
+    where source_code = 'SUPPLY_MEETING' and reference_id = :'s9_result_id'::text),
+  'S9 미승인 수급회의 결과는 상세에 보이되 counted=false · MEETING_NOT_APPROVED'
+);
+select approved_test.check(
+  (select coalesce(sum(supply_meeting_qty), 0) = 0 from analytics.v_approved_demand_monthly
+    where plan_month = '2026-06-01' and item_id = :'item1'),
+  'S9 미승인 수급회의 결과는 월간 합계에 포함되지 않는다'
+);
+reset role;
+
+-- 제외된(counted=false) 행의 수량을 바꿔도 승인 여부가 그대로면 합계는 계속 0이어야 한다
+-- (컨트롤러 판정 "counted가 아닌 속성이 바뀌어도 월간 합계는 변하지 않는다").
+set role authenticated;
+select approved_test.as_user(:'planner1') \g /dev/null
+select core.set_supply_meeting_result('2026-06-01'::date, :'item1', 4000, false, null, '수량만 변경, 승인 아님');
+reset role;
+
+set role authenticated;
+select approved_test.as_user(:'admin1') \g /dev/null
+select approved_test.check(
+  (select coalesce(sum(supply_meeting_qty), 0) = 0 from analytics.v_approved_demand_monthly
+    where plan_month = '2026-06-01' and item_id = :'item1'),
+  'S9 미승인 상태에서 수량만 4000으로 바꿔도 월간 합계는 여전히 0이다(counted=false인 행의 속성 변경은 합계에 영향이 없다)'
+);
+reset role;
+
+
+\echo '== S10 수주 확정 전(REVIEW_REQUESTED)은 확률 100%짜리 대형 건이라도 0건 =='
+-- 슈퍼유저로 core.sales_order · sales_order_line에 직접 넣는다(Task 5 기능을 다시 돌리지 않고
+-- "확정 상태" 자체만 테스트한다 — supabase/tests/sales_order_allocation이 그 기능을 이미 검증한다).
+insert into core.sales_order (
+  order_id, order_no, customer_id, customer_name, owner_user_id, owner_name, status,
+  requested_at, first_review_requested_at, temporary_expires_at, allocation_choice
+) values (
+  '00000000-0000-4000-8000-0000000003a1', 'SO-T8-PENDING-0001', 'CUSTP', '확정전고객', :'marketing1'::uuid, '마케팅1',
+  'REVIEW_REQUESTED', now() - interval '5 days', now() - interval '5 days', now() + interval '25 days', 'PARTIAL'
+);
+insert into core.sales_order_line (order_id, line_no, item_id, requested_qty)
+values ('00000000-0000-4000-8000-0000000003a1', 1, :'item1', 999);
+
+select approved_test.check(
+  (select count(*) = 0 from analytics.v_approved_demand_detail
+    where source_code = 'CONFIRMED_ORDER' and reference_id = '00000000-0000-4000-8000-0000000003a1'),
+  'S10 확정(CONFIRMED) 전 주문(확률 100%짜리 대형 건이라도)은 CONFIRMED_ORDER 원천에 아예 나타나지 않는다'
+);
+
+
+\echo '== S11 수주 확정 — 확정 주문은 줄의 요청수량으로, 확정 시각 기준 월로 집계 =='
+insert into core.sales_order (
+  order_id, order_no, customer_id, customer_name, owner_user_id, owner_name, status,
+  requested_at, first_review_requested_at, temporary_expires_at, allocation_choice,
+  confirmed_order_no, confirmed_at, confirmed_by
+) values (
+  '00000000-0000-4000-8000-0000000003b1', 'SO-T8-CONFIRMED-0001', 'CUSTC', '확정고객', :'marketing1'::uuid, '마케팅1',
+  'CONFIRMED', now() - interval '20 days', now() - interval '20 days', now() + interval '10 days', 'PARTIAL',
+  'CONF-T8-0001', timestamptz '2026-05-14 20:00:00+00', :'planner1'::uuid
+);
+insert into core.sales_order_line (order_id, line_no, item_id, requested_qty)
+values ('00000000-0000-4000-8000-0000000003b1', 1, :'item1', 40);
+
+select approved_test.check(
+  (select counted = true and qty = 40 and plan_month = date '2026-05-01' and reference_label = 'SO-T8-CONFIRMED-0001'
+     from analytics.v_approved_demand_detail
+    where source_code = 'CONFIRMED_ORDER' and reference_id = '00000000-0000-4000-8000-0000000003b1'),
+  'S11 확정 주문 줄은 요청수량(40) · 확정시각의 Asia/Seoul 월(2026-05)로 정확히 집계된다'
+);
+select approved_test.check(
+  (select confirmed_order_qty >= 40 from analytics.v_approved_demand_monthly
+    where plan_month = '2026-05-01' and item_id = :'item1'),
+  'S11 월간 합계의 confirmed_order_qty에 반영된다'
+);
+
+
+\echo '== S12 취소된 주문은 확정 주문번호가 남아 있어도 0건 =='
+update core.sales_order
+   set status = 'CANCELLED', cancelled_at = clock_timestamp(), cancelled_by = :'planner1'::uuid,
+       cancel_reason = 'T8 검증 — 취소 후에도 confirmed_order_no 보존 확인'
+ where order_id = '00000000-0000-4000-8000-0000000003b1';
+
+select approved_test.check(
+  (select status = 'CANCELLED' and confirmed_order_no = 'CONF-T8-0001'
+     from core.sales_order where order_id = '00000000-0000-4000-8000-0000000003b1'),
+  'S12 취소된 주문도 confirmed_order_no를 그대로 보존한다'
+);
+select approved_test.check(
+  (select count(*) = 0 from analytics.v_approved_demand_detail
+    where source_code = 'CONFIRMED_ORDER' and reference_id = '00000000-0000-4000-8000-0000000003b1'),
+  'S12 취소된 주문은 확정 주문번호가 남아 있어도 CONFIRMED_ORDER 원천에서 0건이다'
+);
+-- S11에서 반영됐던 confirmed_order_qty(40)가 취소 후에는 사라져야 한다. 이 품목·월에는 다른
+-- CONFIRMED 주문이 없으므로 정확히 0으로 되돌아간다(이벤트 승인분은 event_demand_qty에만 잡힌다).
+select approved_test.check(
+  (select coalesce(confirmed_order_qty, 0) = 0 from analytics.v_approved_demand_monthly
+    where plan_month = '2026-05-01' and item_id = :'item1'),
+  'S12 취소 후 월간 합계의 confirmed_order_qty가 0으로 되돌아간다(같은 품목·월에 다른 확정 건 없음)'
+);
+
+
+\echo '== S13 RLS — 요청자 · 취합/승인 권한자가 아니면 이벤트 · 수급회의 결과를 보지 못한다 =='
+set role authenticated;
+select approved_test.as_user(:'marketing1') \g /dev/null
+select approved_test.check(
+  (select count(*) = 0 from core.event_demand where event_demand_id in (:'s5_event_id'::uuid, :'s8_event_id'::uuid)),
+  'S13 요청자도 아니고 취합 · 승인 권한도 없는 마케팅 사용자는 이벤트 추가 수요 행을 볼 수 없다'
+);
+select approved_test.check(
+  (select count(*) = 0 from core.supply_meeting_result),
+  'S13 마케팅 사용자는 수급회의 결과를 전혀 볼 수 없다(RLS)'
+);
+select approved_test.as_user(:'planner1') \g /dev/null
+select approved_test.check(
+  (select count(*) >= 1 from core.event_demand where event_demand_id = :'s5_event_id'::uuid),
+  'S13 요청자 본인은 자신이 등록한 이벤트를 볼 수 있다'
+);
+select approved_test.expect_error(
+  format($f$update core.event_demand set qty = 999 where event_demand_id = %L$f$, :'s5_event_id'),
+  'permission denied|policy', 'S13 authenticated는 core.event_demand에 직접 쓸 수 없다(모든 쓰기는 함수를 통해서만)'
+);
+reset role;
+
+
+\echo '== S14 SQL 계약 — 확률 · 파트너 선주문 · 레거시 더미 테이블을 참조하지 않는다 =='
+select approved_test.check(
+  (select count(*) = 0 from pg_views
+    where schemaname in ('core', 'analytics')
+      and viewname in ('v_approved_demand_source', 'v_approved_demand_detail', 'v_approved_demand_monthly')
+      and definition ~* 'sales_probability|partner_pre_order|usage_history|purchase_order'),
+  'S14 확정 수요 뷰 정의 어디에도 sales_probability · 파트너 선주문 · 레거시 더미 테이블이 없다'
+);

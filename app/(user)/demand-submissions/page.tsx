@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import Panel from '@/components/ui/panel';
 import PageHeader from '@/components/shell/page-header';
 import SubmissionStatusTable from '@/components/demand/submission-status-table';
@@ -13,6 +14,8 @@ export default async function DemandSubmissionsPage() {
   const permissions = await getPermissions();
   const isConsolidator = permissions.has('PLAN_CONFIRM') || permissions.has('DEMAND_CONSOLIDATE') || profile.role === 'ADMIN';
   const canOpenCycle = permissions.has('PLAN_CONFIRM') || profile.role === 'ADMIN';
+  const canSeeApprovedDemand = permissions.has('PLAN_CONFIRM') || permissions.has('DEMAND_CONSOLIDATE')
+    || permissions.has('SUPPLY_MEETING_INPUT') || profile.role === 'ADMIN';
 
   const [{ rows: cycles, error: cycleError }, { rows: submissions, error: submissionError }] = await Promise.all([
     getActivePlanningCycles(),
@@ -47,6 +50,19 @@ export default async function DemandSubmissionsPage() {
                 </li>
               ))}
             </ul>
+          </Panel>
+        ) : null}
+
+        {canSeeApprovedDemand ? (
+          <Panel
+            title="확정 수요 구성"
+            description="수주 확정·수급회의 승인·이벤트 승인만 발주 수요에 반영합니다. 부서 제출 수량 자체는 여기서 집계하지 않습니다."
+            action={<Link href="/demand-submissions/consolidation" className="button">확정 수요 구성 열기</Link>}
+          >
+            <p className="muted">
+              부서 제출은 합의(AGREED)까지가 이 화면의 범위입니다. 발주 계산에 실제로 들어가는 확정 수요는
+              별도 화면에서 원천별로 확인합니다.
+            </p>
           </Panel>
         ) : null}
 

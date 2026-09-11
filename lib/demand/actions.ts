@@ -17,11 +17,14 @@ import { suggestColumnMapping } from '../import/schema';
 import { validateRows } from '../import/validate';
 import type { ImportRow } from '../import/types';
 import { buildDemandLineDrafts, validateOpenPlanningCycle, validateSubmissionId, validateWithdrawSubmission } from './model';
+import { validateRequestEventDemand, validateSetSupplyMeetingResult } from './approved-model';
 import {
   agreeDemandSubmission,
   closePlanningCycle,
   openPlanningCycle,
+  requestEventDemand,
   saveDemandSubmissionLines,
+  setSupplyMeetingResult,
   startDemandSubmission,
   submitDemandSubmission,
   withdrawDemandSubmission,
@@ -192,4 +195,48 @@ export async function agreeDemandSubmissionAction(_previous: DemandActionState, 
   if (result.error) return { error: result.error, success: null };
   revalidateDemandScreens(validation.value.submissionId);
   return { error: null, success: '합의를 확정했습니다. 해당 부서는 더 이상 이 제출본을 수정할 수 없습니다.' };
+}
+
+// ══ Task 8 — 확정 수요 구성과 이벤트 추가 수요 승인 ══════════════════════
+
+function revalidateApprovedDemandScreens() {
+  revalidatePath('/demand-submissions/consolidation');
+  revalidatePath('/approvals');
+}
+
+/** SUPPLY_MEETING_INPUT — 수급회의 결과 입력·수정. 팀장 승인 없이 approved 플래그가 최종 판단이다 */
+export async function setSupplyMeetingResultAction(_previous: DemandActionState, formData: FormData): Promise<DemandActionState> {
+  await requirePermission('SUPPLY_MEETING_INPUT');
+  const validation = validateSetSupplyMeetingResult({
+    planMonth: formData.get('planMonth'),
+    itemId: formData.get('itemId'),
+    qty: formData.get('qty'),
+    approved: formData.get('approved'),
+    basisSubmissionLineId: formData.get('basisSubmissionLineId'),
+    reason: formData.get('reason'),
+  });
+  if (!validation.ok) return { error: validation.message, success: null };
+
+  const result = await setSupplyMeetingResult(validation.value);
+  if (result.error) return { error: result.error, success: null };
+  revalidateApprovedDemandScreens();
+  return { error: null, success: '수급회의 결과를 저장했습니다.' };
+}
+
+/** DEMAND_CONSOLIDATE — 이벤트 추가 수요 등록. 저장과 동시에 SCM팀장에게 승인을 요청한다(EVENT_ORDER) */
+export async function requestEventDemandAction(_previous: DemandActionState, formData: FormData): Promise<DemandActionState> {
+  await requirePermission('DEMAND_CONSOLIDATE');
+  const validation = validateRequestEventDemand({
+    planMonth: formData.get('planMonth'),
+    itemId: formData.get('itemId'),
+    customerName: formData.get('customerName'),
+    qty: formData.get('qty'),
+    reason: formData.get('reason'),
+  });
+  if (!validation.ok) return { error: validation.message, success: null };
+
+  const result = await requestEventDemand(validation.value);
+  if (result.error) return { error: result.error, success: null };
+  revalidateApprovedDemandScreens();
+  return { error: null, success: '이벤트 추가 수요를 등록하고 SCM팀장에게 승인을 요청했습니다. 승인 전까지는 발주 수요에 반영되지 않습니다.' };
 }
