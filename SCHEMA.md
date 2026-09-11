@@ -53,8 +53,10 @@
 | gap_days | int | p80_days − std_lead_time. 양수면 실제가 더 김 |
 | confidence | text | HIGH / MEDIUM / LOW (표본 수 기준) |
 
-### `v_stockout_risk`
-재고 소진 위험. 20행. **오후 실습의 검증 정답지입니다.**
+### `v_stockout_risk` (더미 분석 전용)
+재고 소진 위험. 20행. **오후 실습의 검증 정답지이며 운영 가용재고로 사용하지 않습니다.**
+이 뷰의 `available_qty = current_stock + inbound_qty`는 기존 더미 분석식입니다. 진행 중 입고를
+가용재고에 더하므로 stage1 운영 화면·업무 함수·AI Agent가 이 값을 인용하거나 재사용하면 안 됩니다.
 
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
@@ -71,6 +73,26 @@
 | stockout_date | date | 소진 예상일 |
 | risk_status | text | SAFE / CRITICAL / UNKNOWN |
 | reason | text | NO_USAGE / NO_LEADTIME (정상이면 null) |
+
+### stage1 운영 가용재고 (Task 4부터 적용)
+
+운영 가용재고는 다음 한 가지 정의만 사용합니다.
+
+```text
+available_qty = 정상 창고재고
+              - 임시배정
+              - 확정배정
+              - 승인대기 확보
+```
+
+Open PO와 이동 중 선적은 참고 정보이며 운영 가용재고에 더하지 않습니다. 아직 운영 재고 근거나
+분류가 없으면 0으로 채우지 않고 `null + reason_code`로 계산 불가를 표시합니다.
+
+신규 사용자별 `analytics` 운영 뷰는 반드시 `security_invoker = true`로 만들고, 기초 테이블의
+RLS가 호출자 기준으로 적용되는지 확인합니다. 뷰 소유자 권한으로 RLS를 우회하면 안 됩니다.
+
+`stage1.md`, `gap.md`, `향후논의사항.md`는 요구사항 근거 문서일 뿐입니다. 앱 런타임에서 파일을
+직접 읽지 않으며, 확정된 규칙만 마이그레이션·조회 함수·화면 코드에 반영합니다.
 
 ### `v_stockout_kpi`
 요약 한 줄.

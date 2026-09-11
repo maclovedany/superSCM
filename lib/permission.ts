@@ -1,4 +1,4 @@
-// Phase 2 업무 권한 — refactor.md Phase 2
+// STEP 19 업무 권한 — refactor_260911.md Task 1
 //
 // ★ 판정은 DB 의 core.has_permission() 한 곳에서 합니다. 여기서는 그 결과를 들고 다니며
 //   화면을 고를 뿐입니다. 같은 판정을 두 곳에서 하면 언젠가 두 답이 갈라지고,
@@ -96,6 +96,3 @@ export class PermissionSet {
     return this.granted.size;
   }
 }
-
-/** 메뉴 한 항목이 요구하는 권한 — 하나라도 있으면 보입니다 */
-export type MenuPermission = { anyOf: Permission[] } | null;

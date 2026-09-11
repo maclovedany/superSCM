@@ -14,6 +14,13 @@ export type MenuItem = {
 
 export const USER_MENU: MenuItem[] = [
   { href: '/dashboard', label: '전체 현황', description: '월간 발주계획 요약', icon: Gauge },
+  { href: '/procurement-plans', label: '발주계획', description: '최종 발주계획 확정과 승인', icon: Workflow, anyOf: ['PLAN_CONFIRM', 'PLAN_APPROVE'] },
+  { href: '/allocations', label: '배정', description: '품목별 재고 배정 처리', icon: Boxes, anyOf: ['ALLOC_MANUAL', 'ALLOC_FIRM_CANCEL'] },
+  { href: '/approvals', label: '승인함', description: '정책·배정·수요·발주계획 승인', icon: Workflow, anyOf: ['ITEM_POLICY_APPROVE', 'ALLOC_PRIORITY_APPROVE', 'EVENT_ORDER_APPROVE', 'PLAN_APPROVE'] },
+  { href: '/orders', label: '주문', description: '영업 주문 등록과 검토 요청', icon: Workflow, anyOf: ['ORDER_CREATE', 'ORDER_REVIEW_REQUEST'] },
+  { href: '/allocations/priorities', label: '배정 우선순위', description: '주문 대기 순서와 우선순위 관리', icon: Workflow, anyOf: ['ALLOC_PRIORITY_EDIT'] },
+  { href: '/inventory', label: '재고', description: '업무 범위별 가용재고 조회', icon: Boxes, anyOf: ['STOCK_VIEW_ALL', 'STOCK_VIEW_PAPER', 'STOCK_VIEW_SUPPLY'] },
+  { href: '/demand-submissions', label: '수요 제출', description: '부서별 월간 수요 제출', icon: BarChart3, anyOf: ['DEMAND_SUBMIT'] },
   { href: '/analysis/demand-profile', label: '수요 패턴', description: '출고 실적 기반 수요 성격 분류', icon: BarChart3 },
   { href: '/analysis/model-comparison', label: 'OL 예측 정확도', description: '영업 OL · SCM OL 의 WAPE 와 Bias', icon: LineChart },
   { href: '/analysis/leadtime', label: '리드타임 격차', description: '실데이터 대기 — 공급처별 Lead time 필요', icon: LineChart },
