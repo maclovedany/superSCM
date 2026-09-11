@@ -734,10 +734,12 @@ begin
    where notification_id = p_notification_id
    for update;
 
-  if not found
+  if p_worker_id is null
+     or p_claim_token is null
+     or not found
      or v_notice.status <> 'PROCESSING'
-     or v_notice.claimed_by <> p_worker_id
-     or v_notice.claim_token <> p_claim_token
+     or v_notice.claimed_by is distinct from p_worker_id
+     or v_notice.claim_token is distinct from p_claim_token
      or v_notice.claim_expires_at <= clock_timestamp() then
     return false;
   end if;
@@ -805,7 +807,10 @@ begin
   if v_notice.status <> 'PROCESSING' then
     raise exception 'claim되지 않은 알림은 완료할 수 없습니다.' using errcode = '22023';
   end if;
-  if v_notice.claimed_by <> p_worker_id or v_notice.claim_token <> p_claim_token then
+  if p_worker_id is null
+     or p_claim_token is null
+     or v_notice.claimed_by is distinct from p_worker_id
+     or v_notice.claim_token is distinct from p_claim_token then
     raise exception '알림 claim 소유권이 일치하지 않습니다.' using errcode = '42501';
   end if;
   if v_notice.claim_expires_at <= clock_timestamp() then

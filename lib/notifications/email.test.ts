@@ -79,6 +79,37 @@ test('Resend 일시 장애는 재시도 가능 실패로 구분한다', async ()
   assert.deepEqual(result, { ok: false, error: '잠시 사용할 수 없습니다.', retryable: true });
 });
 
+test('Resend 409는 동시 중복 요청만 재시도하고 잘못된 중복 키 요청은 종료한다', async () => {
+  const options = {
+    apiKey: 'server-secret',
+    from: 'SCM <scm@example.com>',
+    idempotencyKey: 'notification/notice-409',
+  };
+  const message = { to: 'planner@example.com', subject: '승인 알림', text: '확인해 주세요.' };
+
+  const concurrent = await sendEmail(message, {
+    ...options,
+    fetchImpl: async () => new Response(JSON.stringify({
+      name: 'concurrent_idempotent_requests',
+      message: '같은 요청이 처리 중입니다.',
+    }), { status: 409 }),
+  });
+  assert.deepEqual(concurrent, { ok: false, error: '같은 요청이 처리 중입니다.', retryable: true });
+
+  const invalid = await sendEmail(message, {
+    ...options,
+    fetchImpl: async () => new Response(JSON.stringify({
+      name: 'invalid_idempotent_request',
+      message: '같은 키에 다른 요청 본문을 사용할 수 없습니다.',
+    }), { status: 409 }),
+  });
+  assert.deepEqual(invalid, {
+    ok: false,
+    error: '같은 키에 다른 요청 본문을 사용할 수 없습니다.',
+    retryable: false,
+  });
+});
+
 test('서버 이메일 설정이나 수신자가 없으면 외부 요청 없이 실패한다', async () => {
   let called = false;
   const fetchImpl: typeof fetch = async () => {
@@ -172,8 +203,9 @@ test('알림 SQL 계약은 임대 만료 회수와 claim 소유권 검증을 포
   assert.match(sql, /status\s*=\s*'PROCESSING'[\s\S]{0,500}claim_expires_at\s*<=\s*clock_timestamp\(\)/i);
   assert.match(sql, /attempt_count\s*<\s*(?:\w+\.)?max_attempts/i);
   assert.match(sql, /p_worker_id\s+uuid[\s\S]{0,180}p_claim_token\s+uuid/i);
-  assert.match(sql, /claimed_by\s*<>\s*p_worker_id/i);
-  assert.match(sql, /claim_token\s*<>\s*p_claim_token/i);
+  assert.match(sql, /p_worker_id\s+is\s+null[\s\S]{0,100}p_claim_token\s+is\s+null/i);
+  assert.match(sql, /claimed_by\s+is\s+distinct\s+from\s+p_worker_id/i);
+  assert.match(sql, /claim_token\s+is\s+distinct\s+from\s+p_claim_token/i);
 });
 
 test('알림 SQL 계약은 실패 이력을 보존하고 제한 횟수까지 재예약한다', () => {

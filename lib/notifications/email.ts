@@ -12,8 +12,14 @@ export type EmailOptions = {
   fetchImpl?: typeof fetch;
 };
 
-function isRetryableStatus(status: number): boolean {
-  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+function errorCode(body: Record<string, unknown>): string | null {
+  const value = body.name ?? body.code;
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+}
+
+function isRetryableResponse(status: number, body: Record<string, unknown>): boolean {
+  if (status === 409) return errorCode(body) === 'concurrent_idempotent_requests';
+  return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
 function payloadText(payload: NotificationPayload, key: string): string | null {
@@ -59,7 +65,7 @@ export async function sendEmail(message: EmailMessage, options: EmailOptions): P
         error: typeof body.message === 'string' && body.message.trim() !== ''
           ? body.message
           : `이메일 발송에 실패했습니다. (${response.status})`,
-        retryable: isRetryableStatus(response.status),
+        retryable: isRetryableResponse(response.status, body),
       };
     }
     return {
