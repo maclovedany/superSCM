@@ -52,6 +52,28 @@ export function isInventoryVisibilityScope(input: unknown): input is InventoryVi
   return typeof input === 'string' && (INVENTORY_VISIBILITY_SCOPES as readonly string[]).includes(input);
 }
 
+/**
+ * 영업(ATP_VIEW) 전용 — analytics.v_order_available_stock 한 행.
+ *
+ * ★ 재고 상세(배정 내역 · Open PO · 이동 중 · 스냅샷 시각)는 담지 않습니다. 영업은
+ *   실제 주문 가능 수량만 봐야 합니다 (stage1 §2, fix round 1).
+ */
+export type OrderAvailableStockRow = {
+  itemId: string;
+  itemName: string;
+  availableQty: number | null;
+  reasonCode: string | null;
+};
+
+export function normalizeOrderAvailableStockRow(row: Record<string, unknown>): OrderAvailableStockRow {
+  return {
+    itemId: String(value(row, ['item_id', '품목코드']) ?? '미정'),
+    itemName: String(value(row, ['item_name', '품목명']) ?? '미정'),
+    availableQty: numberValue(row, ['available_qty', '가용재고']),
+    reasonCode: text(row, ['reason_code', '사유코드']),
+  };
+}
+
 export function normalizeAvailableStockRow(row: Record<string, unknown>): AvailableStockRow {
   const rawScope = value(row, ['visibility_scope', '조회범위']);
 

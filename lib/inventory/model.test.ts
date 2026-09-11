@@ -5,6 +5,7 @@ import {
   INVENTORY_VISIBILITY_SCOPES,
   isInventoryVisibilityScope,
   normalizeAvailableStockRow,
+  normalizeOrderAvailableStockRow,
 } from './model.ts';
 
 test('조회 범위는 세 가지 업무 코드만 허용하고, 그 외 값은 GENERAL로 취급한다', () => {
@@ -104,4 +105,32 @@ test('한국어 컬럼 별칭도 읽는다', () => {
   assert.equal(row.visibilityScope, 'CONSUMABLE');
   assert.equal(row.normalWarehouseQty, 12);
   assert.equal(row.availableQty, 12);
+});
+
+test('analytics.v_order_available_stock 행은 주문 가능 수량 네 열만 옮긴다 — 재고 상세는 없다', () => {
+  const row = normalizeOrderAvailableStockRow({
+    item_id: 'ITEM001',
+    item_name: '카드리더기 A형',
+    available_qty: 15,
+    reason_code: null,
+  });
+
+  assert.deepEqual(row, {
+    itemId: 'ITEM001',
+    itemName: '카드리더기 A형',
+    availableQty: 15,
+    reasonCode: null,
+  });
+});
+
+test('분류할 수 없는 품목의 주문 가능 수량도 0이 아니라 null과 사유 코드를 유지한다', () => {
+  const row = normalizeOrderAvailableStockRow({
+    item_id: 'ITEM020',
+    item_name: '표기 미정 품목',
+    available_qty: null,
+    reason_code: 'INVENTORY_SCOPE_UNCLASSIFIED',
+  });
+
+  assert.equal(row.availableQty, null);
+  assert.equal(row.reasonCode, 'INVENTORY_SCOPE_UNCLASSIFIED');
 });

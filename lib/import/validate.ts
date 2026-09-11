@@ -23,6 +23,7 @@ export function validateRows(type: ImportType, rows: ImportRow[], references: Im
       if (!empty(value) && rule.reference === 'item' && !references.itemIds.has(String(value).trim())) add(rule.field, 'UNKNOWN_ITEM', '품목 마스터에 없습니다.', value);
       if (!empty(value) && rule.reference === 'supplier' && !references.supplierIds.has(String(value).trim())) add(rule.field, 'UNKNOWN_SUPPLIER', '공급처 마스터에 없습니다.', value);
       if (!empty(value) && rule.reference === 'inventory_status' && !references.inventoryStatuses.has(String(value).trim())) add(rule.field, 'UNKNOWN_INVENTORY_STATUS', '등록된 재고상태 분류가 아닙니다.', value);
+      if (!empty(value) && rule.enumValues && !rule.enumValues.includes(String(value).trim())) add(rule.field, `UNKNOWN_${rule.field.toUpperCase()}`, `허용된 값(${rule.enumValues.join(', ')})이 아닙니다.`, value);
     }
     const sourceId = data.source_record_id ?? data.usage_id ?? data.order_no ?? data.receipt_no;
     if (!empty(sourceId)) { const previous = seen.get(String(sourceId)); if (previous !== undefined) add('source_record_id', 'DUPLICATE_RECORD', `행 ${previous}와 중복된 원본 식별자입니다.`, sourceId); else seen.set(String(sourceId), rowNumber); }

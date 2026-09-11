@@ -41,6 +41,18 @@ test('재고 스냅샷은 재고상태·창고·스냅샷일자가 모두 있어
   assert.ok(result.issues.some((issue) => issue.code === 'REQUIRED_VALUE' && issue.fieldName === 'snapshot_at'));
 });
 
+test('입고는 완료 상태가 필수이며 등록된 두 값(COMPLETED/PENDING) 밖은 거절한다', () => {
+  const result = validateRows('goods_receipt', [
+    { item_id: 'ITEM001', receipt_date: '2026-09-01', qty: 10, receipt_status: 'COMPLETED' },
+    { item_id: 'ITEM001', receipt_date: '2026-09-01', qty: 10, receipt_status: '완료' },
+    { item_id: 'ITEM001', receipt_date: '2026-09-01', qty: 10, receipt_status: null },
+  ], references);
+
+  assert.equal(result.summary.successRows, 1);
+  assert.ok(result.issues.some((issue) => issue.code === 'UNKNOWN_RECEIPT_STATUS' && issue.fieldName === 'receipt_status'));
+  assert.ok(result.issues.some((issue) => issue.code === 'REQUIRED_VALUE' && issue.fieldName === 'receipt_status'));
+});
+
 test('오류와 경고 행만 원본 값과 함께 CSV로 내보낸다', async () => {
   const { errorRowsToCsv } = await import('./error-csv.ts');
   const csv = errorRowsToCsv([{ rowNumber: 2, data: { item_id: 'UNKNOWN', qty: null }, issues: [{ rowNumber: 2, fieldName: 'item_id', code: 'UNKNOWN_ITEM', message: '품목 마스터에 없습니다.', severity: 'ERROR', originalValue: 'UNKNOWN' }] }]);
