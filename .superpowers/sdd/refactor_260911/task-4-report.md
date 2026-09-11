@@ -376,4 +376,138 @@ $ git diff --check
   섹션과 함께 후속 Task에서 설계하도록 남겨 뒀다.
 - `core.inventory_scope_rule`의 창고전용 시드(`SERVICE_CENTER`·`PARTNER`)는 실제 창고 표기가
   아니라 예시 코드다. 실데이터의 진짜 창고 표기가 확인되면 이 표에 행을 추가해야 실제로
-  동작한다.
+  동작한다. **→ fix round 2에서 컨트롤러 지시로 제거했다. 아래 참고.**
+
+---
+
+## fix round 2 (컨트롤러 판정 반영)
+
+라운드 1에서 남겨 둔 두 우려(a·b)에 대해 컨트롤러가 판정을 내렸다. 둘 다 반영했다.
+
+### 1) 완료된 입고가 `core.stock_balance`를 실제로 늘려야 한다 (판정: 확정된 gap)
+
+브리프 원문("`raw.goods_receipt`는 창고 입고 완료일과 완료 상태가 모두 확인된 건만
+`stock_balance` 증가 원장으로 연결한다")과 Task 6의 `core.allocate_new_stock(p_item_id,
+p_receipt_id)`가 이 값에 의존한다는 지적을 그대로 구현했다.
+
+**계산식** — 이중 계산 방지를 위해 컨트롤러가 제시한 그대로:
+
+```
+normal_qty = 최신 NORMAL 스냅샷 수량(snapshot_qty)
+           + 그 스냅샷 시각(snapshot_at) 이후 완료된 입고 합
+```
+
+**구현**
+
+- `core.stock_balance`에 `snapshot_qty`(실사 수량 그 자체) 열을 추가했다. `normal_qty`는
+  화면·뷰가 읽는 최종값으로 의미가 바뀌었다 — `snapshot_qty` + 자격 있는 완료 입고 합.
+- `core.stock_receipt_ledger` — 완료된 입고를 건별로 기록하는 append-only 표.
+  `source_record_id`에 유니크 제약을 걸어 같은 입고가 두 번 반영되지 않는다(`on conflict
+  (source_record_id) do nothing`). 행을 지우거나 고치지 않는다 — 반영 시점의 사실을 그대로
+  보존한다.
+- `core.recompute_stock_balance_totals(p_item_ids)` — `normal_qty = snapshot_qty +
+  sum(원장.qty where completed_at > snapshot_at)`을 다시 계산하는 내부 함수. 새 스냅샷이나
+  새 완료 입고가 반영될 때마다 영향받은 품목만 다시 계산한다. 이 방식이라면 "새 스냅샷이
+  이전 입고를 흡수한다"가 저절로 성립한다 — 새 스냅샷의 `snapshot_at`이 이전 입고의
+  `completed_at`보다 뒤라면 그 비교식이 자동으로 그 입고를 빼기 때문이다(원장 행 자체는
+  지우지 않는다 — 감사 이력).
+- `core.apply_stock_receipts_from_batch(p_batch_id)` — goods_receipt 배치에서 완료
+  (`receipt_status='COMPLETED'`) + 입고일 확인된 행만 원장에 기록하고 영향받은 품목을
+  재계산한다. `core.commit_import_batch`가 `goods_receipt` 타입 배치를 적재한 직후 같은
+  트랜잭션에서 호출한다(라운드 1과 같은 자리 — inventory는
+  `core.apply_stock_balance_from_batch`, goods_receipt는 이 함수).
+- **원장 기록은 `core.stock_balance` 존재 여부와 무관하게 조건 없이 한다** — 처음에는 "이미
+  확정 정상 창고재고 행이 있는 품목만" 조건을 걸었는데, 그러면 실사 스냅샷보다 입고가 먼저
+  도착한 품목의 입고가 영원히 누락되는 순서 의존 버그가 생긴다는 것을 스크래치 DB 검증
+  중 스스로 발견해 고쳤다. 지금은 원장에는 항상 기록하고, `core.stock_balance`에 그 품목
+  행이 아직 없으면 `recompute_stock_balance_totals`의 UPDATE가 그냥 0행에 적용돼 아무 일도
+  하지 않는다 — 나중에 그 품목의 실사 스냅샷이 들어오면 그 시점에 자동으로 반영된다("입고만
+  으로 기준선을 추정하지 않는다"는 원칙은 그대로 지켜진다).
+
+### 2) 창고전용 예시 시드 제거 (판정: 확정)
+
+`core.inventory_scope_rule` 시드에서 `('SERVICE_CENTER', null, ...)` · `('PARTNER', null,
+...)` 두 행을 지웠다. 표 구조·유니크 제약·`core.classify_inventory_scope`의 우선순위 로직은
+그대로 둬서, 실제 창고 표기가 확인되면 행만 추가하면 되도록 했다. `docs/데이터-요청목록.md`
+"1-1. 재고 스냅샷" 절에 창고코드 → 범위 매핑표 요청 한 줄을 추가했다.
+
+창고전용 규칙이 실제로 상태전용 규칙을 이기는지는 이제 운영 시드가 아니라 스크래치 DB
+안에서 임시로 행을 넣고(`begin` ~ `rollback`) 확인한다 — 마이그레이션 파일의 확인 쿼리
+섹션에 그 절차를 주석으로 남겼다.
+
+### 다시 테스트한 것
+
+TS 변경은 없었다(이번 라운드는 SQL과 `docs/데이터-요청목록.md`만 수정). 기존 스위트가
+그대로 통과하는지만 재확인했다.
+
+```
+$ npm test
+ℹ tests 132 · pass 132 · fail 0
+
+$ npm run build
+✓ Compiled successfully
+✓ Generating static pages (22/22)
+
+$ git diff --check
+(출력 없음)
+```
+
+**임시 PostgreSQL 검증 (새 스크래치 DB, 같은 부트스트랩 절차)**
+
+`scm_task4_fix2_<timestamp>` DB에 같은 절차(stub → schema-dump → 전체 migrations 순서 적용,
+STEP4·STEP7 비-멱등 정책 선처리)로 재구성했다. Task 4 마이그레이션을 두 번 연속 적용해
+재실행 안전성도 재확인(둘 다 exit 0, 시드 15행 — 창고전용 2행이 빠진 개수가 맞다).
+
+1. **(i) 스냅샷 NORMAL 20(T0) + 완료 입고 5, 완료 시각 T1(T1>T0) → 25** — ADMIN 세션에서
+   `core.commit_import_batch`로 inventory 배치(정상 20, 2026-09-01) 커밋 →
+   `snapshot_qty=20, normal_qty=20`. 이어서 goods_receipt 배치(`source_record_id='GR-1'`,
+   수량 5, `입고일=2026-09-05`, `receipt_status='COMPLETED'`) 커밋 → `normal_qty=25`,
+   원장에 `GR-1` 1행(수량 5, `completed_at=2026-09-05`).
+2. **(ii) 같은 입고 재반영/재커밋 → 그대로 25** — 두 방식 모두 확인.
+   - `core.refresh_stock_balance()`를 같은 inventory 배치 ID로 재호출 → `normal_qty=25`
+     그대로(`snapshot_qty` 재계산도 20으로 동일, 원장 합도 5로 동일).
+   - `GR-1`과 똑같은 `source_record_id`로 새 goods_receipt 배치를 만들어 다시 커밋 →
+     `normal_qty=25` 그대로, `core.stock_receipt_ledger`에서 `source_record_id='GR-1'`
+     행 수는 여전히 1행(유니크 제약이 두 번째 반영을 막음).
+3. **(iii) 완료 아닌 입고는 반영되지 않는다** — 별도 품목(ITEM902, 정상 12)에
+   `receipt_status='PENDING'`인 입고 7을 커밋 → `normal_qty=12` 그대로, 원장에 그 품목 행
+   0개(반영 자체가 안 됨 — 나중에 상태가 바뀌어 재업로드되면 그때 새 `source_record_id`로
+   들어올 수 있다).
+4. **(iv) 새 스냅샷이 이전 입고를 흡수한다** — 같은 품목(ITEM901)에 정상 30, 스냅샷 시각
+   T2=2026-09-10(T2>T1) 배치를 커밋 → `snapshot_qty=30, normal_qty=30` (T1=09-05 입고는
+   이미 스냅샷에 잡혔다고 보고 다시 더하지 않는다 — 원장 행 자체는 남아 있다).
+5. **(보너스) 스냅샷보다 입고가 먼저 도착해도 값이 사라지지 않는다** — 신규 품목(ITEM903)에
+   실사 스냅샷 없이 완료 입고(수량 8, `완료=2026-09-02`)부터 커밋 →
+   `core.stock_balance`에 그 품목 행이 생기지 않음(원장에는 기록됨, "입고만으로 기준선을
+   추정하지 않는다" 원칙 유지). 이어서 같은 품목에 정상 10, 스냅샷 시각 2026-09-01(입고보다
+   이른 시각) 배치를 커밋 → `snapshot_qty=10, normal_qty=18`(10+8) — 순서와 무관하게 자격
+   있는 입고가 자동으로 반영됨을 확인. 처음에는 "이미 `stock_balance` 행이 있는 품목만
+   원장에 기록"하도록 짰었는데, 이 케이스로 순서 의존 버그를 직접 찾아내 고쳤다(위 "구현"
+   설명 참고).
+6. **창고 규칙 우선순위 재확인** — 창고전용 시드가 없는 상태에서
+   `classify_inventory_scope('SERVICE_CENTER', '정상')` → `NORMAL`(상태전용 규칙만 적용).
+   `begin`으로 감싸 임시 창고전용 규칙 1행을 넣고 같은 호출 → `SERVICE_CENTER`(창고전용이
+   이김). `rollback` 후 `warehouse_code='SERVICE_CENTER'`인 행 0개 — 운영 시드에 남지
+   않음을 확인.
+7. **원본 3항목 재확인** — 상태 미입력(ITEM999) → `null + INVENTORY_SCOPE_UNCLASSIFIED`.
+   ATP_VIEW 전용(SALES_REP) → `v_available_stock` 0행, `v_order_available_stock`은 최소
+   4열로 ITEM901(30)·ITEM902(12)·ITEM903(18) 정상 표시(라운드 2에서 달라진 숫자가 그대로
+   반영됨 — 회귀 없음 확인). anon → `analytics`·`core` 스키마 자체가 permission denied.
+
+검증 후 스크래치 DB를 삭제했다.
+
+### 변경 파일 (fix round 2)
+
+- 수정: `supabase/migrations/20260911000500_stage1_inventory_availability.sql`
+- 수정: `docs/데이터-요청목록.md` (창고코드 → 범위 매핑표 요청 추가)
+
+### 남은 이슈 (업데이트)
+
+- `core.inventory_scope_rule`의 창고전용 규칙은 이제 시드가 하나도 없다 — 실제 창고 표기가
+  오기 전까지 창고 단독으로는 아무 것도 SERVICE_CENTER/PARTNER로 분류되지 않는다(상태전용
+  규칙만 적용된다). 표기가 확정되면 `insert ... (warehouse_code, null, ...)` 행만 추가하면
+  된다.
+- `raw.goods_receipt`의 `입고일`은 날짜만 있고 시각이 없다(`date` 정밀도). 스냅샷 `snapshot_at`
+  은 timestamptz라 시각까지 있을 수 있다 — 같은 날 안에서 스냅샷과 입고의 선후 관계가
+  달력일 단위로만 비교된다(자정 기준). 이 정밀도 차이는 raw 스키마 자체의 한계이며 이번
+  라운드에서 손대지 않았다.
