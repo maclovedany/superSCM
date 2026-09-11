@@ -1,0 +1,618 @@
+-- Task 9b 발주계획 계산·확정·승인 — 검증 시나리오. 로컬 임시 DB(scm_test_*) 전용, fixtures.psql 적용 뒤 실행.
+-- 구조는 supabase/tests/item_policy/scenarios.psql과 같다: 사용자 컨텍스트가 필요한 구간은
+-- `set role authenticated`(진짜 RLS·GRANT 적용) 안에서 as_user()로 auth.uid()를 지정하고, 결과 확인은
+-- `reset role`(슈퍼유저) 뒤 원본 테이블을 직접 읽어 판정한다. RLS 자체를 검증하는 S22만 authenticated로 확인한다.
+-- 게이트 · 계산 불가 사유 시나리오(S13 · S18~S21)는 begin … rollback 안에서 실행해 뒤 시나리오에 흔적을 남기지 않는다.
+\set ON_ERROR_STOP 1
+\ir guard.psql
+\pset tuples_only on
+\pset format unaligned
+
+\set planner1 '00000000-0000-4000-8000-000000000401'
+\set planner2 '00000000-0000-4000-8000-000000000402'
+\set lead1 '00000000-0000-4000-8000-000000000403'
+\set marketing1 '00000000-0000-4000-8000-000000000404'
+\set admin1 '00000000-0000-4000-8000-000000000405'
+\set dualrole1 '00000000-0000-4000-8000-000000000406'
+\set run1 '00000000-0000-4000-8000-0000000004f1'
+\set month '2026-10-01'
+
+
+\echo '== S1 권한 · 입력 — PLAN_CONFIRM이 없으면 계획을 만들 수 없다 =='
+set role authenticated;
+select plan_test.as_user(:'marketing1') \g /dev/null
+select plan_test.expect_error(format($f$select core.build_procurement_plan(%L, %L)$f$, :'month', :'run1'),
+  '발주계획 생성 권한', 'S1 마케팅은 발주계획을 만들 수 없다');
+select plan_test.as_user(:'lead1') \g /dev/null
+select plan_test.expect_error(format($f$select core.build_procurement_plan(%L, %L)$f$, :'month', :'run1'),
+  '발주계획 생성 권한', 'S1 SCM팀장(PLAN_APPROVE만)은 발주계획을 만들 수 없다');
+select plan_test.as_user(:'planner1') \g /dev/null
+select plan_test.expect_error(format($f$select core.build_procurement_plan(%L, %L)$f$, :'month', '00000000-0000-4000-8000-00000000ffff'),
+  'FORECAST_RUN_NOT_FOUND', 'S1 없는 Forecast Run을 지정하면 거절된다');
+select plan_test.expect_error($f$select core.build_procurement_plan(null, null)$f$,
+  'PLAN_MONTH_REQUIRED', 'S1 기준월은 필수다');
+reset role;
+
+
+\echo '== S2 정상 생성 — 품목 4개 × 6개월, 입력값 스냅샷 =='
+set role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as plan_v1 \gset
+reset role;
+select plan_test.check(
+  (select status = 'DRAFT' and version = 1 and source_status = 'VERIFIED' and forecast_run_id = :'run1'
+      and built_by = :'planner1'::uuid and forecast_train_end = '2026-06-30' and forecast_data_snapshot_at = '2026-07-01T00:00:00Z'
+     from core.procurement_plan where plan_id = :'plan_v1'),
+  'S2 첫 계획은 DRAFT · 버전 1 · 원천 VERIFIED이고 Forecast Run과 학습 기간을 기록한다');
+select plan_test.check((select count(*) = 24 from core.procurement_plan_line where plan_id = :'plan_v1'),
+  'S2 품목 4개 × 6개월 = 24라인');
+select plan_test.check(
+  (select array_agg(target_month order by month_no) = array['2026-10-01','2026-11-01','2026-12-01','2027-01-01','2027-02-01','2027-03-01']::date[]
+     from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B01'),
+  'S2 1개월차는 기준월이고 6개월차까지 이어진다');
+select plan_test.check(
+  (select champion_model_id = 'MA_3M' and model_version is not null and stock_snapshot_at = '2026-09-30T00:00:00Z'
+      and target_dos_days = 30 and target_dos_approved and unit_price = 1000 and moq = 50
+      and normal_stock_qty = 80 and allocated_qty = 0 and available_qty = 80
+     from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B01' and month_no = 1),
+  'S2 Champion · 재고 스냅샷 시각 · 정책 값을 라인에 스냅샷한다');
+select plan_test.check((select count(*) = 1 from core.procurement_plan_event where plan_id = :'plan_v1' and event_type = 'BUILT'),
+  'S2 생성 이력(BUILT)이 남는다');
+
+
+\echo '== S3 필요량 120, MOQ 50 → 최종 발주량 150 =='
+select plan_test.check(
+  (select calculation_status = 'CALCULATED' and reason_code is null and base_forecast_qty = 100 and avg_usage_6m = 100
+      and start_stock_qty = 80 and demand_qty = 100 and stockout_prevention_qty = 20 and dos_required_qty = 120
+      and selected_qty = 120 and selection_reason = 'DOS_TARGET' and effective_moq = 50 and final_order_qty = 150
+     from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B01' and month_no = 1),
+  'S3 필요량 120 · MOQ 50이면 최종 발주량 150(선택 기준 DOS_TARGET)');
+select plan_test.check(
+  (select projected_month_end_qty = 130 and projected_dos_days = 39.0 and projected_inventory_value = 130000
+     from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B01' and month_no = 1),
+  'S3 예상 월말재고 130 · 예상 DoS 39.0일 · 예상 재고금액 130,000');
+select plan_test.check(
+  (select start_stock_qty = 130 and stockout_prevention_qty = 0 and dos_required_qty = 70 and final_order_qty = 100
+     from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B01' and month_no = 2),
+  'S3 2개월차 시작재고는 1개월차 예상 월말재고(130)다');
+
+
+\echo '== S4 MOQ null이면 1을 적용한다 =='
+select plan_test.check(
+  (select moq is null and effective_moq = 1 and avg_usage_6m = 100.5 and selected_qty = 120.5 and final_order_qty = 121
+      and projected_month_end_qty = 101 and projected_dos_days = 30.1
+     from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B02' and month_no = 1),
+  'S4 MOQ 미설정이면 1로 올림한다(120.5 → 121)');
+
+
+\echo '== S5 1개월차 ±20% Flex — 부서 합의 수량이 범위를 벗어나면 범위 안으로, 승인 추가 수요는 뒤에 더한다 =='
+select plan_test.check(
+  (select department_agreed_qty = 150 and candidate_source = 'DEPARTMENT_AGREED' and flex_min_qty = 80 and flex_max_qty = 120
+      and adjusted_demand_qty = 120 and flex_applied
+     from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B03' and month_no = 1),
+  'S5 1차 Forecast가 ±20% 범위를 벗어나면(150) 범위 안(120)에서 선택한다');
+select plan_test.check(
+  (select meeting_qty = 50 and confirmed_order_qty = 0 and event_qty = 0 and approved_added_qty = 50 and demand_qty = 170
+     from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B03' and month_no = 1),
+  'S5 승인된 수급회의 추가 수요(50)는 클램프 뒤에 더한다(120 + 50 = 170)');
+select plan_test.check(
+  (select department_agreed_qty = 110 and adjusted_demand_qty = 110 and not flex_applied
+     from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B04' and month_no = 1),
+  'S5 범위 안(110)이면 조정하지 않는다');
+select plan_test.check(
+  (select candidate_source = 'BASE_FORECAST' and department_agreed_qty is null and meeting_qty = 0 and demand_qty = 100
+     from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B01' and month_no = 1),
+  'S5 합의 전 제출본 · 오류 줄 · 미승인 수급회의 결과는 조정 후보나 추가 수요가 아니다');
+
+
+\echo '== S6 2~3개월차 ±30% Flex =='
+select plan_test.check(
+  (select flex_min_qty = 70 and flex_max_qty = 130 and adjusted_demand_qty = 130 and flex_applied
+     from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B03' and month_no = 2),
+  'S6 2차 Forecast가 ±30% 범위를 벗어나면(200) 범위 안(130)에서 선택한다');
+select plan_test.check(
+  (select adjusted_demand_qty = 70 and flex_applied
+     from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B03' and month_no = 3),
+  'S6 3개월차도 ±30%다(60 → 70)');
+
+
+\echo '== S7 4~6개월차는 Flex 미적용 =='
+select plan_test.check(
+  (select bool_and(flex_min_qty is null and flex_max_qty is null and not flex_applied)
+     from core.procurement_plan_line where plan_id = :'plan_v1' and month_no between 4 and 6),
+  'S7 4~6개월차는 모든 품목에서 Flex 범위를 저장하지 않는다');
+select plan_test.check(
+  (select adjusted_demand_qty = 300 from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B03' and month_no = 4),
+  'S7 4개월차 부서 합의 수량(300)은 조정하지 않는다');
+select plan_test.check(
+  (select candidate_source = 'BASE_FORECAST' and adjusted_demand_qty = 100
+     from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B03' and month_no = 6),
+  'S7 부서 합의 수량이 없는 달은 기준 Forecast를 쓴다');
+
+
+\echo '== S8 목표 DoS null이면 확정 차단 =='
+select plan_test.check(
+  (select bool_and(calculation_status = 'CALCULATION_UNAVAILABLE' and final_order_qty is null and selected_qty is null
+                   and 'TARGET_DOS_UNSET' = any(reason_codes) and not target_dos_approved)
+     from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B04'),
+  'S8 목표 DoS 미설정 품목은 6개월 모두 계산 불가 + TARGET_DOS_UNSET');
+select plan_test.check(
+  (select reason_code = 'TARGET_DOS_UNSET' from core.procurement_plan_line where plan_id = :'plan_v1' and item_id = 'T9B04' and month_no = 1),
+  'S8 1개월차 대표 사유는 TARGET_DOS_UNSET');
+set role authenticated;
+select plan_test.as_user(:'marketing1') \g /dev/null
+select plan_test.expect_error(format($f$select core.confirm_procurement_plan(%L)$f$, :'plan_v1'),
+  '발주계획 확정 권한', 'S8 마케팅은 계획을 확정할 수 없다');
+select plan_test.as_user(:'lead1') \g /dev/null
+select plan_test.expect_error(format($f$select core.confirm_procurement_plan(%L)$f$, :'plan_v1'),
+  '발주계획 확정 권한', 'S8 SCM팀장도 확정(PLAN_CONFIRM)은 할 수 없다');
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.confirm_procurement_plan(:'plan_v1') as s8_result \gset
+reset role;
+select plan_test.check((:'s8_result')::jsonb ->> 'status' = 'BLOCKED', 'S8 확정 요청은 BLOCKED로 거절된다');
+select plan_test.check(
+  exists (select 1 from jsonb_array_elements((:'s8_result')::jsonb -> 'blocking_reasons') e
+           where e ->> 'reason_code' = 'TARGET_DOS_UNSET' and (e ->> 'item_count')::int = 1),
+  'S8 차단 사유 목록에 TARGET_DOS_UNSET(품목 1개)이 있다');
+select plan_test.check(
+  (select status = 'DRAFT' and approval_id is null and confirmed_by is null from core.procurement_plan where plan_id = :'plan_v1'),
+  'S8 차단되면 계획은 DRAFT 그대로이고 승인 요청이 없다');
+select plan_test.check(
+  not exists (select 1 from core.approval_request where approval_type = 'PURCHASE_PLAN' and target_id = :'plan_v1'),
+  'S8 PURCHASE_PLAN 승인 요청이 만들어지지 않는다');
+select plan_test.check(
+  (select count(*) = 1 from core.procurement_plan_event where plan_id = :'plan_v1' and event_type = 'CONFIRM_BLOCKED'
+      and payload -> 'blocking_reasons' is not null),
+  'S8 확정 차단 이력(CONFIRM_BLOCKED)과 사유가 남는다');
+select plan_test.check(
+  (select not confirmable from analytics.v_procurement_plan where plan_id = :'plan_v1'),
+  'S8 조회 뷰도 확정 불가(confirmable=false)로 표시한다');
+select plan_test.check(
+  (select jsonb_agg(jsonb_build_object('reason_code', reason_code, 'line_count', line_count, 'item_count', item_count)
+                    order by reason_rank, reason_code)
+     from analytics.v_procurement_plan_blocker where plan_id = :'plan_v1') = (:'s8_result')::jsonb -> 'blocking_reasons',
+  'S8 화면용 차단 사유 뷰(v_procurement_plan_blocker)와 확정 함수가 돌려준 사유가 같다');
+
+
+\echo '== S9 목표 DoS 값이 있어도 승인 이력이 없으면 계산은 하되 확정은 차단 · 재계산은 새 버전 =='
+-- 9a 이전에 직접 들어간 값을 흉내 낸다(운영에서는 authenticated가 이 컬럼을 쓸 수 없다).
+update core.item_policy set target_dos_days = 20 where item_id = 'T9B04';
+set role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as plan_v2 \gset
+select core.confirm_procurement_plan(:'plan_v2') as s9_result \gset
+reset role;
+select plan_test.check(
+  (select status = 'SUPERSEDED' and superseded_by_plan_id = :'plan_v2' and superseded_at is not null
+     from core.procurement_plan where plan_id = :'plan_v1'),
+  'S9 다시 계산하면 이전 미확정 계획은 SUPERSEDED가 되고 새 버전을 가리킨다');
+select plan_test.check(
+  (select count(*) = 1 from core.procurement_plan_event where plan_id = :'plan_v1' and event_type = 'SUPERSEDED'),
+  'S9 대체 이력(SUPERSEDED)이 남는다');
+select plan_test.check((select version = 2 and status = 'DRAFT' from core.procurement_plan where plan_id = :'plan_v2'),
+  'S9 새 계획은 버전 2 DRAFT');
+select plan_test.check(
+  (select calculation_status = 'CALCULATED' and reason_code = 'TARGET_DOS_UNSET' and target_dos_days = 20 and not target_dos_approved
+      and final_order_qty = 97 and projected_month_end_qty = 67 and projected_dos_days = 20.1
+     from core.procurement_plan_line where plan_id = :'plan_v2' and item_id = 'T9B04' and month_no = 1),
+  'S9 미승인 목표 DoS(20)로 계산은 하고(97) 사유 TARGET_DOS_UNSET을 남긴다');
+select plan_test.check(
+  (:'s9_result')::jsonb ->> 'status' = 'BLOCKED'
+  and (select count(*) = 1 and bool_and(e ->> 'reason_code' = 'TARGET_DOS_UNSET' and (e ->> 'line_count')::int = 6)
+         from jsonb_array_elements((:'s9_result')::jsonb -> 'blocking_reasons') e),
+  'S9 계산은 됐어도 목표 DoS 미승인이면 확정이 차단된다(사유 1종 · 6라인)');
+
+
+\echo '== S10 test Actual을 바꿔도 계획의 학습 Forecast 근거가 변하지 않는다 =='
+select plan_test.line_signature(:'plan_v2', 'T9B01') as s10_before \gset
+update raw.usage_history set qty = 99999 where usage_id = 'T9B-T9B01-TEST';
+insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse)
+values ('T9B-T9B01-TEST-2', 'T9B01', '2026-08-20', 5, 'MAIN');
+select plan_test.check(plan_test.line_signature(:'plan_v2', 'T9B01') = :'s10_before',
+  'S10 이미 만든 계획 라인은 test Actual 변경에 영향받지 않는다');
+set role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as plan_v3 \gset
+reset role;
+select plan_test.check(
+  (select source_status = 'VERIFIED' from core.procurement_plan where plan_id = :'plan_v3')
+  and plan_test.line_signature(:'plan_v3', 'T9B01') = :'s10_before',
+  'S10 test Actual(출처 없는 행 포함)을 바꾼 뒤 다시 계산해도 원천 판정 · 평균사용량 · 발주량이 같다');
+
+
+\echo '== S11 영업 확률을 바꿔도 최종 발주량이 변하지 않는다 =='
+insert into core.sales_order (order_no, customer_name, owner_user_id, owner_name, status)
+values ('T9B-SO-DRAFT', '확률 높은 고객', :'planner1', 'SCM품목담당1', 'DRAFT')
+returning order_id as s11_order \gset
+insert into core.sales_order_line (order_id, line_no, item_id, requested_qty) values (:'s11_order', 1, 'T9B01', 400);
+insert into raw.sales_order (order_no, order_date, item_id, quantity, order_status, attributes)
+values ('T9B-PIPE-1', '2026-09-01', 'T9B01', 400, 'OPPORTUNITY', '{"probability": 0.6}');
+update raw.sales_order set attributes = '{"probability": 1.0}' where order_no = 'T9B-PIPE-1';
+set role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as plan_v4 \gset
+reset role;
+select plan_test.check(plan_test.line_signature(:'plan_v4', 'T9B01') = :'s10_before',
+  'S11 미확정 주문 · 영업 확률 100% 파이프라인이 있어도 T9B01 계산값이 같다');
+select plan_test.check(
+  (select confirmed_order_qty = 0 and approved_added_qty = 0 from core.procurement_plan_line
+    where plan_id = :'plan_v4' and item_id = 'T9B01' and month_no = 1),
+  'S11 확정 수주 수량은 0이다(CONFIRMED 주문만 반영)');
+
+
+\echo '== S12 목표 DoS 승인 후 재계산 → 확정 → PURCHASE_PLAN 승인 대기 =='
+set role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.request_item_policy_change('T9B04', 20, 'AUTO', null, null, null, null, null, '목표 DoS 승인 요청') as s12_revision \gset
+reset role;
+select approval_id as s12_policy_approval from core.item_policy_revision where revision_id = :'s12_revision' \gset
+set role authenticated;
+select plan_test.as_user(:'lead1') \g /dev/null
+select core.decide_approval(:'s12_policy_approval', 'APPROVED', '목표 DoS 승인') \g /dev/null
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as plan_v5 \gset
+reset role;
+select plan_test.check(
+  (select count(*) = 24 and bool_and(calculation_status = 'CALCULATED' and target_dos_approved)
+     from core.procurement_plan_line where plan_id = :'plan_v5'),
+  'S12 목표 DoS가 승인되면 24라인 모두 계산되고 승인 상태를 스냅샷한다');
+select plan_test.check((select confirmable and not is_final from analytics.v_procurement_plan where plan_id = :'plan_v5'),
+  'S12 확정 가능(confirmable)하지만 아직 최종본은 아니다');
+set role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.confirm_procurement_plan(:'plan_v5') as s12_result \gset
+reset role;
+select (:'s12_result')::jsonb ->> 'approval_id' as s12_approval \gset
+select plan_test.check((:'s12_result')::jsonb ->> 'status' = 'PENDING_APPROVAL', 'S12 확정하면 PENDING_APPROVAL을 돌려준다');
+select plan_test.check(
+  (select status = 'PENDING_APPROVAL' and approval_id = :'s12_approval' and confirmed_by = :'planner1'::uuid and confirmed_at is not null
+     from core.procurement_plan where plan_id = :'plan_v5'),
+  'S12 계획은 PENDING_APPROVAL이고 확정자 · 승인 요청이 연결된다');
+select plan_test.check(
+  (select approval_type = 'PURCHASE_PLAN' and target_type = 'PROCUREMENT_PLAN' and target_id = :'plan_v5' and status = 'PENDING'
+      and requested_by = :'planner1'::uuid
+     from core.approval_request where approval_id = :'s12_approval'),
+  'S12 PURCHASE_PLAN 승인 요청이 PENDING으로 생긴다');
+select plan_test.check((select not is_final from analytics.v_procurement_plan where plan_id = :'plan_v5'),
+  'S12 승인 전에는 최종본이 아니다');
+select plan_test.check(
+  (select count(*) = 1 from core.procurement_plan_event where plan_id = :'plan_v5' and event_type = 'CONFIRMED'),
+  'S12 확정 이력(CONFIRMED)이 남는다');
+select plan_test.check(
+  exists (select 1 from core.notification_outbox where template_code = 'APPROVAL_PENDING'
+           and payload ->> 'approval_id' = :'s12_approval' and recipient_user_id = :'lead1'::uuid),
+  'S12 SCM팀장에게 승인 대기 알림이 예약된다');
+set role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select plan_test.expect_error(format($f$select core.confirm_procurement_plan(%L)$f$, :'plan_v5'),
+  '확정할 수 있는 상태가 아닙니다', 'S12 이미 승인 대기 중인 계획은 다시 확정할 수 없다');
+select plan_test.expect_error(
+  format($f$select core.request_approval('PURCHASE_PLAN', 'PROCUREMENT_PLAN', %L, '{}'::jsonb)$f$, :'plan_v5'),
+  'core.confirm_procurement_plan', 'S12 확정 함수를 거치지 않은 PURCHASE_PLAN 승인 요청은 거절된다');
+reset role;
+
+
+\echo '== S13 확정한 사람은 자신의 계획을 승인할 수 없다 =='
+set role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select plan_test.expect_error(format($f$select core.approve_procurement_plan(%L, %L)$f$, :'plan_v5', :'s12_approval'),
+  '결정할 업무 권한이 없습니다', 'S13 품목담당자(PLAN_APPROVE 없음)는 승인할 수 없다');
+reset role;
+begin;
+set local role authenticated;
+select plan_test.as_user(:'dualrole1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as s13_plan \gset
+select core.confirm_procurement_plan(:'s13_plan') ->> 'approval_id' as s13_approval \gset
+select plan_test.expect_error(format($f$select core.approve_procurement_plan(%L, %L)$f$, :'s13_plan', :'s13_approval'),
+  '자신이 요청한 승인은 직접 결정할 수 없습니다', 'S13 확정 · 승인 권한을 모두 가져도 자기가 확정한 계획은 승인할 수 없다');
+rollback;
+select plan_test.check((select status = 'PENDING_APPROVAL' from core.procurement_plan where plan_id = :'plan_v5'),
+  'S13 (롤백 확인) 승인 대기 계획은 그대로다');
+
+
+\echo '== S14 SCM팀장 승인 → 최종본 =='
+set role authenticated;
+select plan_test.as_user(:'lead1') \g /dev/null
+select plan_test.expect_error(format($f$select core.approve_procurement_plan(%L, %L)$f$, :'plan_v5', :'s12_policy_approval'),
+  '이 계획의 승인 요청이 아닙니다', 'S14 다른 승인 요청 ID로는 계획을 승인할 수 없다');
+select core.approve_procurement_plan(:'plan_v5', :'s12_approval', '최종 승인') \g /dev/null
+reset role;
+select plan_test.check(
+  (select status = 'APPROVED' and decided_by = :'lead1'::uuid and decider_name = 'SCM팀장1' and decided_at is not null
+      and decision_comment = '최종 승인'
+     from core.procurement_plan where plan_id = :'plan_v5'),
+  'S14 승인 결정 트랜잭션에서 계획이 APPROVED가 되고 승인자 · 의견이 남는다');
+select plan_test.check((select status = 'APPROVED' from core.approval_request where approval_id = :'s12_approval'),
+  'S14 승인 요청도 APPROVED다');
+select plan_test.check(
+  (select is_final and is_latest_approved from analytics.v_procurement_plan where plan_id = :'plan_v5'),
+  'S14 조회 뷰에서 최종본(is_final) · 최신 승인본(is_latest_approved)이다');
+select plan_test.check(
+  (select count(*) = 1 from core.procurement_plan_event where plan_id = :'plan_v5' and event_type = 'APPROVED'
+      and actor = :'lead1'::uuid),
+  'S14 승인 이력(APPROVED)이 승인자와 함께 남는다');
+select plan_test.check(
+  exists (select 1 from core.audit_log where action = 'PROCUREMENT_PLAN_APPROVED' and target_id = :'plan_v5'),
+  'S14 감사 로그(PROCUREMENT_PLAN_APPROVED)가 남는다');
+select plan_test.check(
+  (select count(*) = 2 from core.notification_outbox
+    where template_code = 'PROCUREMENT_PLAN_DECIDED' and recipient_user_id = :'planner1'::uuid
+      and dedupe_key = 'procurement_plan:' || :'plan_v5' || ':approval:' || :'s12_approval' || ':decision:APPROVED'
+      and payload ->> 'decision' = 'APPROVED'),
+  'S14 확정자에게 도메인 결과 알림(PROCUREMENT_PLAN_DECIDED)이 채널 2개로 예약된다');
+select plan_test.check(
+  (select count(*) = 2 from core.notification_outbox
+    where template_code = 'APPROVAL_DECIDED' and dedupe_key = 'approval:' || :'s12_approval' || ':decision:APPROVED'),
+  'S14 공통 결과 알림(APPROVAL_DECIDED)도 따로 남는다(dedupe_key 충돌 없음, error.md #23)');
+
+
+\echo '== S15 승인된 계획은 불변이다 =='
+select plan_test.expect_error(format($f$update core.procurement_plan_line set final_order_qty = 1 where plan_id = %L$f$, :'plan_v5'),
+  '수정하거나 삭제할 수 없습니다', 'S15 라인 수량을 바꿀 수 없다(슈퍼유저라도)');
+select plan_test.expect_error(format($f$delete from core.procurement_plan_line where plan_id = %L$f$, :'plan_v5'),
+  '수정하거나 삭제할 수 없습니다', 'S15 라인을 지울 수 없다');
+select plan_test.expect_error(format($f$update core.procurement_plan set decision_comment = '변경' where plan_id = %L$f$, :'plan_v5'),
+  '승인된 발주계획은 변경할 수 없습니다', 'S15 승인된 계획 행을 바꿀 수 없다');
+select plan_test.expect_error(format($f$delete from core.procurement_plan where plan_id = %L$f$, :'plan_v5'),
+  '삭제할 수 없습니다', 'S15 계획을 지울 수 없다');
+select plan_test.expect_error(
+  format($f$insert into core.procurement_plan_line (plan_id, item_id, month_no, target_month, calculation_status) values (%L, 'T9B01', 1, '2026-10-01', 'CALCULATION_UNAVAILABLE')$f$, :'plan_v5'),
+  'DRAFT', 'S15 승인된 계획에 라인을 추가할 수 없다');
+select plan_test.expect_error(
+  format($f$update core.procurement_plan_event set comment = 'x' where plan_id = %L$f$, :'plan_v5'),
+  '이력은 수정하거나 삭제할 수 없습니다', 'S15 계획 이력은 append-only다');
+set role authenticated;
+select plan_test.as_user(:'lead1') \g /dev/null
+select plan_test.expect_error(format($f$select core.approve_procurement_plan(%L, %L)$f$, :'plan_v5', :'s12_approval'),
+  '승인 대기 상태가 아닙니다', 'S15 이미 승인된 계획을 다시 승인할 수 없다');
+select plan_test.as_user(:'planner1') \g /dev/null
+select plan_test.expect_error(format($f$update core.procurement_plan_line set final_order_qty = 1 where plan_id = %L$f$, :'plan_v5'),
+  'permission denied', 'S15 authenticated는 라인을 직접 쓸 수 없다');
+reset role;
+
+
+\echo '== S16 승인 후 재계산은 새 버전을 만들고 승인본은 건드리지 않는다 =='
+select string_agg(plan_test.line_signature(:'plan_v5', item_id), '#' order by item_id) as s16_before
+  from (values ('T9B01'), ('T9B02'), ('T9B03'), ('T9B04')) as i(item_id) \gset
+set role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as plan_v6 \gset
+reset role;
+select plan_test.check((select version = 6 and status = 'DRAFT' from core.procurement_plan where plan_id = :'plan_v6'),
+  'S16 승인본이 있어도 새 버전(6)을 DRAFT로 만든다');
+select plan_test.check(
+  (select status = 'APPROVED' and superseded_by_plan_id is null and superseded_at is null
+     from core.procurement_plan where plan_id = :'plan_v5')
+  and (select string_agg(plan_test.line_signature(:'plan_v5', item_id), '#' order by item_id)
+         from (values ('T9B01'), ('T9B02'), ('T9B03'), ('T9B04')) as i(item_id)) = :'s16_before',
+  'S16 승인본(v5)은 상태 · 라인 모두 그대로다');
+select plan_test.check(
+  (select is_latest_approved and not is_latest_version from analytics.v_procurement_plan where plan_id = :'plan_v5')
+  and (select is_latest_version and not is_latest_approved and not is_final from analytics.v_procurement_plan where plan_id = :'plan_v6'),
+  'S16 v5는 여전히 최신 승인본, v6은 최신 버전이지만 최종본이 아니다');
+
+
+\echo '== S17 반려 → 미확정 · 재확정 · 승인 대기 중 재계산은 승인 요청을 취소한다 =='
+set role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.confirm_procurement_plan(:'plan_v6') ->> 'approval_id' as s17_approval \gset
+select plan_test.as_user(:'lead1') \g /dev/null
+select plan_test.expect_error(format($f$select core.decide_approval(%L, 'REJECTED', '')$f$, :'s17_approval'),
+  '반려 의견은 필수', 'S17 반려 의견 없이 반려할 수 없다');
+select core.decide_approval(:'s17_approval', 'REJECTED', '수량 재검토 필요') \g /dev/null
+reset role;
+select plan_test.check(
+  (select status = 'REJECTED' and decision_comment = '수량 재검토 필요' and decided_by = :'lead1'::uuid
+     from core.procurement_plan where plan_id = :'plan_v6'),
+  'S17 반려되면 계획은 REJECTED(미확정)이고 반려 의견이 남는다');
+select plan_test.check((select not is_final from analytics.v_procurement_plan where plan_id = :'plan_v6'),
+  'S17 반려된 계획은 최종본이 아니다');
+select plan_test.check(
+  (select count(*) = 1 from core.procurement_plan_event where plan_id = :'plan_v6' and event_type = 'REJECTED' and comment = '수량 재검토 필요'),
+  'S17 반려 이력(REJECTED)이 의견과 함께 남는다');
+select plan_test.check(
+  (select count(*) = 2 from core.notification_outbox where template_code = 'PROCUREMENT_PLAN_DECIDED'
+      and dedupe_key like 'procurement_plan:' || :'plan_v6' || ':approval:%:decision:REJECTED'),
+  'S17 반려 결과 알림이 확정자에게 예약된다');
+set role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.confirm_procurement_plan(:'plan_v6') ->> 'approval_id' as s17_approval2 \gset
+reset role;
+select plan_test.check(
+  :'s17_approval2' <> :'s17_approval'
+  and (select status = 'PENDING_APPROVAL' and approval_id = :'s17_approval2' from core.procurement_plan where plan_id = :'plan_v6'),
+  'S17 반려된 계획은 다시 확정할 수 있고 새 승인 요청이 연결된다');
+set role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as plan_v7 \gset
+reset role;
+select plan_test.check(
+  (select status = 'SUPERSEDED' and superseded_by_plan_id = :'plan_v7' from core.procurement_plan where plan_id = :'plan_v6')
+  and (select status = 'CANCELLED' from core.approval_request where approval_id = :'s17_approval2'),
+  'S17 승인 대기 중에 다시 계산하면 이전 승인 요청은 CANCELLED, 이전 계획은 SUPERSEDED다');
+select plan_test.check(
+  (select count(*) = 1 from core.procurement_plan_event where plan_id = :'plan_v6' and event_type = 'APPROVAL_CANCELLED'),
+  'S17 승인 요청 취소 이력이 남는다');
+select plan_test.check(
+  not exists (select 1 from core.notification_outbox where template_code = 'APPROVAL_PENDING'
+               and payload ->> 'approval_id' = :'s17_approval2' and status in ('PENDING', 'PROCESSING')),
+  'S17 취소된 승인 요청의 반복 알림은 더 이상 대기하지 않는다');
+select plan_test.check(
+  (select status = 'APPROVED' from core.procurement_plan where plan_id = :'plan_v5')
+  and (select is_latest_approved from analytics.v_procurement_plan where plan_id = :'plan_v5'),
+  'S17 승인본 v5는 여전히 최신 승인본이다');
+
+
+\echo '== S18 원천 게이트 — 출처 없는 학습 행이 하나라도 있으면 모든 라인이 계산 불가 =='
+begin;
+insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse)
+values ('T9B-DUMMY-1', 'T9B01', '2026-03-20', 5, 'MAIN');
+set local role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as s18_plan \gset
+select core.confirm_procurement_plan(:'s18_plan') as s18_result \gset
+reset role;
+select plan_test.check((select source_status = 'FORECAST_SOURCE_UNVERIFIED' from core.procurement_plan where plan_id = :'s18_plan'),
+  'S18 계획의 원천 판정은 FORECAST_SOURCE_UNVERIFIED다');
+select plan_test.check(
+  (select count(*) = 24 and bool_and(calculation_status = 'CALCULATION_UNAVAILABLE' and reason_code = 'FORECAST_SOURCE_UNVERIFIED'
+                                     and base_forecast_qty is null and avg_usage_6m is null and flex_min_qty is null
+                                     and selected_qty is null and final_order_qty is null and projected_month_end_qty is null)
+     from core.procurement_plan_line where plan_id = :'s18_plan'),
+  'S18 모든 품목 · 모든 달이 계산 불가이고 Forecast 유래 수량은 null이다');
+select plan_test.check(
+  (:'s18_result')::jsonb ->> 'status' = 'BLOCKED'
+  and exists (select 1 from jsonb_array_elements((:'s18_result')::jsonb -> 'blocking_reasons') e
+               where e ->> 'reason_code' = 'FORECAST_SOURCE_UNVERIFIED' and (e ->> 'item_count')::int = 4),
+  'S18 확정은 FORECAST_SOURCE_UNVERIFIED로 거절된다');
+rollback;
+
+
+\echo '== S19 원천 게이트 — stale 실행 · 학습 기간 변경 =='
+begin;
+insert into core.upload_batch (file_name, import_type, import_mode, status, imported_at)
+values ('t9b-later-usage.csv', 'usage_history', 'append', 'IMPORTED', clock_timestamp());
+set local role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as s19_plan \gset
+reset role;
+select plan_test.check(
+  (select source_status = 'FORECAST_RUN_STALE' from core.procurement_plan where plan_id = :'s19_plan')
+  and (select bool_and(calculation_status = 'CALCULATION_UNAVAILABLE' and reason_code = 'FORECAST_RUN_STALE' and final_order_qty is null)
+         from core.procurement_plan_line where plan_id = :'s19_plan'),
+  'S19 실행 이후 사용 이력 배치가 적재되면(is_stale) 모든 라인이 FORECAST_RUN_STALE');
+rollback;
+begin;
+-- 검증된 배치 소속이지만 실행 스냅샷 이후에 적재된 학습 행
+insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse, batch_id, source_type, loaded_at, source_record_id)
+values ('T9B-LATE-1', 'T9B02', '2026-06-20', 1, 'MAIN', '00000000-0000-4000-8000-0000000004b1', 'FILE_UPLOAD', clock_timestamp(), 'T9B-LATE-1');
+set local role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as s19_plan2 \gset
+reset role;
+select plan_test.check((select source_status = 'FORECAST_RUN_STALE' from core.procurement_plan where plan_id = :'s19_plan2'),
+  'S19 실행 스냅샷 이후 적재된 학습 행이 있으면 FORECAST_RUN_STALE');
+rollback;
+begin;
+update core.forecast_setting set train_end = '2026-05-31' where active;
+set local role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as s19_plan3 \gset
+reset role;
+select plan_test.check(
+  (select source_status = 'FORECAST_WINDOW_CHANGED' from core.procurement_plan where plan_id = :'s19_plan3')
+  and (select bool_and(reason_code = 'FORECAST_WINDOW_CHANGED') from core.procurement_plan_line where plan_id = :'s19_plan3'),
+  'S19 실행 뒤 학습 기간 설정이 바뀌면 FORECAST_WINDOW_CHANGED');
+rollback;
+
+
+\echo '== S20 필수 근거 누락 — 재고 분류 불가 · Champion 없음 · KPI는 부분 계산을 합산하지 않는다 =='
+begin;
+delete from core.stock_balance where item_id = 'T9B02';
+insert into core.item_policy (item_id, item_grade) values ('T9B05', 'C');
+set local role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', :'run1') as s20_plan \gset
+select core.confirm_procurement_plan(:'s20_plan') as s20_result \gset
+reset role;
+select plan_test.check(
+  (select calculation_status = 'CALCULATION_UNAVAILABLE' and reason_code = 'INVENTORY_SCOPE_UNCLASSIFIED'
+      and start_stock_qty is null and available_qty is null and final_order_qty is null and demand_qty = 100
+     from core.procurement_plan_line where plan_id = :'s20_plan' and item_id = 'T9B02' and month_no = 1),
+  'S20 재고 분류가 없으면 0으로 채우지 않고 INVENTORY_SCOPE_UNCLASSIFIED(수요 쪽 값은 남긴다)');
+select plan_test.check(
+  (select reason_code = 'PRIOR_MONTH_UNAVAILABLE' and start_stock_qty is null
+     from core.procurement_plan_line where plan_id = :'s20_plan' and item_id = 'T9B02' and month_no = 2),
+  'S20 전월이 계산 불가면 다음 달은 PRIOR_MONTH_UNAVAILABLE');
+select plan_test.check(
+  (select reason_code = 'CHAMPION_UNAVAILABLE' and 'UNIT_PRICE_UNSET' = any(reason_codes) and 'TARGET_DOS_UNSET' = any(reason_codes)
+      and base_forecast_qty is null
+     from core.procurement_plan_line where plan_id = :'s20_plan' and item_id = 'T9B05' and month_no = 1),
+  'S20 Champion이 없는 품목은 CHAMPION_UNAVAILABLE이 대표 사유이고 나머지 누락도 함께 남는다');
+select plan_test.check(
+  (select n_unavailable_lines > 0 and total_final_order_qty is null and total_projected_inventory_value is null
+      and kpi_reason_code = 'PARTIAL_CALCULATION'
+     from analytics.v_procurement_plan_kpi where plan_id = :'s20_plan' and month_no = 1),
+  'S20 계산 불가 라인이 있는 달의 KPI 합계는 null + PARTIAL_CALCULATION');
+select plan_test.check(
+  (:'s20_result')::jsonb ->> 'status' = 'BLOCKED'
+  and (select array_agg(e ->> 'reason_code') @> array['CHAMPION_UNAVAILABLE', 'INVENTORY_SCOPE_UNCLASSIFIED', 'UNIT_PRICE_UNSET', 'TARGET_DOS_UNSET']
+         from jsonb_array_elements((:'s20_result')::jsonb -> 'blocking_reasons') e),
+  'S20 확정 거절 사유 목록에 누락된 근거가 모두 나온다');
+rollback;
+
+
+\echo '== S21 성공한 Forecast Run이 없으면 FORECAST_SOURCE_UNVERIFIED =='
+begin;
+update core.forecast_run set status = 'FAILED' where run_id = :'run1';
+set local role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select plan_test.expect_error(format($f$select core.build_procurement_plan(%L, %L)$f$, :'month', :'run1'),
+  'FORECAST_RUN_NOT_SUCCESS', 'S21 성공하지 않은 Forecast Run을 지정하면 거절된다');
+select core.build_procurement_plan(:'month', null) as s21_plan \gset
+reset role;
+select plan_test.check(
+  (select forecast_run_id is null and source_status = 'FORECAST_SOURCE_UNVERIFIED' from core.procurement_plan where plan_id = :'s21_plan')
+  and (select bool_and(reason_code = 'FORECAST_SOURCE_UNVERIFIED') from core.procurement_plan_line where plan_id = :'s21_plan'),
+  'S21 Run을 비워 두면 최신 성공 실행을 찾고, 없으면 모든 라인이 FORECAST_SOURCE_UNVERIFIED');
+rollback;
+set role authenticated;
+select plan_test.as_user(:'planner1') \g /dev/null
+select core.build_procurement_plan(:'month', null) as plan_v8 \gset
+reset role;
+select plan_test.check(
+  (select forecast_run_id = :'run1' and source_status = 'VERIFIED' and version = 8 from core.procurement_plan where plan_id = :'plan_v8'),
+  'S21 Run을 비워 두면 최신 성공 실행(run1)을 쓴다');
+
+
+\echo '== S22 RLS — 발주계획 권한이 없으면 보이지 않는다 =='
+set role authenticated;
+select plan_test.as_user(:'marketing1') \g /dev/null
+select plan_test.check(
+  (select count(*) = 0 from analytics.v_procurement_plan) and (select count(*) = 0 from analytics.v_procurement_plan_line)
+  and (select count(*) = 0 from analytics.v_procurement_plan_kpi) and (select count(*) = 0 from analytics.v_procurement_plan_blocker),
+  'S22 마케팅에게는 계획 · 라인 · KPI · 차단 사유가 보이지 않는다');
+select plan_test.as_user(:'lead1') \g /dev/null
+select plan_test.check((select count(*) >= 8 from analytics.v_procurement_plan), 'S22 SCM팀장(PLAN_APPROVE)은 계획을 본다');
+select plan_test.as_user(:'planner1') \g /dev/null
+select plan_test.check(
+  (select count(*) = 24 from analytics.v_procurement_plan_line where plan_id = :'plan_v5')
+  and (select count(*) > 0 from analytics.v_procurement_plan_event where plan_id = :'plan_v5'),
+  'S22 SCM 품목담당자(PLAN_CONFIRM)는 라인과 이력을 본다');
+select plan_test.expect_error(
+  format($f$insert into core.procurement_plan (plan_month, version, source_status, built_by, built_by_name) values (%L, 99, 'VERIFIED', %L, 'x')$f$, :'month', :'planner1'),
+  'permission denied', 'S22 authenticated는 계획을 직접 만들 수 없다');
+reset role;
+
+
+\echo '== S23 불변식 =='
+select plan_test.check(
+  (select count(*) = 1 from core.procurement_plan where plan_month = :'month' and status in ('DRAFT', 'PENDING_APPROVAL', 'REJECTED')),
+  'S23 한 달에 작업 중(미확정 · 승인 대기 · 반려) 계획은 하나뿐이다');
+select plan_test.expect_error(
+  format($f$insert into core.procurement_plan (plan_month, version, source_status, built_by, built_by_name) values (%L, 99, 'VERIFIED', %L, 'x')$f$, :'month', :'planner1'),
+  'procurement_plan_one_open_idx', 'S23 같은 달에 두 번째 작업 중 계획을 넣으면 유니크 인덱스가 막는다');
+select plan_test.check(
+  not exists (select 1 from core.procurement_plan_line
+               where (calculation_status = 'CALCULATED' and (final_order_qty is null or selected_qty is null or projected_month_end_qty is null))
+                  or (calculation_status = 'CALCULATION_UNAVAILABLE' and (final_order_qty is not null or selected_qty is not null))),
+  'S23 계산된 라인은 발주량이 있고 계산 불가 라인은 발주량이 없다');
+select plan_test.check(
+  not exists (select 1 from core.procurement_plan_line where final_order_qty is not null and mod(final_order_qty, effective_moq) <> 0),
+  'S23 모든 최종 발주량은 MOQ 배수다');
+select plan_test.check(
+  (select count(*) = 24 from core.forecast_result where run_id = :'run1' and predicted_qty = 100),
+  'S23 계획 생성 · 승인은 Forecast 결과를 바꾸지 않는다');
+
+
+\echo '== S24 KPI — 계획 기대값(1개월차) =='
+select plan_test.check(
+  (select n_items = 4 and n_unavailable_lines = 0 and kpi_reason_code is null
+      and total_final_order_qty = 368 and total_projected_month_end_qty = 1128 and total_projected_inventory_value = 430500
+     from analytics.v_procurement_plan_kpi where plan_id = :'plan_v5' and month_no = 1),
+  'S24 승인본 1개월차 발주량 합 368 · 예상 월말재고 1,128 · 예상 재고금액 430,500');
+select plan_test.check(
+  (select count(*) = 6 from analytics.v_procurement_plan_kpi where plan_id = :'plan_v5'),
+  'S24 KPI는 계획 · 월별 한 행이다');
+
+\echo '== 끝 =='

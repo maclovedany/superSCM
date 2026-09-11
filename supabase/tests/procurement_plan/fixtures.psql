@@ -1,0 +1,201 @@
+-- 발주계획 계산·승인 검증 fixture — 로컬 임시 DB(scm_test_*) 전용. 운영 마이그레이션에 넣지 않는다
+--
+-- ★ 원천 게이트(컨트롤러 판정 1)를 통과하는 "검증된 출처" 데이터를 만든다: 학습 기간의 모든
+--   raw.usage_history 행이 IMPORTED usage_history 적재 배치(core.upload_batch)와 FILE_UPLOAD 출처를
+--   가진다. Forecast Run · Backtest · Champion은 실행 함수를 다시 돌리지 않고 결과 행을 직접 넣는다
+--   (계산 규칙 검증에 필요한 값을 정확히 고정하기 위해서다).
+\set ON_ERROR_STOP 1
+\ir guard.psql
+
+create schema if not exists plan_test;
+grant usage on schema plan_test to anon, authenticated;
+
+create or replace function plan_test.as_user(p_user uuid) returns text language sql as $$
+  select set_config('request.jwt.claim.sub', p_user::text, false)
+$$;
+
+create or replace function plan_test.check(p_ok boolean, p_label text) returns text language plpgsql as $$
+begin
+  if p_ok is distinct from true then
+    raise exception 'FAIL: %', p_label;
+  end if;
+  return 'PASS: ' || p_label;
+end $$;
+
+create or replace function plan_test.expect_error(p_sql text, p_pattern text, p_label text) returns text language plpgsql as $$
+declare
+  v_state text;
+  v_message text;
+begin
+  begin
+    execute p_sql;
+  exception when others then
+    get stacked diagnostics v_state = returned_sqlstate, v_message = message_text;
+    if v_message !~ p_pattern then
+      raise exception 'FAIL: % — 다른 오류: % (%)', p_label, v_message, v_state;
+    end if;
+    return 'PASS: ' || p_label || ' → ' || v_state || ' ' || v_message;
+  end;
+  raise exception 'FAIL: % — 오류가 나지 않았습니다: %', p_label, p_sql;
+end $$;
+
+-- 계획 한 건의 한 품목 라인 계산값을 한 문자열로 모은다 — "바뀌지 않았다"를 비교할 때 쓴다.
+create or replace function plan_test.line_signature(p_plan_id uuid, p_item_id text) returns text language sql as $$
+  select string_agg(
+    concat_ws('|', month_no, base_forecast_qty, avg_usage_6m, candidate_qty, adjusted_demand_qty, demand_qty,
+              start_stock_qty, selected_qty, final_order_qty, projected_month_end_qty, projected_dos_days,
+              projected_inventory_value, calculation_status, reason_code),
+    ';' order by month_no)
+  from core.procurement_plan_line where plan_id = p_plan_id and item_id = p_item_id
+$$;
+
+grant execute on all functions in schema plan_test to anon, authenticated;
+
+insert into auth.users (id, email) values
+  ('00000000-0000-4000-8000-000000000401', 't9b-planner1@example.test'),
+  ('00000000-0000-4000-8000-000000000402', 't9b-planner2@example.test'),
+  ('00000000-0000-4000-8000-000000000403', 't9b-lead1@example.test'),
+  ('00000000-0000-4000-8000-000000000404', 't9b-marketing1@example.test'),
+  ('00000000-0000-4000-8000-000000000405', 't9b-admin1@example.test'),
+  -- PLAN_CONFIRM과 PLAN_APPROVE를 동시에 가진 합성 계정 — "확정한 사람은 승인할 수 없다" 검증 전용이다
+  -- (실제 직책 중에는 두 권한을 함께 가진 직책이 없다. item_policy의 T9_DUAL_ROLE과 같은 목적).
+  ('00000000-0000-4000-8000-000000000406', 't9b-dualrole1@example.test')
+on conflict (id) do nothing;
+
+insert into core.app_user (user_id, email, name, department, role, active, job_role) values
+  ('00000000-0000-4000-8000-000000000401', 't9b-planner1@example.test', 'SCM품목담당1', 'SCM', 'USER', true, 'SCM_PLANNER'),
+  ('00000000-0000-4000-8000-000000000402', 't9b-planner2@example.test', 'SCM품목담당2', 'SCM', 'USER', true, 'SCM_PLANNER'),
+  ('00000000-0000-4000-8000-000000000403', 't9b-lead1@example.test', 'SCM팀장1', 'SCM', 'USER', true, 'SCM_LEAD'),
+  ('00000000-0000-4000-8000-000000000404', 't9b-marketing1@example.test', '마케팅1', 'MARKETING', 'USER', true, 'MARKETING'),
+  ('00000000-0000-4000-8000-000000000405', 't9b-admin1@example.test', '관리자1', null, 'ADMIN', true, null),
+  ('00000000-0000-4000-8000-000000000406', 't9b-dualrole1@example.test', '겸직테스트', 'SCM', 'USER', true, 'T9B_DUAL_ROLE')
+on conflict (user_id) do update
+  set job_role = excluded.job_role, department = excluded.department, role = excluded.role, name = excluded.name, active = true;
+
+insert into core.role_permission (job_role, permission_code) values
+  ('T9B_DUAL_ROLE', 'PLAN_CONFIRM'),
+  ('T9B_DUAL_ROLE', 'PLAN_APPROVE'),
+  ('T9B_DUAL_ROLE', 'STOCK_VIEW_ALL')
+on conflict (job_role, permission_code) do nothing;
+
+-- ══ 품목 · 정책 ══════════════════════════════════════════════════
+--   T9B01  MOQ 50 · 필요량 120 → 150
+--   T9B02  MOQ 미설정 · 평균사용량 100.5 → 필요량 120.5 → 121
+--   T9B03  Flex 클램프(부서 합의 수량) · 승인된 수급회의 추가 수요
+--   T9B04  목표 DoS 미설정(처음) → 미승인 값 → 승인
+
+insert into raw.item_master ("품목코드", "품목명", "품목구분") values
+  ('T9B01', 'T9B MOQ 품목', '소모품'),
+  ('T9B02', 'T9B MOQ 미설정 품목', '소모품'),
+  ('T9B03', 'T9B Flex 품목', '소모품'),
+  ('T9B04', 'T9B 목표 DoS 품목', '소모품'),
+  ('T9B05', 'T9B Champion 없는 품목(롤백 시나리오 전용)', '소모품');
+
+insert into core.item_policy (item_id, item_grade, service_level) values
+  ('T9B01', 'A', 0.95), ('T9B02', 'A', 0.95), ('T9B03', 'A', 0.95), ('T9B04', 'A', 0.95)
+on conflict (item_id) do nothing;
+
+-- 운영값은 Task 9a 승인 절차로만 넣는다(요청 → 팀장 승인).
+set role authenticated;
+select plan_test.as_user('00000000-0000-4000-8000-000000000401') \g /dev/null
+select core.request_item_policy_change('T9B01', 30, 'AUTO', null, 1000, 50, null, null, 'T9B fixture') as rev1 \gset
+select core.request_item_policy_change('T9B02', 30, 'AUTO', null, 1000, null, null, null, 'T9B fixture') as rev2 \gset
+select core.request_item_policy_change('T9B03', 30, 'AUTO', null, 200, null, null, null, 'T9B fixture') as rev3 \gset
+-- 목표 DoS를 제안하지 않는다 — 단가만 승인되고 목표 DoS는 미설정으로 남는다.
+select core.request_item_policy_change('T9B04', null, 'AUTO', null, 500, null, null, null, 'T9B fixture') as rev4 \gset
+reset role;
+
+set role authenticated;
+select plan_test.as_user('00000000-0000-4000-8000-000000000403') \g /dev/null
+select core.decide_approval(r.approval_id, 'APPROVED', 'fixture 승인')
+  from core.item_policy_revision r
+ where r.revision_id in (:'rev1', :'rev2', :'rev3', :'rev4') \g /dev/null
+reset role;
+
+-- ══ 정상 창고재고(Task 4 확정값) ═════════════════════════════════
+insert into core.stock_balance (item_id, snapshot_qty, normal_qty, snapshot_at) values
+  ('T9B01', 80, 80, '2026-09-30T00:00:00Z'),
+  ('T9B02', 80, 80, '2026-09-30T00:00:00Z'),
+  ('T9B03', 1000, 1000, '2026-09-30T00:00:00Z'),
+  ('T9B04', 80, 80, '2026-09-30T00:00:00Z')
+on conflict (item_id) do nothing;
+
+-- ══ 학습/검증 기간 · 검증된 적재 배치 · 사용 이력 ═══════════════════
+insert into core.forecast_setting (active, train_start, train_end, test_start, test_end, granularity, forecast_horizon)
+values (true, '2026-01-01', '2026-06-30', '2026-07-01', '2026-09-30', 'MONTH', 9);
+
+insert into core.upload_batch (batch_id, file_name, import_type, import_mode, total_rows, success_rows, status, uploaded_at, imported_at)
+values ('00000000-0000-4000-8000-0000000004b1', 't9b-usage-2026.csv', 'usage_history', 'append', 25, 25, 'IMPORTED',
+        '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z');
+
+insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse, batch_id, source_type, loaded_at, source_record_id)
+select 'T9B-' || i.item_id || '-' || to_char(m.month, 'YYYYMM'), i.item_id, (m.month + 14)::date,
+       case when i.item_id = 'T9B02' and m.month = '2026-06-01' then 103 else 100 end,
+       'MAIN', '00000000-0000-4000-8000-0000000004b1', 'FILE_UPLOAD', '2026-07-01T00:00:00Z',
+       'T9B-' || i.item_id || '-' || to_char(m.month, 'YYYYMM')
+  from (values ('T9B01'), ('T9B02'), ('T9B03'), ('T9B04')) as i(item_id)
+ cross join (select generate_series('2026-01-01'::timestamp, '2026-06-01'::timestamp, interval '1 month')::date as month) m;
+
+-- 검증 기간(test) Actual 한 행 — S10에서 값을 바꿔도 계획이 변하지 않는지 확인한다.
+insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse, batch_id, source_type, loaded_at, source_record_id)
+values ('T9B-T9B01-TEST', 'T9B01', '2026-08-15', 100, 'MAIN', '00000000-0000-4000-8000-0000000004b1', 'FILE_UPLOAD',
+        '2026-07-01T00:00:00Z', 'T9B-T9B01-TEST');
+
+-- ══ Forecast Run · Champion ══════════════════════════════════════
+insert into core.forecast_run (run_id, status, granularity, train_start, train_end, horizon, data_snapshot_at,
+                               n_models, n_items, n_rows, started_at, finished_at, message)
+values ('00000000-0000-4000-8000-0000000004f1', 'SUCCESS', 'MONTH', '2026-01-01', '2026-06-30', 9, '2026-07-01T00:00:00Z',
+        1, 4, 24, '2026-07-02T00:00:00Z', '2026-07-02T00:01:00Z', 'T9B fixture');
+
+insert into core.model_version (model_version, run_id, model_id, version, definition, parameters)
+values ('00000000-0000-4000-8000-0000000004f2', '00000000-0000-4000-8000-0000000004f1', 'MA_3M', '1.0.0', '{}'::jsonb, '{"window": 3}'::jsonb);
+
+insert into core.forecast_result (run_id, model_id, item_id, period, model_version, predicted_qty, p50, basis)
+select '00000000-0000-4000-8000-0000000004f1', 'MA_3M', i.item_id, m.period, '00000000-0000-4000-8000-0000000004f2', 100, 100,
+       '{"source": "TRAIN_ONLY"}'::jsonb
+  from (values ('T9B01'), ('T9B02'), ('T9B03'), ('T9B04')) as i(item_id)
+ cross join (select generate_series('2026-10-01'::timestamp, '2027-03-01'::timestamp, interval '1 month')::date as period) m;
+
+insert into core.backtest_run (backtest_run_id, forecast_run_id, test_start, test_end, metric, reference_model_id, status, finished_at)
+values ('00000000-0000-4000-8000-0000000004f3', '00000000-0000-4000-8000-0000000004f1', '2026-07-01', '2026-09-30', 'WAPE', 'WMA_3M',
+        'SUCCESS', '2026-07-02T00:02:00Z');
+
+insert into core.champion_model_selection (backtest_run_id, item_id, champion_model_id, model_version, champion_metric,
+                                           champion_metric_value, selection_reason, selection_method)
+select '00000000-0000-4000-8000-0000000004f3', item_id, 'MA_3M', '00000000-0000-4000-8000-0000000004f2', 'WAPE', 0.1,
+       'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO'
+  from (values ('T9B01'), ('T9B02'), ('T9B03'), ('T9B04')) as i(item_id);
+
+-- ══ 부서 제출(Task 7) · 수급회의(Task 8) ═══════════════════════════
+insert into core.planning_cycle (cycle_id, plan_month, submission_deadline, status, is_active, opened_by)
+values ('00000000-0000-4000-8000-0000000004c1', '2026-10-01', '2026-09-29', 'OPEN', true, '00000000-0000-4000-8000-000000000401');
+
+insert into core.demand_submission (submission_id, cycle_id, plan_month, department, status, created_by, submitted_by, submitted_at,
+                                    agreed_by, agreed_at, last_modified_by)
+values ('00000000-0000-4000-8000-0000000004d1', '00000000-0000-4000-8000-0000000004c1', '2026-10-01', 'MARKETING', 'AGREED',
+        '00000000-0000-4000-8000-000000000404', '00000000-0000-4000-8000-000000000404', clock_timestamp(),
+        '00000000-0000-4000-8000-000000000401', clock_timestamp(), '00000000-0000-4000-8000-000000000401');
+
+insert into core.demand_submission_line (submission_id, line_no, raw_item_code, item_id, qty, need_month, issues) values
+  ('00000000-0000-4000-8000-0000000004d1', 1, 'T9B03', 'T9B03', 150, '2026-10-01', '[]'),
+  ('00000000-0000-4000-8000-0000000004d1', 2, 'T9B03', 'T9B03', 200, '2026-11-01', '[]'),
+  ('00000000-0000-4000-8000-0000000004d1', 3, 'T9B03', 'T9B03', 60, '2026-12-01', '[]'),
+  ('00000000-0000-4000-8000-0000000004d1', 4, 'T9B03', 'T9B03', 300, '2027-01-01', '[]'),
+  ('00000000-0000-4000-8000-0000000004d1', 5, 'T9B03', 'T9B03', 90, '2027-02-01', '[]'),
+  ('00000000-0000-4000-8000-0000000004d1', 6, 'T9B04', 'T9B04', 110, '2026-10-01', '[]'),
+  -- 오류가 있는 줄은 합의본에 있어도 조정 후보로 쓰지 않는다
+  ('00000000-0000-4000-8000-0000000004d1', 7, 'T9B01', 'T9B01', 500, '2026-10-01', '[{"code": "QTY_SUSPECT", "message": "검증용"}]');
+
+-- 합의(AGREED) 전 제출본은 조정 후보가 아니다
+insert into core.demand_submission (submission_id, cycle_id, plan_month, department, status, created_by, submitted_by, submitted_at, last_modified_by)
+values ('00000000-0000-4000-8000-0000000004d2', '00000000-0000-4000-8000-0000000004c1', '2026-10-01', 'SERVICE', 'SUBMITTED',
+        '00000000-0000-4000-8000-000000000404', '00000000-0000-4000-8000-000000000404', clock_timestamp(), '00000000-0000-4000-8000-000000000404');
+insert into core.demand_submission_line (submission_id, line_no, raw_item_code, item_id, qty, need_month, issues)
+values ('00000000-0000-4000-8000-0000000004d2', 1, 'T9B01', 'T9B01', 999, '2026-10-01', '[]');
+
+insert into core.supply_meeting_result (plan_month, item_id, qty, approved, entered_by, entered_by_name, updated_by, updated_by_name) values
+  ('2026-10-01', 'T9B03', 50, true, '00000000-0000-4000-8000-000000000401', 'SCM품목담당1', '00000000-0000-4000-8000-000000000401', 'SCM품목담당1'),
+  -- 승인되지 않은 수급회의 결과는 추가 수요가 아니다
+  ('2026-10-01', 'T9B01', 700, false, '00000000-0000-4000-8000-000000000401', 'SCM품목담당1', '00000000-0000-4000-8000-000000000401', 'SCM품목담당1');
+
+select 'fixtures ok';
