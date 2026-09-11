@@ -227,6 +227,36 @@ test('출항일 규칙 입력 — 잘못된 주차는 거절한다', () => {
   if (!result.ok) assert.equal(result.reasonCode, 'WEEK_OF_MONTH_INVALID');
 });
 
+// fix round 1 — 화면의 요일·주차 <select>는 명시적 "선택" placeholder 옵션이 없으면 브라우저가
+// 조용히 첫 실제 옵션(일요일 · 1번째)을 골라 버린다(값을 빈 문자열로 보내지 않는다). 그래도 정말
+// 빈 문자열이 들어오는 경로(placeholder를 고른 채 제출·폼 조작 등)는 반드시 거절해야 한다.
+test('출항일 규칙 입력 — 요일을 비워두면(선택 안 함) 거절한다', () => {
+  const result = validateDepartureRuleInput({
+    departureId: '', supplierId: 'SUP-01', ruleType: 'WEEKDAY', weekday: '', weekOfMonth: '',
+    dayOfMonth: '', validFrom: '', validTo: '', note: '', reason: '신규 등록',
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reasonCode, 'WEEKDAY_INVALID');
+});
+
+test('출항일 규칙 입력 — 주차 규칙에서 요일을 비워두면(선택 안 함) 거절한다', () => {
+  const result = validateDepartureRuleInput({
+    departureId: '', supplierId: 'SUP-01', ruleType: 'WEEK_OF_MONTH', weekday: '', weekOfMonth: '2',
+    dayOfMonth: '', validFrom: '', validTo: '', note: '', reason: '신규 등록',
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reasonCode, 'WEEKDAY_INVALID');
+});
+
+test('출항일 규칙 입력 — 주차 규칙에서 주차를 비워두면(선택 안 함) 거절한다', () => {
+  const result = validateDepartureRuleInput({
+    departureId: '', supplierId: 'SUP-01', ruleType: 'WEEK_OF_MONTH', weekday: '2', weekOfMonth: '',
+    dayOfMonth: '', validFrom: '', validTo: '', note: '', reason: '신규 등록',
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reasonCode, 'WEEK_OF_MONTH_INVALID');
+});
+
 test('출항일 규칙 비활성화 입력 검증', () => {
   const ok = validateDeactivateDepartureRuleInput({ departureId: '5', reason: '공급처 변경' });
   assert.equal(ok.ok, true);

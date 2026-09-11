@@ -93,14 +93,19 @@ export default function DepartureRuleSection({ departures, suppliers }: { depart
         </label>
         {ruleType !== 'MONTH_DAY' ? (
           <label>요일
-            <select className="table-select" name="weekday" defaultValue={editing?.weekday ?? ''}>
+            {/* fix round 1 — 빈 placeholder 옵션이 없으면 defaultValue=''가 어떤 <option>과도
+                일치하지 않아 브라우저가 첫 실제 옵션(일요일)을 조용히 선택해 버린다. 명시적으로
+                고르지 않으면 "선택"에 머물게 해, 안 고르고 제출하면 검증(WEEKDAY_INVALID)이 잡는다. */}
+            <select className="table-select" name="weekday" defaultValue={editing?.weekday ?? ''} required>
+              <option value="">선택</option>
               {WEEKDAY_OPTIONS.map((label, index) => <option key={label} value={index}>{label}요일</option>)}
             </select>
           </label>
         ) : null}
         {ruleType === 'WEEK_OF_MONTH' ? (
           <label>주차
-            <select className="table-select" name="weekOfMonth" defaultValue={editing?.weekOfMonth ?? 1}>
+            <select className="table-select" name="weekOfMonth" defaultValue={editing?.weekOfMonth ?? ''} required>
+              <option value="">선택</option>
               {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}번째</option>)}
             </select>
           </label>
