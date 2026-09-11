@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { validateRows } from './validate.ts';
+import { ADMIN_BATCH_IMPORT_TYPES, IMPORT_TYPES } from './types.ts';
 
 const references = {
   itemIds: new Set(['ITEM001']),
@@ -67,6 +68,17 @@ test('부서 수요 제출 줄 — 품목코드 불일치·null 수량·잘못�
   assert.ok(result.issues.some((issue) => issue.code === 'INVALID_DATE' && issue.fieldName === 'need_month'));
   // 조용히 제외하지 않는다 — 원본 값은 행에 그대로 남는다.
   assert.equal(result.rows[2].data.qty, null);
+});
+
+test('demand_line은 검증 스키마 종류에는 있지만 관리자 STEP 4 배치 업로드 종류에는 없다 (fix round 1)', () => {
+  // core.upload_batch.import_type CHECK 제약이 demand_line을 모른다. 관리자 배치 업로드
+  // 라우트(app/api/admin/imports/parse)가 넓은 IMPORT_TYPES로 게이트하면 CHECK 위반이 원시
+  // 500으로 새어나간다 — 좁은 ADMIN_BATCH_IMPORT_TYPES로만 게이트해야 평범한 400이 된다.
+  assert.ok(IMPORT_TYPES.includes('demand_line'), 'IMPORT_TYPES(검증 스키마)는 demand_line을 포함해야 한다');
+  assert.ok(!ADMIN_BATCH_IMPORT_TYPES.includes('demand_line' as (typeof ADMIN_BATCH_IMPORT_TYPES)[number]),
+    'ADMIN_BATCH_IMPORT_TYPES(관리자 배치)는 demand_line을 포함하면 안 된다');
+  assert.deepEqual(new Set(ADMIN_BATCH_IMPORT_TYPES), new Set(IMPORT_TYPES.filter((type) => type !== 'demand_line')),
+    'ADMIN_BATCH_IMPORT_TYPES는 demand_line만 뺀 나머지와 정확히 같아야 한다');
 });
 
 test('오류와 경고 행만 원본 값과 함께 CSV로 내보낸다', async () => {

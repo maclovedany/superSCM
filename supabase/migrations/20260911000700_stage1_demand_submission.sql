@@ -186,6 +186,7 @@ set search_path = core, public, pg_temp
 as $$
 declare
   v_actor uuid := auth.uid();
+  v_department text;
 begin
   if v_actor is null or not core.is_active_user(v_actor) then
     raise exception '로그인한 활성 사용자만 취합 주기를 닫을 수 있습니다.' using errcode = '42501';
@@ -202,6 +203,20 @@ begin
   if not found then
     raise exception '열려 있는 취합 주기를 찾을 수 없습니다.' using errcode = 'P0002';
   end if;
+
+  -- fix round 1 — 닫힌 주기에 남아 있던 반복 미제출 알림을 전부 중단한다. 재개(reopen)는
+  -- 같은 달에 새 cycle_id로 새 취합 주기를 여는 것이라, 이 닫힌 주기에 묶인 제출본(DRAFT ·
+  -- WITHDRAWN · SUBMITTED 무엇이든)은 다시 살아나지 않고 읽기 전용 이력으로만 남는다
+  -- (core.save_demand_submission_lines · submit_demand_submission ·
+  -- withdraw_demand_submission이 is_active=false인 주기의 쓰기를 거절한다).
+  for v_department in
+    select distinct u.department
+      from core.app_user u
+      join core.role_permission rp on rp.job_role = u.job_role
+     where u.active and rp.permission_code = 'DEMAND_SUBMIT' and u.department is not null
+  loop
+    perform core.cancel_notification_series('DEMAND_SUBMISSION', p_cycle_id::text || ':' || v_department);
+  end loop;
 end;
 $$;
 
@@ -309,6 +324,11 @@ begin
   end if;
   if v_submission.department is distinct from v_department then
     raise exception '다른 부서의 제출본은 수정할 수 없습니다.' using errcode = '42501';
+  end if;
+  -- fix round 1 — 닫힌 취합 주기에 묶인 제출본은 얼려 둔다. 재개(open_planning_cycle)는
+  -- 같은 달에 새 cycle_id를 만들 뿐 이 행을 되살리지 않는다(아래 §4 재개 정책 참고).
+  if not exists (select 1 from core.planning_cycle c where c.cycle_id = v_submission.cycle_id and c.is_active) then
+    raise exception '취합 주기가 닫혀 더 이상 수정할 수 없습니다.' using errcode = '22023';
   end if;
   if v_submission.status not in ('DRAFT', 'WITHDRAWN') then
     raise exception '제출되었거나 합의된 자료는 회수한 뒤에만 수정할 수 있습니다.' using errcode = '22023';
@@ -420,6 +440,10 @@ begin
   if v_submission.department is distinct from v_department then
     raise exception '다른 부서의 제출본은 제출할 수 없습니다.' using errcode = '42501';
   end if;
+  -- fix round 1 — 닫힌 취합 주기에서는 제출도 막는다.
+  if not exists (select 1 from core.planning_cycle c where c.cycle_id = v_submission.cycle_id and c.is_active) then
+    raise exception '취합 주기가 닫혀 더 이상 제출할 수 없습니다.' using errcode = '22023';
+  end if;
   if v_submission.status not in ('DRAFT', 'WITHDRAWN') then
     raise exception '이미 제출되었거나 합의된 자료입니다.' using errcode = '22023';
   end if;
@@ -495,6 +519,12 @@ begin
   if v_submission.department is distinct from v_department then
     raise exception '다른 부서의 제출본은 회수할 수 없습니다.' using errcode = '42501';
   end if;
+
+  select * into v_cycle from core.planning_cycle where cycle_id = v_submission.cycle_id;
+  -- fix round 1 — 닫힌 취합 주기에서는 회수도 막는다(이미 확정된 이력을 건드리지 않는다).
+  if not v_cycle.is_active then
+    raise exception '취합 주기가 닫혀 더 이상 회수할 수 없습니다.' using errcode = '22023';
+  end if;
   if v_submission.status <> 'SUBMITTED' then
     raise exception '제출된 자료만 회수할 수 있습니다.' using errcode = '22023';
   end if;
@@ -515,7 +545,7 @@ begin
   );
 
   -- 마감일이 지난 뒤 회수하면 반복 미제출 알림을 즉시 재개한다(컨트롤러 판정 5).
-  select * into v_cycle from core.planning_cycle where cycle_id = v_submission.cycle_id;
+  -- v_cycle은 위에서 이미 조회했다(닫힌 주기 여부 확인 때).
   if v_cycle.submission_deadline is not null
      and (clock_timestamp() at time zone 'Asia/Seoul')::date > v_cycle.submission_deadline then
     v_series_id := v_submission.cycle_id::text || ':' || v_submission.department;
@@ -605,7 +635,11 @@ begin
      where is_active
        and (clock_timestamp() at time zone 'Asia/Seoul')::date > submission_deadline
   loop
-    v_first_at := (v_cycle.submission_deadline + 1) at time zone 'Asia/Seoul';
+    -- date를 timestamptz로 바로 "at time zone"하면 세션 timezone GUC를 거쳐 먼저
+    -- timestamptz로 캐스팅된 뒤 다시 변환되어, 세션 timezone에 따라 결과가 달라지는 버그가
+    -- 난다(Supabase 기본 UTC 세션에서 18시간까지 밀림). date를 먼저 명시적으로 timestamp로
+    -- 캐스팅해 "Asia/Seoul 벽시계 자정"으로 한 번만 해석해야 세션 timezone과 무관하다.
+    v_first_at := (v_cycle.submission_deadline + 1)::timestamp at time zone 'Asia/Seoul';
 
     -- 필수 제출 부서 = DEMAND_SUBMIT 권한을 가진 활성 사용자가 있는 부서(컨트롤러 판정 2).
     for v_department in
@@ -659,7 +693,9 @@ select
   s.version, s.created_at,
   (
     s.status in ('DRAFT', 'WITHDRAWN')
-    and clock_timestamp() > ((c.submission_deadline + 1) at time zone 'Asia/Seoul')
+    -- core.raise_demand_submission_reminders와 같은 이유로 date를 먼저 timestamp로 캐스팅한다
+    -- (세션 timezone에 좌우되지 않는 단일 변환 — 아래 함수 주석 참고).
+    and clock_timestamp() > ((c.submission_deadline + 1)::timestamp at time zone 'Asia/Seoul')
   ) as is_overdue
 from core.demand_submission s
 join core.planning_cycle c on c.cycle_id = s.cycle_id

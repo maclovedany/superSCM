@@ -140,12 +140,26 @@ reset role;
 select demand_test.check((select count(*) > 0 from core.notification_outbox
   where payload ->> 'series_id' = (:'cur_cycle' || ':SERVICE') and template_code = 'DEMAND_SUBMISSION_OVERDUE' and status = 'PENDING'),
   'S8 마감이 지난 뒤 회수하면 미제출 반복 알림이 즉시 다시 예약된다');
+-- Task 7 fix round 1 — analytics.v_demand_submission_status.is_overdue도 같은 date→timestamptz
+-- 변환 버그가 있었다. 이번 달(마감 경과) WITHDRAWN은 true, 두 달 뒤(마감 전) WITHDRAWN은 false여야 한다.
+select demand_test.check((select is_overdue from analytics.v_demand_submission_status where submission_id = :'svc_cur_sub'),
+  'S8 마감이 지난 WITHDRAWN 제출본은 is_overdue = true');
+select demand_test.check(not (select is_overdue from analytics.v_demand_submission_status where submission_id = :'svc_future_sub'),
+  'S8 마감 전(미래 주기) WITHDRAWN 제출본은 is_overdue = false');
 
 \echo '== S9 마감 경과 후 미제출 부서 반복 알림 예약(Cron 함수) — 중복 없이, 제출 완료 시 중단 =='
 select core.raise_demand_submission_reminders() as raised_1 \gset
 select demand_test.check((select count(*) = 4 from core.notification_outbox
     where payload ->> 'series_id' = (:'cur_cycle' || ':MARKETING') and template_code = 'DEMAND_SUBMISSION_OVERDUE'),
   'S9 MARKETING(마케팅1·마케팅2 · 2채널)이 이번 달에 제출하지 않아 4건이 예약된다');
+-- Task 7 fix round 1 — 세션 timezone GUC와 무관한 절대 instant 회귀 검증. "+09" 리터럴은
+-- core.raise_demand_submission_reminders의 AT TIME ZONE 변환을 전혀 거치지 않는 독립적인
+-- 기대값이다(Asia/Seoul은 DST가 없어 연중 고정 +09). 세션 timezone이 무엇이든 값이 같아야 한다.
+select demand_test.check(
+  (select min(scheduled_at) from core.notification_outbox
+     where payload ->> 'series_id' = (:'cur_cycle' || ':MARKETING') and template_code = 'DEMAND_SUBMISSION_OVERDUE')
+  = ((select (submission_deadline + 1) from core.planning_cycle where cycle_id = :'cur_cycle')::text || ' 00:00:00+09')::timestamptz,
+  'S9 첫 예약 시각(절대 instant) = 마감일+1일 00:00 Asia/Seoul — 세션 timezone과 무관하게 항상 같다');
 select core.raise_demand_submission_reminders() as raised_2 \gset
 select demand_test.check((select count(*) = 4 from core.notification_outbox
     where payload ->> 'series_id' = (:'cur_cycle' || ':MARKETING') and template_code = 'DEMAND_SUBMISSION_OVERDUE'),
@@ -195,3 +209,60 @@ select core.open_planning_cycle(:'future_month'::date) as future_cycle_2 \gset
 select demand_test.check(:'future_cycle_2' is not null and :'future_cycle_2' <> :'future_cycle', 'S12 닫힌 달은 새 취합 주기로 다시 열 수 있다');
 reset role;
 select demand_test.check((select not is_active and status = 'CLOSED' from core.planning_cycle where cycle_id = :'future_cycle'), 'S12 닫힌 주기는 CLOSED · is_active=false로 남는다(이력 보존)');
+
+\echo '== S13(fix round 1) 취합 주기를 닫으면 미완료 제출본을 얼리고, 재개해도 되살리지 않는다 =='
+-- future_month·cur_month와 겹치지 않는 세 번째 달(4개월 뒤)을 써서 앞 시나리오 상태와 완전히 분리한다.
+select to_char(date_trunc('month', current_date) + interval '4 months', 'YYYY-MM-01') as third_month \gset
+set role authenticated;
+select demand_test.as_user(:'planner1') \g /dev/null
+select core.open_planning_cycle(:'third_month'::date) as third_cycle \gset
+reset role;
+-- 알림 재개(취소) 로직이 실제로 취소하는지 보려고, 닫기 전에 반복 알림 series를 하나 미리 예약해 둔다.
+select core.schedule_demand_submission_reminder(
+  :'third_cycle' || ':MARKETING', clock_timestamp(),
+  array[:'marketing1', :'marketing2']::uuid[]
+) \g /dev/null
+select demand_test.check((select count(*) = 4 from core.notification_outbox
+    where payload ->> 'series_id' = (:'third_cycle' || ':MARKETING') and status = 'PENDING'),
+  'S13 준비 — 닫기 전 반복 알림 4건(마케팅1·마케팅2 × 2채널)을 미리 예약해 둔다');
+
+set role authenticated;
+select demand_test.as_user(:'marketing1') \g /dev/null
+select core.start_demand_submission(:'third_month'::date) as third_sub_a \gset
+select core.save_demand_submission_lines(:'third_sub_a', $j$[{"item_id": "ITEMD01", "qty": "1", "need_month": "2026-04"}]$j$::jsonb) \g /dev/null
+reset role;
+select demand_test.check((select status = 'DRAFT' from core.demand_submission where submission_id = :'third_sub_a'), 'S13 준비 — 닫기 전 DRAFT 제출본(항목 저장까지 완료)');
+
+set role authenticated;
+select demand_test.as_user(:'planner1') \g /dev/null
+select core.close_planning_cycle(:'third_cycle') \g /dev/null
+reset role;
+select demand_test.check((select count(*) = 0 from core.notification_outbox
+    where payload ->> 'series_id' = (:'third_cycle' || ':MARKETING') and status = 'PENDING'),
+  'S13 취합 주기를 닫으면 그 주기에 걸린 반복 미제출 알림을 전부 중단한다(대기 중 0건)');
+
+set role authenticated;
+select demand_test.as_user(:'marketing1') \g /dev/null
+select demand_test.expect_error(format('select core.save_demand_submission_lines(%L, %L::jsonb)', :'third_sub_a', '[]'), '취합 주기가 닫혀 더 이상 수정할 수 없습니다', 'S13 닫힌 주기의 DRAFT 제출본은 더 이상 저장할 수 없다');
+select demand_test.expect_error(format('select core.submit_demand_submission(%L)', :'third_sub_a'), '취합 주기가 닫혀 더 이상 제출할 수 없습니다', 'S13 닫힌 주기의 제출본은 제출할 수 없다');
+reset role;
+select demand_test.check((select status = 'DRAFT' from core.demand_submission where submission_id = :'third_sub_a'),
+  'S13 닫힌 주기의 제출본은 상태가 바뀌지 않고 DRAFT로 얼어붙는다(읽기 전용 이력)');
+
+\echo '-- 재개: 같은 달을 다시 열어도 얼어붙은 제출본을 되살리지 않고, 부서마다 활성 제출본은 하나만 만들어진다 --'
+set role authenticated;
+select demand_test.as_user(:'planner1') \g /dev/null
+select core.open_planning_cycle(:'third_month'::date) as third_cycle_2 \gset
+select demand_test.check(:'third_cycle_2' <> :'third_cycle', 'S13 재개는 새 cycle_id로 새 주기를 연다(같은 행을 되살리지 않는다)');
+select demand_test.as_user(:'marketing2') \g /dev/null
+select core.start_demand_submission(:'third_month'::date) as third_sub_b \gset
+select demand_test.check(:'third_sub_b' <> :'third_sub_a', 'S13 재개 후 시작한 제출본은 얼어붙은 것과 다른 새 행이다');
+select core.save_demand_submission_lines(:'third_sub_b', $j$[{"item_id": "ITEMD01", "qty": "2", "need_month": "2026-04"}]$j$::jsonb) \g /dev/null
+reset role;
+select demand_test.check((select count(*) from core.planning_cycle where plan_month = :'third_month'::date and is_active) = 1,
+  'S13 같은 달에 활성 취합 주기는 항상 하나뿐이다(재개 후에도)');
+select demand_test.check((select count(*) from core.demand_submission where plan_month = :'third_month'::date and department = 'MARKETING') = 2,
+  'S13 얼어붙은 제출본(third_sub_a)과 재개 후 제출본(third_sub_b)이 이력으로 함께 남는다');
+select demand_test.check((select count(*) from core.demand_submission where cycle_id = :'third_cycle_2' and department = 'MARKETING') = 1,
+  'S13 부서마다 "현재 활성 주기에 묶인" 제출본은 정확히 하나다(unique(cycle_id, department)가 구조적으로 보장)');
+select demand_test.check((select status = 'DRAFT' from core.demand_submission where submission_id = :'third_sub_b'), 'S13 재개 후 제출본은 정상적으로 작성·저장할 수 있다');

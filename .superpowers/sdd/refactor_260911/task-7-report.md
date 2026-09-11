@@ -223,3 +223,157 @@ ADMIN이 합의를 확정")를 만족하려면 SCM 품목담당자가 실제로 
   부여됨)을 대시보드 기준월 조회에 쓸 수 있습니다.
 - 새로 발견한 재현 가능한 오류는 없어 `error.md`에 추가하지 않았습니다(위 self-review 3건은 구현
   중 자체 발견·즉시 수정한 것으로, 사용자가 겪을 재현 오류가 아닙니다).
+
+## 8. Fix round 1 — 리뷰 발견 사항 수정
+
+리뷰에서 Critical 1건 · Important 2건이 나왔다. 셋 다 고쳤다.
+
+### 1) [Critical] 세션 timezone에 따라 반복 알림 시작 시각 · is_overdue가 달라지던 버그
+
+**원인.** `(v_cycle.submission_deadline + 1) at time zone 'Asia/Seoul'`처럼 `date` 값에 바로
+`AT TIME ZONE`을 걸면, PostgreSQL이 그 `date`를 먼저 **세션 `timezone` GUC**로 `timestamptz`로
+암시적 캐스팅한 뒤(첫 번째 변환), 그 순간을 `'Asia/Seoul'` 벽시계로 바꿔 `timestamp`(시간대 없음)를
+얻고(`AT TIME ZONE`의 timestamptz→timestamp 오버로드), 이 값을 다시 `timestamptz` 변수에 대입할 때
+**세션 timezone으로 한 번 더** 해석한다(두 번째 변환). 두 변환 모두 세션 timezone에 좌우되므로,
+Supabase 기본값인 UTC 세션에서는 결과가 최대 18시간까지 밀린다. 로컬 검증 클러스터의 기본
+timezone이 `Asia/Seoul`이었던 우연 때문에(`show timezone;` → `Asia/Seoul`) 최초 라운드의 S8 · S9가
+버그를 가린 채 통과했다.
+
+**고침.** `date`를 먼저 명시적으로 `::timestamp`로 캐스팅한 뒤(이 캐스팅은 세션 timezone과 무관 —
+그냥 자정을 붙인다) `AT TIME ZONE 'Asia/Seoul'`을 건다. 이러면 변환이 정확히 한 번, "이 벽시계
+시각은 Asia/Seoul 것이다"라는 의미로만 일어나 세션 timezone과 완전히 무관해진다.
+
+```sql
+-- before (버그)
+v_first_at := (v_cycle.submission_deadline + 1) at time zone 'Asia/Seoul';
+-- after (고침)
+v_first_at := (v_cycle.submission_deadline + 1)::timestamp at time zone 'Asia/Seoul';
+```
+
+두 곳을 고쳤다(`supabase/migrations/20260911000700_stage1_demand_submission.sql`):
+`core.raise_demand_submission_reminders`의 `v_first_at` 계산, `analytics.v_demand_submission_status`의
+`is_overdue`. **같은 패턴을 이 마이그레이션 전체에서 감사**했다 — 남은 두 곳
+(`core.withdraw_demand_submission`과 `core.raise_demand_submission_reminders`의
+`(clock_timestamp() at time zone 'Asia/Seoul')::date > submission_deadline`)은 반대 방향
+(`timestamptz → timestamp`, absolute instant를 이미 들고 있는 `clock_timestamp()`를 벽시계로
+바꾸는 것)이라 세션 timezone과 무관하며 버그가 없다 — 그대로 두었다. `lib/demand/model.ts`도
+감사했다: `submissionDeadline`은 `Date.UTC`로만 계산하는 순수 달력 연산(시간대 개념이 없는 날짜라
+문제 없음), `formatDemandDateTime`은 이미 절대 instant(ISO 문자열)를 `Intl.DateTimeFormat`의
+명시적 `timeZone`으로 표시만 하는 함수라 문제 없음 — TS 쪽에는 같은 유형의 버그가 없었다.
+
+**재현·회귀 방지.**
+- `supabase/tests/demand_submission/lib.sh`에 `export PGOPTIONS="${PGOPTIONS:--c timezone=UTC}"`를
+  추가해, 이 스위트가 항상 **명시적인** 세션 timezone(기본 UTC)에서 돈다 — 로컬 클러스터의 우연한
+  기본값에 다시 가려지지 않는다.
+- `scenarios.psql` S9에 세션 timezone과 완전히 무관한 절대 instant 회귀 검증을 추가했다: 기대값을
+  `AT TIME ZONE` 변환을 전혀 거치지 않고 `'+09'` 오프셋 리터럴로 직접 만든다(Asia/Seoul은 연중
+  DST가 없어 고정 +09).
+  ```sql
+  select demand_test.check(
+    (select min(scheduled_at) from core.notification_outbox where payload ->> 'series_id' = ... )
+    = ((select (submission_deadline + 1) from core.planning_cycle where cycle_id = :'cur_cycle')::text || ' 00:00:00+09')::timestamptz,
+    'S9 첫 예약 시각(절대 instant) = 마감일+1일 00:00 Asia/Seoul — 세션 timezone과 무관하게 항상 같다');
+  ```
+- S8에도 `analytics.v_demand_submission_status.is_overdue`를 마감 경과(WITHDRAWN, true)와 마감
+  전(WITHDRAWN, false) 양쪽으로 검증하는 assertion을 추가했다.
+
+**증거 — 같은 스위트를 UTC와 America/Los_Angeles 세션 timezone에서 각각 실행(둘 다 전부 통과):**
+
+```bash
+$ LOG_DIR=/tmp/t7-fix1-utc bash supabase/tests/demand_submission/run-all.sh
+scenarios: PASS 70 · FAIL/ERROR 2   # (S5 라벨 문자열의 "ERROR" 단어를 잡은 거짓 양성 — deferred 항목)
+  S1 PASS 5 … S9 PASS 5 … S13 PASS 12
+결과: 전부 통과
+
+$ PGOPTIONS="-c timezone=America/Los_Angeles" LOG_DIR=/tmp/t7-fix1-la bash supabase/tests/demand_submission/run-all.sh
+scenarios: PASS 70 · FAIL/ERROR 2
+  S1 PASS 5 … S9 PASS 5 … S13 PASS 12
+결과: 전부 통과
+```
+
+고치기 전(원래 방식으로 되돌려) 같은 UTC 세션에서 실행하면 S9의 새 절대 instant 검증이
+"FAIL: S9 첫 예약 시각 …"으로 실패하며 정확히 18시간 어긋난 값을 보여준다는 것을 직접 확인했다
+(리뷰가 지적한 방향·크기와 일치).
+
+### 2) [Important] 취합 주기를 닫아도 진행 중인 제출본이 계속 편집·제출되던 문제
+
+**원인.** `core.save_demand_submission_lines` · `core.submit_demand_submission` ·
+`core.withdraw_demand_submission`이 제출본의 **상태**(DRAFT/WITHDRAWN/SUBMITTED)만 보고, 그
+제출본이 속한 `core.planning_cycle`이 아직 열려 있는지는 전혀 확인하지 않았다. `close_planning_cycle`도
+그 주기에 걸린 반복 미제출 알림을 정리하지 않았다.
+
+**정책 결정(리뷰가 제시한 두 선택지 중 택1).** *닫힌 취합 주기에 묶인 미완료 제출본은 그 상태
+그대로 얼어붙고, 다시 살아나지 않는다.* 같은 달을 다시 열면(`open_planning_cycle`) 항상 **새
+`cycle_id`**로 새 취합 주기가 열리고, 부서가 재개 후 `start_demand_submission`을 부르면 그 새
+`cycle_id`에 묶인 **새 제출본 행**이 만들어진다. 얼어붙은 옛 행은 `unique(cycle_id, department)`
+제약 덕분에 여전히 부서·주기별로 유일하지만, 그 주기의 `is_active=false`라 더 이상 저장·제출·회수가
+안 되는 읽기 전용 이력으로 남는다. "이전 미완료 제출본을 새 주기로 이어 붙인다"는 선택지는 채택하지
+않았다 — 이력 왜곡(어느 주기에서 무엇을 했는지 뒤섞임)과 복사 로직의 예외 케이스가 늘어나는 데
+비해, 부서 입장에서는 새로 시작해 다시 저장하는 비용이 거의 없기 때문이다.
+
+**고침.**
+- `core.save_demand_submission_lines` · `core.submit_demand_submission` · `core.withdraw_demand_submission`
+  모두 부서 소유권 확인 직후 `exists (select 1 from core.planning_cycle c where c.cycle_id = ... and c.is_active)`를
+  확인하고, 아니면 각각 "취합 주기가 닫혀 더 이상 수정/제출/회수할 수 없습니다."로 거절한다(함수
+  안 — UI가 아니라).
+- `core.close_planning_cycle`이 닫은 뒤, 그 주기의 필수 제출 부서(DEMAND_SUBMIT 활성 사용자가 있는
+  부서)마다 `core.cancel_notification_series('DEMAND_SUBMISSION', cycle_id || ':' || department)`를
+  불러 남아 있던 반복 미제출 알림을 전부 중단한다.
+- "부서마다 활성 취합 주기에 묶인 제출본은 하나뿐"이라는 불변식은 기존 `unique(cycle_id,
+  department)` 제약과 "활성 주기는 월별로 하나"(부분 유니크 인덱스)의 조합으로 **구조적으로**
+  보장된다 — 별도 트리거 없이 자연히 성립한다.
+
+**검증.** `scenarios.psql` S13(신규)이 앞의 S1~S12와 완전히 분리된 세 번째 달(오늘 + 4개월)로:
+1. 닫기 전 반복 알림 4건을 미리 예약해 두고, `close_planning_cycle` 뒤 0건으로 정리됨을 확인.
+2. 닫힌 주기의 DRAFT 제출본에 저장 · 제출을 시도하면 새 오류 메시지로 거절됨을 확인.
+3. 거절 뒤에도 그 제출본 상태가 DRAFT로 그대로 얼어붙어 있음을 확인.
+4. 같은 달을 다시 열면 새 `cycle_id`가 나오고(이전 것과 다름), 부서가 다시 시작하면 얼어붙은 것과
+   다른 새 제출본이 생기며, "plan_month당 활성 취합 주기 1개" · "활성 주기당 부서 제출본 1개"가
+   유지되고, 얼어붙은 행과 새 행이 이력으로 함께 남음을 확인(총 2건).
+
+`run-all.sh`에 `S13`을 카운트 목록에 추가했다. UTC · America/Los_Angeles 두 번의 전체 실행 로그
+(`S13 PASS 12`)로 이미 위에서 함께 확인했다.
+
+### 3) [Important] 관리자 STEP 4 배치 업로드가 `demand_line`을 받아 원시 500을 내던 문제
+
+**원인.** `lib/import/types.ts`의 `IMPORT_TYPES`에 `demand_line`을 추가하면서, 이 상수를 그대로
+게이트로 쓰는 `app/api/admin/imports/parse/route.ts`도 `importType=demand_line`을 통과시키게
+됐다. 그런데 `core.upload_batch.import_type` CHECK 제약(STEP 4)은 원래 8종류만 알고 `demand_line`은
+모른다 — 통과된 요청은 `createImportBatch` 안의 INSERT에서 CHECK 위반(23514)으로 죽고, 그 오류가
+route의 공통 `catch`를 타 **원시 500**으로 나간다(정상적인 400 검증 실패가 아니라).
+
+**고침.** "검증 스키마 종류 전체"(`IMPORT_TYPES`, `IMPORT_SCHEMAS`/`validateRows`가 쓰는 것 — 9종,
+`demand_line` 포함)와 "관리자 배치 업로드가 받는 종류"(`ADMIN_BATCH_IMPORT_TYPES` — 신설, 원래 8종,
+`core.upload_batch` CHECK와 정확히 같음)를 `lib/import/types.ts`에서 분리했다.
+`app/api/admin/imports/parse/route.ts`의 게이트를 `ADMIN_BATCH_IMPORT_TYPES`로 바꿔, `demand_line`을
+포함한 목록 밖 값은 이제 평범한 400(`파일, 데이터 종류 또는 모드가 올바르지 않습니다.`)으로
+거절되고 DB까지 가지 않는다. 같은 드리프트가 다시 생기지 않도록 `components/admin/import-manager.tsx`의
+하드코딩된 종류 드롭다운도 이 상수를 참조하도록 바꿨다(전엔 route와 별개로 8종을 직접 나열하고
+있었다 — 우연히 `demand_line`이 없었을 뿐 같은 상수를 안 쓰고 있었다).
+
+**검증.** `lib/import/validate.test.ts`에 `ADMIN_BATCH_IMPORT_TYPES`가 `demand_line`을 포함하지
+않고 `IMPORT_TYPES`에서 `demand_line`만 뺀 것과 정확히 같은 집합인지 확인하는 테스트를 추가했다
+(`npm test` 186/186, 이 파일만 7/7). API 라우트 자체를 실행하는 테스트 하네스는 이 저장소에 없어
+(`app/api/**/*.test.ts`가 `package.json`의 `node --test "lib/**/*.test.ts"` 글롭에 잡히지 않음 —
+기존 관행도 route가 아니라 그 아래 `lib/` 순수 함수만 테스트한다), 실제로 게이트를 결정하는 상수
+관계를 테스트했다.
+
+### 재실행 결과
+
+```bash
+$ npx --no-install node --test "lib/demand/model.test.ts"            # 17/17
+$ npx --no-install node --test "lib/import/validate.test.ts"         # 7/7 (신규 fix round 1 테스트 포함)
+$ npx --no-install node --test "lib/permission.test.ts"              # 변화 없음, 그대로 통과
+$ LOG_DIR=/tmp/t7-fix1-utc bash supabase/tests/demand_submission/run-all.sh                                    # 전부 통과 (UTC)
+$ PGOPTIONS="-c timezone=America/Los_Angeles" LOG_DIR=/tmp/t7-fix1-la bash supabase/tests/demand_submission/run-all.sh  # 전부 통과 (LA)
+$ npm test        # 186/186
+$ npm run build   # 성공
+$ git diff --check  # 출력 없음
+```
+
+### Deferred(이번에는 그대로 둠, 리뷰 지시대로)
+
+- `run-all.sh`의 `FAIL|ERROR` grep이 "ERROR 행" 같은 한글 라벨 문자열 속 영단어까지 잡는 거짓 양성
+  — 종료 코드와 "결과: 전부 통과" 줄이 실제 판정이다.
+- 파일 업로드 크기 제한.
+- 회수(withdraw)·합의(agree)의 타 부서 시나리오 추가.
