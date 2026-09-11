@@ -121,6 +121,70 @@ create trigger demand_submission_event_append_only
   for each row execute function core.reject_demand_submission_event_mutation();
 
 
+-- ══ 2-1. 닫힌 취합 주기 쓰기 잠금(구조적 안전장치) ══════════════════
+--
+-- fix round 2 — core.save_demand_submission_lines · submit_demand_submission ·
+-- withdraw_demand_submission · agree_demand_submission이 각각 "취합 주기가 닫혔는지"를
+-- 확인하지만, 그 확인을 깜빡한 함수가 나중에 하나라도 추가되면 닫힌(얼어붙은) 제출본이 다시
+-- 바뀔 수 있다 — 실제로 agree_demand_submission이 1차 수정 때 이 확인을 빠뜨렸었다. 애플리케이션
+-- 함수의 확인에만 기대지 않고, 테이블 자체에 BEFORE 트리거를 달아 "닫힌 주기에 묶인 행은 절대
+-- 못 바뀐다"를 DB가 직접 강제한다 — 이 트리거를 우회하지 않는 한 앞으로 어떤 함수(또는 실수로
+-- 권한이 열린 직접 SQL)도 이 규칙을 어길 수 없다.
+--
+-- 이 트리거와 "취합 주기당(월당) 활성 주기 1개"(§1 부분 유니크 인덱스) · "활성 주기당 부서
+-- 제출본 1개"(§2 unique(cycle_id, department))를 합치면, "부서·기준월당 얼어붙지 않은(살아있는)
+-- 제출본은 항상 하나뿐"이라는 불변식이 구조적으로 성립한다 — 닫힌 주기의 행은 이 트리거가 상태
+-- 변경을 막아 영구히 얼어붙고, 새 주기의 행만 유일하게 계속 바뀔 수 있기 때문이다.
+
+create or replace function core.guard_demand_submission_cycle_active()
+returns trigger
+language plpgsql
+security definer
+set search_path = core, pg_temp
+as $$
+declare
+  v_is_active boolean;
+begin
+  select c.is_active into v_is_active from core.planning_cycle c where c.cycle_id = new.cycle_id;
+  if v_is_active is distinct from true then
+    raise exception '취합 주기가 닫힌 제출본은 더 이상 바꿀 수 없습니다.' using errcode = '22023';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists demand_submission_guard_cycle_active on core.demand_submission;
+create trigger demand_submission_guard_cycle_active
+  before insert or update on core.demand_submission
+  for each row execute function core.guard_demand_submission_cycle_active();
+
+create or replace function core.guard_demand_submission_line_cycle_active()
+returns trigger
+language plpgsql
+security definer
+set search_path = core, pg_temp
+as $$
+declare
+  v_submission_id uuid := coalesce(new.submission_id, old.submission_id);
+  v_is_active boolean;
+begin
+  select c.is_active into v_is_active
+    from core.demand_submission s
+    join core.planning_cycle c on c.cycle_id = s.cycle_id
+   where s.submission_id = v_submission_id;
+  if v_is_active is distinct from true then
+    raise exception '취합 주기가 닫힌 제출본의 항목은 더 이상 바꿀 수 없습니다.' using errcode = '22023';
+  end if;
+  return coalesce(new, old);
+end;
+$$;
+
+drop trigger if exists demand_submission_line_guard_cycle_active on core.demand_submission_line;
+create trigger demand_submission_line_guard_cycle_active
+  before insert or update or delete on core.demand_submission_line
+  for each row execute function core.guard_demand_submission_line_cycle_active();
+
+
 -- ══ 3. 마감일 계산 ═══════════════════════════════════════════════
 --
 -- stage1.md §3: "월간 수요 자료 제출 마감일은 전월 말일의 하루 전으로 한다.
@@ -584,6 +648,11 @@ begin
   if not found then
     raise exception '제출본을 찾을 수 없습니다.' using errcode = 'P0002';
   end if;
+  -- fix round 2 — 닫힌 취합 주기(재개로 이미 새 cycle_id가 열렸을 수도 있는, 옛 cycle_id에 묶인
+  -- 행)에서는 합의도 막는다. save/submit/withdraw와 같은 규칙이다.
+  if not exists (select 1 from core.planning_cycle c where c.cycle_id = v_submission.cycle_id and c.is_active) then
+    raise exception '취합 주기가 닫혀 더 이상 합의를 확정할 수 없습니다.' using errcode = '22023';
+  end if;
   if v_submission.status <> 'SUBMITTED' then
     raise exception '제출완료 상태만 합의를 확정할 수 있습니다.' using errcode = '22023';
   end if;
@@ -802,6 +871,8 @@ revoke all on function core.raise_demand_submission_reminders() from public, ano
 grant execute on function core.raise_demand_submission_reminders() to service_role;
 
 revoke all on function core.reject_demand_submission_event_mutation() from public, anon, authenticated;
+revoke all on function core.guard_demand_submission_cycle_active() from public, anon, authenticated;
+revoke all on function core.guard_demand_submission_line_cycle_active() from public, anon, authenticated;
 
 
 -- ══ 9. 수동 적용 후 확인 쿼리 ═════════════════════════════════════

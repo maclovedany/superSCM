@@ -377,3 +377,133 @@ $ git diff --check  # 출력 없음
   — 종료 코드와 "결과: 전부 통과" 줄이 실제 판정이다.
 - 파일 업로드 크기 제한.
 - 회수(withdraw)·합의(agree)의 타 부서 시나리오 추가.
+
+## 9. Fix round 2 — 재검토에서 남은 문제 수정
+
+라운드 1의 finding 1(timezone) · 3(관리자 배치 게이트)은 확인됐고, finding 2(취합 주기 닫기
+잠금)는 **일부만** 고쳐져 있었다는 재검토 결과를 받았다.
+
+### 남은 구멍 — `core.agree_demand_submission`에만 닫힌 주기 확인이 빠져 있었다
+
+라운드 1에서 `save_demand_submission_lines` · `submit_demand_submission` · `withdraw_demand_submission`
+세 곳에는 "제출본이 속한 취합 주기가 아직 열려 있는지" 확인을 추가했지만, **`agree_demand_submission`은
+빠뜨렸다**(행 수 561~607, 라운드 1에서 손대지 않은 채로 남아 있었음 — 재검토가 정확히 지적한
+범위). 그래서 재개(같은 달을 새 `cycle_id`로 다시 열기) 뒤에도, 옛(닫힌) 주기에 남아 있던
+`SUBMITTED` 제출본을 SCM 품목담당자가 여전히 `AGREED`로 확정할 수 있었다 — "닫힌 주기의 행은
+읽기 전용 이력"이라는 라운드 1의 정책을 실제로는 지키지 못하는 구멍이었다.
+
+### 고침 1 — `agree_demand_submission`에 같은 확인 추가
+
+다른 세 함수와 같은 위치(부서/권한 확인 뒤, 상태 확인 앞)에 같은 패턴으로 추가했다.
+
+```sql
+if not exists (select 1 from core.planning_cycle c where c.cycle_id = v_submission.cycle_id and c.is_active) then
+  raise exception '취합 주기가 닫혀 더 이상 합의를 확정할 수 없습니다.' using errcode = '22023';
+end if;
+```
+
+### 고침 2 — 구조적 안전장치(요청한 "no future path can break it")
+
+"함수마다 확인을 빠짐없이 넣는다"는 방식 자체가 이번에 한 곳을 빠뜨려 뚫렸으므로, 애플리케이션
+함수의 기억력에 기대지 않는 **DB 트리거**를 추가했다(리뷰가 제시한 선택지 중 "constraint trigger
+that checks against active cycles"를 그대로 택함). "부서·기준월당 얼어붙지 않은 제출본은 하나뿐"을
+`(plan_month, department)` 위의 부분 유니크 인덱스로 직접 강제하는 방식은 채택하지 않았다 —
+PostgreSQL의 부분 인덱스 predicate은 다른 테이블(취합 주기의 `is_active`)을 참조하는 서브쿼리를
+쓸 수 없어, "얼어붙었는가"를 판정하려면 `demand_submission`에 상태를 그때그때 동기화해야 하는
+비정규화 컬럼이 필요하고, 그 동기화 자체가 또 다른 트리거라 트리거 방식보다 나을 게 없었다.
+
+`core.demand_submission`과 `core.demand_submission_line` 각각에 BEFORE 트리거를 달았다
+(`supabase/migrations/20260911000700_stage1_demand_submission.sql` §2-1, 신설):
+
+- `core.guard_demand_submission_cycle_active()` — `demand_submission`의 모든 INSERT·UPDATE에서,
+  그 행의 `cycle_id`가 가리키는 `planning_cycle.is_active`가 참이 아니면 무조건 거절한다
+  (`'취합 주기가 닫힌 제출본은 더 이상 바꿀 수 없습니다.'`).
+- `core.guard_demand_submission_line_cycle_active()` — `demand_submission_line`의 모든
+  INSERT·UPDATE·DELETE에서, 그 줄이 속한 제출본의 취합 주기가 활성이 아니면 거절한다.
+
+이 두 트리거는 애플리케이션 함수가 무엇을 확인했는지와 무관하게 **테이블 자체**에서 막기 때문에,
+지금처럼 어느 함수 하나가 확인을 빠뜨리거나(이번 `agree_demand_submission`처럼), 앞으로 새 함수가
+추가되거나, 권한이 잘못 넓어져 누군가 테이블에 직접 쓰더라도 규칙이 깨지지 않는다.
+
+**이 트리거 + 기존 두 제약을 합치면 불변식이 구조적으로 성립한다.**
+- "월(plan_month)당 활성 취합 주기는 하나"(§1, `planning_cycle(plan_month) where is_active` 부분
+  유니크 인덱스 — 기존)
+- "활성 주기당 부서 제출본은 하나"(§2, `unique(cycle_id, department)` — 기존)
+- "닫힌 주기에 묶인 제출본은 절대 다시 바뀌지 않는다"(§2-1, 신설 트리거)
+
+세 가지를 합치면 "부서·기준월당, 얼어붙지 않고 계속 바뀔 수 있는(=활성 주기에 묶인) 제출본은
+항상 정확히 하나"가 어떤 실행 경로로도 깨지지 않는다 — 얼어붙은 옛 행이 몇 개가 이력으로 남아
+있든, 그중 "살아있는" 것은 현재 활성 주기에 묶인 단 하나뿐이다.
+
+### 검증 — `scenarios.psql` S13 확장
+
+기존 S13(라운드 1, 취합 주기 닫기·재개)에 세 가지를 더했다:
+
+1. **준비**: MARKETING의 DRAFT 제출본(`third_sub_a`)뿐 아니라, 같은 `third_cycle`에서 SERVICE가
+   `SUBMITTED`까지 마친 제출본(`third_sub_svc`)도 미리 만들어 둔다(닫기 전).
+2. **닫은 뒤 — 이번에 고친 구멍**: `third_sub_svc`(SUBMITTED)에 `agree_demand_submission`을
+   부르면 `'취합 주기가 닫혀 더 이상 합의를 확정할 수 없습니다.'`로 거절되고, 상태는 SUBMITTED로
+   그대로 남아 AGREED로 바뀌지 않음을 확인한다.
+3. **재개 뒤 — 구조적 트리거 자체를 검증**: `core.start_demand_submission` 같은 애플리케이션
+   함수를 거치지 않고, `core.demand_submission`에 **옛(닫힌) `third_cycle`**로 직접 `INSERT`를
+   시도한다. `department`는 `BIZ_DEV`로 골라 `unique(cycle_id, department)`와는 무관하게(그
+   조합엔 아직 행이 없다) 오직 "닫힌 주기" 판정만으로 거절되는지 확인하고, 실제로 행이 하나도
+   남지 않았음을 재확인한다.
+
+```bash
+$ LOG_DIR=/tmp/t7-fix2-utc bash supabase/tests/demand_submission/run-all.sh
+scenarios: PASS 75 · FAIL/ERROR 2   # (기존과 같은 라벨 문자열 거짓 양성, deferred)
+  S1 PASS 5 … S9 PASS 5 … S13 PASS 17
+결과: 전부 통과
+
+$ PGOPTIONS="-c timezone=America/Los_Angeles" LOG_DIR=/tmp/t7-fix2-la bash supabase/tests/demand_submission/run-all.sh
+scenarios: PASS 75 · FAIL/ERROR 2
+  S1 PASS 5 … S9 PASS 5 … S13 PASS 17
+결과: 전부 통과
+```
+
+로그에서 이번에 추가한 5개 assertion만 뽑아 직접 확인했다(전부 PASS):
+
+```
+PASS: S13 준비(fix round 2) — 닫기 전 SUBMITTED까지 마친 다른 부서 제출본
+PASS: S13 (fix round 2) 닫힌 주기의 SUBMITTED 제출본은 합의 확정할 수 없다 → 22023 취합 주기가 닫혀 더 이상 합의를 확정할 수 없습니다.
+PASS: S13 (fix round 2) 닫힌 주기의 SUBMITTED 제출본은 AGREED로 바뀌지 않고 그대로 얼어붙는다
+PASS: S13 (fix round 2) 닫힌 주기로 새 제출본(unique 제약과 무관한 부서)을 직접 INSERT해도 구조적 트리거가 거절한다 → 22023 취합 주기가 닫힌 제출본은 더 이상 바꿀 수 없습니다.
+PASS: S13 (fix round 2) 위 시도는 실제로 아무 행도 남기지 않는다(거절된 INSERT)
+```
+
+### 다른 경로 감사 결과 — 추가로 고칠 곳 없음
+
+- `core.raise_demand_submission_reminders()`: 취합 주기를 순회하는 `for` 루프 자체가
+  `where is_active and ...`로 시작해 닫힌 주기는 애초에 대상에 들지 않는다 — 별도 수정 불필요.
+- `core.start_demand_submission()`: `select * into v_cycle from core.planning_cycle where
+  plan_month = v_month and is_active for update`로 활성 주기만 골라 잠그므로, 닫힌 주기로는
+  제출본을 만들 수도 이어서 쓸 수도 없다(신설 INSERT 트리거와도 이중으로 일치) — 별도 수정 불필요.
+- `core.close_planning_cycle()`은 `planning_cycle`만 쓰고 `demand_submission`을 건드리지
+  않으므로 새 트리거와 충돌하지 않는다.
+- `core.demand_submission_event`는 append-only 이력 테이블이라 상태 변경 자체가 아니라 "무엇이
+  있었는지"를 남기는 곳이다. 그 테이블에 쓰는 모든 코드 경로는 이미 성공한 `demand_submission`
+  갱신 뒤에만 실행되므로(트리거가 막았다면 그 갱신도 실패해 이벤트도 안 남는다), 별도 가드가
+  필요 없다.
+
+### 재실행 결과
+
+```bash
+$ npx --no-install node --test "lib/demand/model.test.ts"      # 17/17 (변화 없음)
+$ npx --no-install node --test "lib/import/validate.test.ts"   # 7/7 (변화 없음)
+$ LOG_DIR=/tmp/t7-fix2-utc bash supabase/tests/demand_submission/run-all.sh                                    # 전부 통과 (UTC)
+$ PGOPTIONS="-c timezone=America/Los_Angeles" LOG_DIR=/tmp/t7-fix2-la bash supabase/tests/demand_submission/run-all.sh  # 전부 통과 (LA)
+$ npm test        # 186/186
+$ npm run build   # 성공
+$ git diff --check  # 출력 없음
+```
+
+### Deferred(이번에도 그대로 둠, 리뷰 지시대로)
+
+- `lib.sh`의 `PGOPTIONS` 값을 호출자가 미리 설정해 뒀을 때 그대로 통과시키는지(passthrough) 별도
+  손대지 않았다 — 이미 `export PGOPTIONS="${PGOPTIONS:--c timezone=UTC}"`로 호출자 값이 있으면
+  그 값을 쓰고 없을 때만 UTC로 기본값을 채운다(라운드 1에서 이미 이 모양으로 구현됨). 이번
+  라운드의 두 실행(UTC 기본값 · `PGOPTIONS="-c timezone=America/Los_Angeles"` 오버라이드)이 그
+  동작을 그대로 증명한다.
+- 관리자 `validate`/`commit` 라우트의 `importType` 재확인 — `parse` 단계에서 이미
+  `ADMIN_BATCH_IMPORT_TYPES`로 막혀 그 이후 단계로 `demand_line`이 흘러갈 경로 자체가 없다.
