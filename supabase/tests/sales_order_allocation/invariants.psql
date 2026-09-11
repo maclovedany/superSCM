@@ -1,0 +1,26 @@
+\set ON_ERROR_STOP 1
+\ir guard.psql
+\pset tuples_only on
+\pset format unaligned
+\echo '== 불변식 (전체 시나리오 · 동시성 검증 뒤) =='
+select order_test.check((select count(*) from (
+  select a.item_id from core.stock_allocation a join core.stock_balance sb using (item_id)
+   where a.status <> 'RELEASED' group by a.item_id, sb.normal_qty having sum(a.qty) > sb.normal_qty) x) = 0, 'INV 초과 배정 품목 0');
+select order_test.check((select count(*) from (
+  select l.line_id from core.sales_order_line l
+    left join core.stock_allocation a on a.line_id = l.line_id and a.status <> 'RELEASED'
+   group by l.line_id, l.temporary_allocated_qty, l.firm_allocated_qty, l.approval_hold_qty
+  having l.temporary_allocated_qty <> coalesce(sum(a.qty) filter (where a.status = 'TEMPORARY'), 0)
+      or l.firm_allocated_qty <> coalesce(sum(a.qty) filter (where a.status = 'FIRM'), 0)
+      or l.approval_hold_qty <> coalesce(sum(a.qty) filter (where a.status = 'APPROVAL_HOLD'), 0)) x) = 0, 'INV 주문 품목 합계 = 배정 원장');
+select order_test.check((select count(*) from core.sales_order o where not exists (
+  select 1 from core.sales_order_event e where e.order_id = o.order_id and e.event_type = 'CREATED')) = 0, 'INV 모든 주문에 등록 이력');
+select order_test.check((select count(*) from core.sales_order o where o.first_review_requested_at is not null and not exists (
+  select 1 from core.sales_order_event e where e.order_id = o.order_id and e.event_type = 'REVIEW_REQUESTED')) = 0, 'INV 검토 요청된 모든 주문에 검토 요청 이력');
+select order_test.check((select count(*) from core.stock_allocation a where not exists (
+  select 1 from core.stock_allocation_event e where e.allocation_id = a.allocation_id and e.event_type = 'CREATED')) = 0, 'INV 모든 배정에 생성 이력');
+select order_test.check((select count(*) from core.stock_allocation a where a.status = 'RELEASED' and not exists (
+  select 1 from core.stock_allocation_event e where e.allocation_id = a.allocation_id and e.event_type = 'RELEASED')) = 0, 'INV 모든 해제에 해제 이력');
+select order_test.check((select count(*) from core.stock_allocation a where a.status = 'APPROVAL_HOLD' and a.approval_id is null) = 0, 'INV 승인대기 확보는 항상 승인 요청과 연결');
+select order_test.check((select count(*) from core.sales_order where status <> 'DRAFT' and status <> 'CANCELLED'
+  and temporary_expires_at <> first_review_requested_at + interval '30 days') = 0, 'INV 모든 주문 만료 = 최초 검토 요청 + 30일');

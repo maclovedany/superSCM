@@ -31,6 +31,10 @@
 --
 -- ★ Task 6이 호출할 계약 (내부 전용 — authenticated에 실행 권한이 없다)
 --   core.allocate_to_order_line(p_line_id, p_max_qty, p_source, p_actor)   주문 품목 1건 후속 배정
+--     ★ 확정 전 주문의 만료 시각이 지났으면 TEMPORARY_ALLOCATION_EXPIRED로 거절한다(예외 — 트랜잭션 전체가
+--       되돌려진다). 신규 입고 배정은 대기열에서 만료된 확정 전 주문을 먼저 해제하거나 건너뛰어야 한다.
+--   만료 시각 이후에는 임시배정 생성 · 임시 → 확정 전환 · 수주 확정을 모두 거절한다. 수동 FIRM과 승인대기
+--   확보(생성 · 승인)는 시간 제한이 없다(stage1 §2 68 · 83행).
 --   core.transition_stock_allocation(p_allocation_id, p_next_status, p_actor, p_reason, p_cause, p_payload)
 --   core.apply_sales_order_status(p_order_id)                               주문 상태 재계산
 --   core.log_sales_order_event(p_order_id, p_event_type, ...)               주문 이력
@@ -629,6 +633,8 @@ declare
   v_normal numeric;
   v_committed numeric;
   v_allocation_id uuid;
+  v_order_status text;
+  v_temporary_expires_at timestamptz;
 begin
   if p_status is null or p_status not in ('TEMPORARY', 'APPROVAL_HOLD', 'FIRM') then
     raise exception '새 배정은 TEMPORARY · APPROVAL_HOLD · FIRM 중 하나여야 합니다.' using errcode = '22023';
@@ -649,6 +655,17 @@ begin
   end if;
 
   select * into v_line from core.sales_order_line l where l.line_id = p_line_id;
+  -- 임시배정 생성은 주문의 만료 시각 전에만 한다. 수동 FIRM · 승인대기 확보는 시간 제한이 없다(stage1 §2 68 · 83행).
+  select o.status, o.temporary_expires_at
+    into v_order_status, v_temporary_expires_at
+    from core.sales_order o
+   where o.order_id = v_line.order_id;
+  if p_status = 'TEMPORARY' and v_order_status <> 'CONFIRMED'
+     and clock_timestamp() >= v_temporary_expires_at then
+    raise exception 'TEMPORARY_ALLOCATION_EXPIRED: 임시배정 만료 시각(%)이 지난 주문에는 임시배정을 만들 수 없습니다.',
+      v_temporary_expires_at using errcode = '55000';
+  end if;
+
   if p_qty > v_line.shortage_qty then
     raise exception 'ALLOCATION_EXCEEDS_SHORTAGE: 남은 부족수량(%)보다 많이 배정할 수 없습니다.',
       v_line.shortage_qty using errcode = '22023';
@@ -700,6 +717,7 @@ as $$
 declare
   v_before core.stock_allocation%rowtype;
   v_after core.stock_allocation%rowtype;
+  v_temporary_expires_at timestamptz;
 begin
   if p_next_status is null or p_next_status not in ('FIRM', 'RELEASED') then
     raise exception '배정은 FIRM 또는 RELEASED로만 전환할 수 있습니다.' using errcode = '22023';
@@ -719,6 +737,16 @@ begin
   end if;
   if p_next_status = 'RELEASED' and nullif(btrim(p_reason), '') is null then
     raise exception '배정 해제에는 사유가 필요합니다.' using errcode = '22023';
+  end if;
+  -- 임시배정을 확정배정으로 바꾸는 것은 만료 시각 전에만 한다. 해제는 언제든 허용한다(Task 6 자동 해제도 이 함수를 쓴다).
+  if v_before.status = 'TEMPORARY' and p_next_status = 'FIRM' then
+    select o.temporary_expires_at into v_temporary_expires_at
+      from core.sales_order o
+     where o.order_id = v_before.order_id;
+    if clock_timestamp() >= v_temporary_expires_at then
+      raise exception 'TEMPORARY_ALLOCATION_EXPIRED: 만료 시각(%)이 지난 임시배정은 확정배정으로 바꿀 수 없습니다.',
+        v_temporary_expires_at using errcode = '55000';
+    end if;
   end if;
 
   update core.stock_allocation
@@ -1163,6 +1191,12 @@ begin
   if v_order.status not in ('REVIEW_REQUESTED', 'PARTIALLY_ALLOCATED', 'WAITING_FULL', 'CONFIRMED') then
     return 0;
   end if;
+  -- 확정 전 주문의 후속 배정은 임시배정이다. 만료 시각이 지났으면 만들지 않는다 — 만료 예고가 모두 과거라
+  -- 아무에게도 알리지 못한 채 이미 끝난 주문에 재고가 묶인다. 호출자(Task 6)는 만료 주문을 먼저 해제하거나 건너뛴다.
+  if v_order.status <> 'CONFIRMED' and clock_timestamp() >= v_order.temporary_expires_at then
+    raise exception 'TEMPORARY_ALLOCATION_EXPIRED: 임시배정 만료 시각(%)이 지난 주문에는 후속 임시배정을 만들 수 없습니다.',
+      v_order.temporary_expires_at using errcode = '55000';
+  end if;
 
   select * into v_line from core.sales_order_line l where l.line_id = p_line_id;
   v_available := (select sb.normal_qty from core.stock_balance sb where sb.item_id = v_line.item_id)
@@ -1280,6 +1314,11 @@ begin
     from core.sales_order
    where order_id = p_order_id
      for update;
+  -- 만료 시각이 이미 기록된 주문에는 새 임시배정을 만들지 않는다(DRAFT는 check 제약상 만료가 비어 있지만 방어한다).
+  if v_order.temporary_expires_at is not null and clock_timestamp() >= v_order.temporary_expires_at then
+    raise exception 'TEMPORARY_ALLOCATION_EXPIRED: 임시배정 만료 시각(%)이 지난 주문입니다. 새 주문으로 재등록합니다.',
+      v_order.temporary_expires_at using errcode = '55000';
+  end if;
   if v_order.status <> 'DRAFT' then
     raise exception '작성 중(DRAFT) 주문만 검토 요청할 수 있습니다. 다른 요청이 먼저 처리되었습니다.' using errcode = '22023';
   end if;
@@ -1398,6 +1437,12 @@ begin
      for update;
   if v_order.status not in ('REVIEW_REQUESTED', 'PARTIALLY_ALLOCATED', 'WAITING_FULL') then
     raise exception '검토 요청 이후 확정 전 주문만 수주 확정할 수 있습니다 (현재 %).', v_order.status using errcode = '22023';
+  end if;
+  -- 만료 시각이 지나면 임시배정은 이미 효력이 없다. 확정해 FIRM(만료 없음)으로 바꾸면 30일 규칙을 우회하므로,
+  -- 자동 해제 작업(Task 6)이 늦게 돌더라도 여기서 막는다 (stage1 §2 44 · 46행).
+  if clock_timestamp() >= v_order.temporary_expires_at then
+    raise exception 'TEMPORARY_ALLOCATION_EXPIRED: 임시배정 만료 시각(%)이 지난 주문은 수주 확정할 수 없습니다. 새 주문으로 재등록합니다.',
+      v_order.temporary_expires_at using errcode = '55000';
   end if;
   if exists (
     select 1 from core.sales_order o

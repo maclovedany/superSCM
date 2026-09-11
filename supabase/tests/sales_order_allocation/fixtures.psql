@@ -1,0 +1,101 @@
+-- 영업 주문 · 배정 검증 fixture — 로컬 임시 DB(scm_test_*) 전용. 운영 마이그레이션에 넣지 않는다
+\set ON_ERROR_STOP 1
+\ir guard.psql
+
+create schema if not exists order_test;
+grant usage on schema order_test to anon, authenticated;
+
+create or replace function order_test.as_user(p_user uuid) returns text language sql as $$
+  select set_config('request.jwt.claim.sub', p_user::text, false)
+$$;
+
+create or replace function order_test.check(p_ok boolean, p_label text) returns text language plpgsql as $$
+begin
+  if p_ok is distinct from true then
+    raise exception 'FAIL: %', p_label;
+  end if;
+  return 'PASS: ' || p_label;
+end $$;
+
+create or replace function order_test.expect_error(p_sql text, p_pattern text, p_label text) returns text language plpgsql as $$
+declare
+  v_state text;
+  v_message text;
+begin
+  begin
+    execute p_sql;
+  exception when others then
+    get stacked diagnostics v_state = returned_sqlstate, v_message = message_text;
+    if v_message !~ p_pattern then
+      raise exception 'FAIL: % — 다른 오류: % (%)', p_label, v_message, v_state;
+    end if;
+    return 'PASS: ' || p_label || ' → ' || v_state || ' ' || v_message;
+  end;
+  raise exception 'FAIL: % — 오류가 나지 않았습니다: %', p_label, p_sql;
+end $$;
+
+create or replace function order_test.available(p_item text) returns numeric language sql as $$
+  select sb.normal_qty - coalesce((
+    select sum(a.qty) from core.stock_allocation a where a.item_id = sb.item_id and a.status <> 'RELEASED'
+  ), 0)
+  from core.stock_balance sb where sb.item_id = p_item
+$$;
+
+grant execute on all functions in schema order_test to anon, authenticated;
+
+insert into auth.users (id, email) values
+  ('00000000-0000-4000-8000-000000000001', 't5-sales1@example.test'),
+  ('00000000-0000-4000-8000-000000000002', 't5-sales2@example.test'),
+  ('00000000-0000-4000-8000-000000000011', 't5-planner1@example.test'),
+  ('00000000-0000-4000-8000-000000000021', 't5-lead1@example.test'),
+  ('00000000-0000-4000-8000-000000000031', 't5-bizdev@example.test'),
+  ('00000000-0000-4000-8000-000000000041', 't5-marketing@example.test'),
+  ('00000000-0000-4000-8000-000000000051', 't5-dual@example.test')
+on conflict (id) do nothing;
+
+insert into core.app_user (user_id, email, name, department, role, active, job_role) values
+  ('00000000-0000-4000-8000-000000000001', 't5-sales1@example.test', '영업1', 'SALES', 'USER', true, 'SALES_REP'),
+  ('00000000-0000-4000-8000-000000000002', 't5-sales2@example.test', '영업2', 'SALES', 'USER', true, 'SALES_REP'),
+  ('00000000-0000-4000-8000-000000000011', 't5-planner1@example.test', '품목담당1', 'SCM', 'USER', true, 'SCM_PLANNER'),
+  ('00000000-0000-4000-8000-000000000021', 't5-lead1@example.test', '팀장1', 'SCM', 'USER', true, 'SCM_LEAD'),
+  ('00000000-0000-4000-8000-000000000031', 't5-bizdev@example.test', '사업강화1', 'BIZ_DEV', 'USER', true, 'BIZ_DEV'),
+  ('00000000-0000-4000-8000-000000000041', 't5-marketing@example.test', '마케팅1', 'MARKETING', 'USER', true, 'MARKETING'),
+  ('00000000-0000-4000-8000-000000000051', 't5-dual@example.test', '겸직검증', 'SCM', 'USER', true, 'T5_DUAL')
+on conflict (user_id) do update
+  set job_role = excluded.job_role, name = excluded.name, active = true;
+
+-- 자기 승인 차단을 검증하려면 요청 권한과 승인 권한을 함께 가진 계정이 필요하다(임시 DB 전용 직책).
+insert into core.role_permission (job_role, permission_code) values
+  ('T5_DUAL', 'ALLOC_MANUAL'), ('T5_DUAL', 'ALLOC_PRIORITY_APPROVE')
+on conflict do nothing;
+
+insert into raw.item_master ("품목코드", "품목명", "품목구분") values
+  ('ITEMT01', 'T5 동시 60', '소모품'),
+  ('ITEMT02', 'T5 부분·대기', '소모품'),
+  ('ITEMT03', 'T5 확정·취소', '소모품'),
+  ('ITEMT04', 'T5 수동·승인', '소모품'),
+  ('ITEMT06', 'T5 우선순위·취소', '소모품'),
+  ('ITEMC01', 'T5 동시 10건 게이트', '소모품'),
+  ('ITEMC02', 'T5 다른 품목', '소모품'),
+  ('ITEMC03', 'T5 동시 10건 버스트', '소모품'),
+  ('ITEMU01', 'T5 미분류', '소모품'),
+  ('ITEMT07', 'T5 주문 취소', '소모품'),
+  ('ITEMT08', 'T5 확보 주문 취소', '소모품'),
+  ('ITEMT09', 'T5 확정 주문 취소 거절', '소모품'),
+  ('ITEMT10', 'T5 만료 시각 이후 차단', '소모품');
+
+insert into core.stock_balance (item_id, snapshot_qty, normal_qty, snapshot_at) values
+  ('ITEMT01', 100, 100, now()),
+  ('ITEMT02', 100, 100, now()),
+  ('ITEMT03', 100, 100, now()),
+  ('ITEMT04', 100, 100, now()),
+  ('ITEMT06', 10, 10, now()),
+  ('ITEMC01', 100, 100, now()),
+  ('ITEMC02', 100, 100, now()),
+  ('ITEMC03', 100, 100, now()),
+  ('ITEMT07', 100, 100, now()),
+  ('ITEMT08', 100, 100, now()),
+  ('ITEMT09', 100, 100, now()),
+  ('ITEMT10', 100, 100, now());
+
+select 'fixtures ok';

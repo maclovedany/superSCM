@@ -1,0 +1,437 @@
+-- 영업 주문 · 배정 행위 검증 시나리오 — 로컬 임시 DB(scm_test_*) 전용, fixtures.psql 적용 뒤 실행
+\set ON_ERROR_STOP 1
+\ir guard.psql
+\pset tuples_only on
+\pset format unaligned
+\set sales1 '00000000-0000-4000-8000-000000000001'
+\set sales2 '00000000-0000-4000-8000-000000000002'
+\set planner1 '00000000-0000-4000-8000-000000000011'
+\set lead1 '00000000-0000-4000-8000-000000000021'
+\set bizdev '00000000-0000-4000-8000-000000000031'
+\set marketing '00000000-0000-4000-8000-000000000041'
+\set dual '00000000-0000-4000-8000-000000000051'
+
+\echo '== S2 PARTIAL 60+40 부족 유지 / WAIT_FULL 0 배정 (ITEMT02, 순차) =='
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select core.create_sales_order('C-001', '고객 C', '[{"item_id":"itemt-02","qty":60}]'::jsonb, null) as oc \gset
+select order_test.expect_error(format('select core.request_order_review(%L, null)', :'oc'), 'ALLOCATION_CHOICE_REQUIRED', 'S2 배정 방식 선택 없이 검토 요청 거절');
+select order_test.as_user(:'sales2') \g /dev/null
+select order_test.expect_error(format('select core.request_order_review(%L, %L)', :'oc', 'PARTIAL'), '본인이 등록한', 'S2 남의 주문 검토 요청 거절');
+select order_test.as_user(:'sales1') \g /dev/null
+select core.request_order_review(:'oc', 'PARTIAL') ->> 'status' as oc_status \gset
+select order_test.check(:'oc_status' = 'REVIEW_REQUESTED', 'S2 첫 주문 60 전량 임시배정 → REVIEW_REQUESTED');
+select order_test.as_user(:'sales2') \g /dev/null
+select core.create_sales_order(null, '고객 D', '[{"item_id":"ITEMT02","qty":60}]'::jsonb) as od \gset
+select core.request_order_review(:'od', 'WAIT_FULL') as od_result \gset
+select core.create_sales_order(null, '고객 E', '[{"item_id":"ITEMT02","qty":60}]'::jsonb) as oe \gset
+select core.request_order_review(:'oe', 'PARTIAL') as oe_result \gset
+\echo :od_result
+\echo :oe_result
+select order_test.check((:'od_result'::jsonb ->> 'status') = 'WAITING_FULL'
+  and (:'od_result'::jsonb ->> 'temporary_allocated_qty')::numeric = 0
+  and (:'od_result'::jsonb ->> 'shortage_qty')::numeric = 60, 'S2 WAIT_FULL(가용 40 < 60)은 0 배정 · 부족 60 · WAITING_FULL');
+select order_test.check((:'oe_result'::jsonb ->> 'status') = 'PARTIALLY_ALLOCATED'
+  and (:'oe_result'::jsonb ->> 'temporary_allocated_qty')::numeric = 40
+  and (:'oe_result'::jsonb ->> 'shortage_qty')::numeric = 20, 'S2 PARTIAL은 40 배정 · 부족 20 유지 · PARTIALLY_ALLOCATED');
+select order_test.as_user(:'sales1') \g /dev/null
+select order_test.check((select available_qty from analytics.v_order_available_stock where item_id = 'ITEMT02') = 0,
+  'S2 영업1 주문 가능 수량 = 100-60-40 = 0 (RLS로 못 보는 남의 배정도 차감)');
+select order_test.check((select count(*) from core.sales_order where order_id in (:'od', :'oe')) = 0, 'S2 영업1은 영업2 주문 행을 볼 수 없다(RLS)');
+reset role;
+select order_test.check((select temporary_expires_at = first_review_requested_at + interval '30 days' from core.sales_order where order_id = :'oe'), 'S2 만료 = 최초 검토 요청 + 30일');
+select order_test.check((select count(*) from core.stock_allocation where order_id = :'od') = 0, 'S2 WAIT_FULL 주문에는 배정 행이 없다');
+select order_test.check((select count(*) from core.notification_outbox where template_code = 'TEMP_ALLOCATION_EXPIRY_WARNING' and payload ->> 'series_id' = :'oc') = 30,
+  'S2 첫 임시배정 만료 예고 5회 × 수신 3명(영업·ALLOC_MANUAL 2명) × 2채널 = 30');
+select order_test.check((select count(*) from core.notification_outbox where template_code = 'TEMP_ALLOCATION_EXPIRY_WARNING' and payload ->> 'series_id' = :'od') = 0, 'S2 배정 0건 WAIT_FULL 주문은 만료 예고 없음');
+select order_test.check((select payload ->> 'allocation_choice' = 'PARTIAL' and payload ->> 'chosen_by' = :'sales2' and (payload ->> 'shortage_qty')::numeric = 20
+  from core.sales_order_event where order_id = :'oe' and event_type = 'REVIEW_REQUESTED'), 'S2 주문 이력에 선택 방식 · 부족수량 · 선택자 저장');
+
+\echo '== S3 추가 배정 뒤에도 최초 만료일 유지 (ITEMT02) =='
+select temporary_expires_at as oe_exp from core.sales_order where order_id = :'oe' \gset
+select temporary_expires_at as od_exp from core.sales_order where order_id = :'od' \gset
+select line_id as oe_line from core.sales_order_line where order_id = :'oe' \gset
+select line_id as od_line from core.sales_order_line where order_id = :'od' \gset
+select pg_sleep(1.1) \g /dev/null
+update core.stock_balance set normal_qty = 180 where item_id = 'ITEMT02';
+select order_test.check(core.allocate_to_order_line(:'oe_line', 1000, 'RECEIPT', null) = 20, 'S3 PARTIAL 주문 후속 임시배정 20 (부족분까지만)');
+select order_test.check((select temporary_expires_at = :'oe_exp'::timestamptz and status = 'REVIEW_REQUESTED' from core.sales_order where order_id = :'oe'),
+  'S3 추가 임시배정 뒤 만료일 불변 · 부족 0 → REVIEW_REQUESTED');
+select order_test.check((select count(*) = 2 and bool_and(status = 'TEMPORARY') from core.stock_allocation where order_id = :'oe'), 'S3 임시배정 2건이 주문 하나의 만료를 공유');
+select order_test.check(core.allocate_to_order_line(:'od_line', 60, 'RECEIPT', null) = 60, 'S3 WAIT_FULL 대기 주문을 나중에 전량 임시배정');
+select order_test.check((select temporary_expires_at = :'od_exp'::timestamptz and temporary_expires_at = first_review_requested_at + interval '30 days'
+  from core.sales_order where order_id = :'od'), 'S3 나중에 배정된 WAIT_FULL 주문도 최초 검토 요청 + 30일');
+select order_test.check((select count(*) from core.notification_outbox where template_code = 'TEMP_ALLOCATION_EXPIRY_WARNING' and payload ->> 'series_id' = :'od' and status = 'PENDING') = 30,
+  'S3 대기 주문의 첫 임시배정에서 만료 예고 예약');
+select order_test.check(core.allocate_to_order_line(:'oe_line', 10, 'RECEIPT', null) = 0, 'S3 부족 0인 줄에는 더 배정하지 않는다');
+select order_test.expect_error(format('update core.sales_order set temporary_expires_at = temporary_expires_at + interval %L where order_id = %L', '1 day', :'oe'),
+  '변경할 수 없습니다', 'S3 만료일 직접 UPDATE는 superuser도 트리거가 거절');
+select order_test.expect_error(format('update core.sales_order set first_review_requested_at = now() where order_id = %L', :'oe'),
+  '변경할 수 없습니다', 'S3 최초 검토 요청 시각 직접 UPDATE 거절');
+
+\echo '== S4 수주 확정 · 확정 뒤 배정 · 확정배정 취소 · 재등록 (ITEMT03) =='
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select core.create_sales_order('C-F', '고객 F', '[{"item_id":"ITEMT03","qty":50}]'::jsonb, '메모 F') as of \gset
+select core.request_order_review(:'of', 'PARTIAL') \g /dev/null
+select order_test.as_user(:'sales2') \g /dev/null
+select core.create_sales_order(null, '고객 G', '[{"item_id":"ITEMT03","qty":10}]'::jsonb) as og \gset
+select core.request_order_review(:'og', 'PARTIAL') \g /dev/null
+select order_test.expect_error(format('select core.confirm_sales_order(%L, %L)', :'of', 'ERP-001'), '본인이 등록한', 'S4 남의 주문 수주 확정 거절');
+select order_test.as_user(:'sales1') \g /dev/null
+select order_test.expect_error(format('select core.confirm_sales_order(%L, %L)', :'of', '  '), 'CONFIRMED_ORDER_NO_REQUIRED', 'S4 최종 승인 주문번호 없이 확정 거절');
+select core.confirm_sales_order(:'of', 'ERP-001') \g /dev/null
+select order_test.as_user(:'sales2') \g /dev/null
+select order_test.expect_error(format('select core.confirm_sales_order(%L, %L)', :'og', 'ERP-001'), 'CONFIRMED_ORDER_NO_DUPLICATED', 'S4 같은 최종 승인 주문번호 중복 거절');
+select order_test.as_user(:'sales1') \g /dev/null
+select core.create_sales_order(null, '고객 S', '[{"item_id":"ITEMT03","qty":60}]'::jsonb) as os \gset
+select core.request_order_review(:'os', 'PARTIAL') \g /dev/null
+select core.confirm_sales_order(:'os', 'ERP-002') \g /dev/null
+reset role;
+select order_test.check((select status = 'CONFIRMED' and confirmed_order_no = 'ERP-001' and confirmed_by = :'sales1'::uuid from core.sales_order where order_id = :'of'), 'S4 수주 확정 상태 · 번호 · 확정자');
+select order_test.check((select count(*) = 1 and bool_and(status = 'FIRM') and sum(qty) = 50 from core.stock_allocation where order_id = :'of'), 'S4 임시배정 50 → 확정배정 50');
+select order_test.check((select count(*) from core.notification_outbox where payload ->> 'series_id' = :'of' and template_code = 'TEMP_ALLOCATION_EXPIRY_WARNING' and status = 'PENDING') = 0,
+  'S4 확정 뒤 만료 예고 중단');
+select order_test.check((select firm_allocated_qty = 40 and shortage_qty = 20 from core.sales_order_line where order_id = :'os'), 'S4 부족 20이 남은 확정 주문 (확정 40)');
+update core.stock_balance set normal_qty = 120 where item_id = 'ITEMT03';
+select order_test.check(core.allocate_to_order_line((select line_id from core.sales_order_line where order_id = :'os'), 20, 'RECEIPT', null) = 20, 'S4 확정 주문 후속 배정 20');
+select order_test.check((select count(*) filter (where status = 'TEMPORARY') = 0 and sum(qty) filter (where status = 'FIRM') = 60 from core.stock_allocation where order_id = :'os'),
+  'S4 확정 뒤 배정분은 곧바로 FIRM (임시배정 없음)');
+select order_test.check((select status from core.sales_order where order_id = :'os') = 'CONFIRMED', 'S4 확정 주문 상태 유지');
+select order_test.check(order_test.available('ITEMT03') = 0, 'S4 취소 전 ITEMT03 가용 = 120-50-10-60 = 0');
+select allocation_id as of_firm from core.stock_allocation where order_id = :'of' and status = 'FIRM' \gset
+set role authenticated;
+select order_test.as_user(:'planner1') \g /dev/null
+select order_test.expect_error(format('select core.cancel_firm_allocation(%L, %L)', :'of_firm', ''), 'CANCEL_REASON_REQUIRED', 'S4 사유 없는 확정배정 취소 거절');
+select order_test.as_user(:'sales1') \g /dev/null
+select order_test.expect_error(format('select core.cancel_firm_allocation(%L, %L)', :'of_firm', '고객 취소'), 'ALLOC_FIRM_CANCEL', 'S4 권한 없는 사용자(영업)의 확정배정 취소 거절');
+select order_test.as_user(:'planner1') \g /dev/null
+select core.cancel_firm_allocation(:'of_firm', '고객 발주 취소') \g /dev/null
+select order_test.expect_error(format('select core.cancel_firm_allocation(%L, %L)', :'of_firm', '다시'), 'FIRM_ALLOCATION_NOT_ACTIVE', 'S4 이미 해제된 확정배정 재취소 거절');
+select order_test.as_user(:'sales2') \g /dev/null
+select order_test.check((select available_qty from analytics.v_order_available_stock where item_id = 'ITEMT03') = 50, 'S4 확정배정 취소로 재고 복원: 영업2 주문 가능 0 → 50');
+select order_test.as_user(:'sales1') \g /dev/null
+select order_test.expect_error(format('select core.request_order_review(%L, %L)', :'of', 'PARTIAL'), 'DRAFT', 'S4 취소 주문은 다시 검토 요청 · 대기 상태로 돌아가지 않는다');
+select order_test.expect_error(format('select core.confirm_sales_order(%L, %L)', :'of', 'ERP-009'), '확정 전 주문만', 'S4 취소 주문 수주 확정 불가');
+select order_test.expect_error(format('select core.copy_cancelled_order(%L)', :'os'), '취소 또는 만료된', 'S4 확정 주문은 재등록 불가');
+select order_test.as_user(:'sales2') \g /dev/null
+select order_test.expect_error(format('select core.copy_cancelled_order(%L)', :'of'), '본인이 등록한', 'S4 남의 취소 주문 재등록 거절');
+select order_test.as_user(:'sales1') \g /dev/null
+select core.copy_cancelled_order(:'of') as ot \gset
+select order_test.expect_error(format('select core.copy_cancelled_order(%L)', :'of'), 'ORDER_ALREADY_REPLACED', 'S4 같은 취소 주문 중복 재등록 거절');
+select order_test.check((select replaced_by_order_id = :'ot'::uuid and status = 'CANCELLED' from analytics.v_my_sales_order where order_id = :'of'), 'S4 v_my_sales_order에 재등록 연결 표시');
+select order_test.check((select replaces_order_no is not null and status = 'DRAFT' and jsonb_array_length(lines) = 1 and jsonb_array_length(events) = 1 from analytics.v_my_sales_order where order_id = :'ot'),
+  'S4 새 주문 행에 이전 주문번호 · 품목 · 이력');
+reset role;
+select order_test.check((select status = 'CANCELLED' and cancel_reason = '고객 발주 취소' and cancelled_by = :'planner1'::uuid from core.sales_order where order_id = :'of'), 'S4 확정배정 취소 → 주문 CANCELLED');
+select order_test.check((select bool_and(status = 'RELEASED' and release_reason = '고객 발주 취소') from core.stock_allocation where order_id = :'of'), 'S4 주문의 배정 전부 해제 · 사유 저장');
+select order_test.check((select status = 'DRAFT' and replaces_order_id = :'of'::uuid and customer_name = '고객 F' and customer_id = 'C-F' and note = '메모 F' and owner_user_id = :'sales1'::uuid
+  from core.sales_order where order_id = :'ot'), 'S4 재등록 주문은 DRAFT · 고객 복사 · replaces_order_id 연결');
+select order_test.check((select count(*) = 1 and min(item_id) = 'ITEMT03' and min(requested_qty) = 50 from core.sales_order_line where order_id = :'ot'), 'S4 재등록 주문 품목 · 수량 복사');
+select order_test.check((select count(*) from core.notification_outbox where template_code = 'ALLOC_FIRM_CANCELLED' and recipient_user_id = :'sales1' and payload ->> 'order_id' = :'of'
+  and payload ->> 'message' like '%고객 발주 취소%' and payload ->> 'message' like '%품목담당1%' and payload ->> 'message' like '%해제 수량 50%') = 2,
+  'S4 영업담당자 취소 알림(앱·이메일) — 주문 · 품목 · 해제 수량 · 처리자 · 사유');
+select order_test.check((select string_agg(event_type, ',' order by at, event_id) from core.sales_order_event where order_id = :'of') = 'CREATED,REVIEW_REQUESTED,CONFIRMED,CANCELLED,COPIED',
+  'S4 주문 이력: 등록 → 검토 → 확정 → 취소 → 재등록');
+select order_test.check((select string_agg(event_type, ',' order by at, event_id) from core.stock_allocation_event where order_id = :'of') = 'CREATED,CONVERTED_TO_FIRM,RELEASED',
+  'S4 배정 이력: 생성 → 확정 전환 → 해제');
+
+\echo '== S5 수동 배정 · 순서 건너뜀 APPROVAL_HOLD · 승인/반려 (ITEMT04) =='
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select core.create_sales_order(null, '고객 H', '[{"item_id":"ITEMT04","qty":70}]'::jsonb) as oh \gset
+select core.request_order_review(:'oh', 'PARTIAL') \g /dev/null
+select order_test.as_user(:'sales2') \g /dev/null
+select core.create_sales_order(null, '고객 I', '[{"item_id":"ITEMT04","qty":50}]'::jsonb) as oi \gset
+select core.request_order_review(:'oi', 'PARTIAL') \g /dev/null
+select order_test.as_user(:'sales1') \g /dev/null
+select core.create_sales_order(null, '고객 J', '[{"item_id":"ITEMT04","qty":40}]'::jsonb) as oj \gset
+select core.request_order_review(:'oj', 'WAIT_FULL') \g /dev/null
+reset role;
+update core.stock_balance set normal_qty = 150 where item_id = 'ITEMT04';
+set role authenticated;
+select order_test.as_user(:'planner1') \g /dev/null
+select order_test.check((select string_agg(order_id::text || ':' || queue_rank, ',' order by queue_rank) from analytics.v_allocation_queue where item_id = 'ITEMT04' and queue_rank is not null)
+  = :'oi' || ':1,' || :'oj' || ':2', 'S5 대기 순번 I(부족 20)=1, J(부족 40)=2');
+select order_test.expect_error(format('select core.request_manual_allocation(%L, %L, 30, null)', :'oj', 'ITEMT04'), 'PRIORITY_REASON_REQUIRED', 'S5 순서를 건너뛴 수동 배정은 사유 필수');
+select order_test.as_user(:'bizdev') \g /dev/null
+select order_test.expect_error(format('select core.request_manual_allocation(%L, %L, 30, %L)', :'oj', 'ITEMT04', 'x'), 'ALLOC_MANUAL', 'S5 권한 없는 사용자(사업강화부)의 수동 배정 거절');
+select order_test.as_user(:'planner1') \g /dev/null
+select core.request_manual_allocation(:'oj', 'ITEMT04', 30, '전략 고객 긴급 납품') as mj \gset
+select (:'mj'::jsonb ->> 'approval_id') as ap1, (:'mj'::jsonb ->> 'allocation_id') as al1 \gset
+select order_test.check((:'mj'::jsonb ->> 'allocation_status') = 'APPROVAL_HOLD', 'S5 순서 건너뜀 → APPROVAL_HOLD + 승인 요청');
+select order_test.as_user(:'sales2') \g /dev/null
+select order_test.check((select available_qty from analytics.v_order_available_stock where item_id = 'ITEMT04') = 20, 'S5 승인대기 확보 30이 가용재고에서 차감: 150-70-30-30 = 20');
+select order_test.as_user(:'planner1') \g /dev/null
+select order_test.expect_error(format('select core.decide_approval(%L, %L, %L)', :'ap1', 'APPROVED', '자기 승인'), '결정할 업무 권한', 'S5 요청자(승인 권한 없음)의 승인 거절');
+select order_test.as_user(:'marketing') \g /dev/null
+select order_test.expect_error(format('select core.decide_approval(%L, %L, %L)', :'ap1', 'APPROVED', 'x'), '결정할 업무 권한', 'S5 권한 없는 사용자의 승인 거절');
+select order_test.as_user(:'dual') \g /dev/null
+select core.request_manual_allocation(:'oj', 'ITEMT04', 10, '겸직 검증') ->> 'approval_id' as ap2 \gset
+select order_test.expect_error(format('select core.decide_approval(%L, %L, %L)', :'ap2', 'APPROVED', '자기 승인'), '자신이 요청한 승인', 'S5 요청자 본인 승인 거절(승인 권한 보유자)');
+select order_test.as_user(:'lead1') \g /dev/null
+select order_test.expect_error(format('select core.decide_approval(%L, %L, %L)', :'ap2', 'REJECTED', ''), '반려 의견은 필수', 'S5 반려 의견 필수');
+select core.decide_approval(:'ap2', 'REJECTED', '앞선 대기 주문 우선') \g /dev/null
+select order_test.as_user(:'sales2') \g /dev/null
+select order_test.check((select available_qty from analytics.v_order_available_stock where item_id = 'ITEMT04') = 20, 'S5 반려 즉시 확보 10 해제 → 가용 10 → 20 복원');
+select order_test.as_user(:'lead1') \g /dev/null
+select core.decide_approval(:'ap1', 'APPROVED', '납기 긴급 확인') \g /dev/null
+select order_test.expect_error(format('select core.decide_approval(%L, %L, %L)', :'ap1', 'APPROVED', 'x'), '이미 처리', 'S5 이미 처리된 승인 재결정 거절');
+select order_test.as_user(:'sales2') \g /dev/null
+select order_test.check((select available_qty from analytics.v_order_available_stock where item_id = 'ITEMT04') = 20, 'S5 승인 → FIRM 전환은 가용재고를 다시 차감하지 않는다(20 유지)');
+select order_test.as_user(:'planner1') \g /dev/null
+select core.request_manual_allocation(:'oi', 'ITEMT04', 20, null) as mi \gset
+select order_test.check((:'mi'::jsonb ->> 'allocation_status') = 'FIRM' and (:'mi'::jsonb ->> 'approval_id') is null, 'S5 정상 순서(1순번) 수동 배정은 승인 없이 즉시 FIRM');
+select order_test.expect_error(format('select core.request_manual_allocation(%L, %L, 50, %L)', :'oj', 'ITEMT04', 'x'), 'MANUAL_QTY_EXCEEDS_SHORTAGE', 'S5 부족수량 초과 수동 배정 거절');
+reset role;
+select order_test.check((select status = 'FIRM' and firm_at is not null and approval_id = :'ap1'::uuid from core.stock_allocation where allocation_id = :'al1'),
+  'S5 승인 즉시 APPROVAL_HOLD → FIRM (추가 SCM 처리 없음)');
+select order_test.check((select l.firm_allocated_qty = 30 and l.approval_hold_qty = 0 and l.shortage_qty = 10 and o.status = 'PARTIALLY_ALLOCATED'
+  from core.sales_order_line l join core.sales_order o using (order_id) where l.order_id = :'oj'), 'S5 J 주문 확정 30 · 부족 10 · PARTIALLY_ALLOCATED');
+select order_test.check((select status = 'RELEASED' and release_reason = '앞선 대기 주문 우선' from core.stock_allocation where approval_id = :'ap2'::uuid), 'S5 반려된 확보는 RELEASED + 팀장 의견');
+select order_test.check((select count(*) from core.notification_outbox where dedupe_key = 'approval:' || :'ap1' || ':decision:APPROVED' and template_code = 'ALLOC_PRIORITY_DECIDED'
+  and status = 'PENDING' and recipient_user_id in (:'planner1', :'sales1')) = 4, 'S5 승인 결과 알림: 요청자 · 영업담당자 × 앱 · 이메일, 취소되지 않음');
+select order_test.check((select bool_and(payload ->> 'message' like '%납기 긴급 확인%' and payload ->> 'message' like '%요청 수량 30%') from core.notification_outbox
+  where dedupe_key = 'approval:' || :'ap1' || ':decision:APPROVED'), 'S5 결과 알림에 요청 수량 · 팀장 의견');
+select order_test.check((select count(*) from core.notification_outbox where dedupe_key = 'approval:' || :'ap1' || ':decision:APPROVED' and template_code = 'APPROVAL_DECIDED') = 0,
+  'S5 요청자는 일반 결과 알림을 중복으로 받지 않는다');
+select order_test.check((select count(*) from core.notification_outbox where template_code = 'APPROVAL_PENDING' and payload ->> 'approval_id' = :'ap1' and status <> 'CANCELLED') = 0,
+  'S5 승인 후 팀장 대기 알림 중단');
+select order_test.check((select count(*) = 4 and bool_and(payload ->> 'message' like '%' || (select order_no from core.sales_order where order_id = :'oj') || '%'
+  and payload ->> 'message' like '%요청 수량 30%' and payload ->> 'message' like '%현재 가용재고 50%' and payload ->> 'message' like '%전략 고객 긴급 납품%'
+  and payload ->> 'message' like '%품목담당1%') from core.notification_outbox where template_code = 'APPROVAL_PENDING' and payload ->> 'approval_id' = :'ap1'),
+  'S5 팀장 승인 요청 알림(2명×2채널)에 주문 · 품목 · 요청 수량 · 현재 가용재고 · 사유 · 요청자');
+select order_test.check((select string_agg(event_type || '/' || coalesce(payload ->> 'cause', '-'), ',' order by at, event_id) from core.stock_allocation_event where allocation_id = :'al1'::uuid)
+  = 'CREATED/-,CONVERTED_TO_FIRM/PRIORITY_APPROVED', 'S5 우선 배정 이력: 확보 생성 → 팀장 승인으로 확정');
+select order_test.check((select status from core.sales_order where order_id = :'oi') = 'REVIEW_REQUESTED', 'S5 I 주문 부족 0 → REVIEW_REQUESTED');
+
+\echo '== S6 우선순위 변경 · 확보가 대기 중인 주문의 확정배정 취소 (ITEMT06) =='
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select core.create_sales_order(null, '고객 Q', '[{"item_id":"ITEMT06","qty":30}]'::jsonb) as oq \gset
+select core.request_order_review(:'oq', 'PARTIAL') \g /dev/null
+select order_test.as_user(:'sales2') \g /dev/null
+select core.create_sales_order(null, '고객 R', '[{"item_id":"ITEMT06","qty":20}]'::jsonb) as orr \gset
+select core.request_order_review(:'orr', 'PARTIAL') ->> 'status' as orr_status \gset
+select order_test.check(:'orr_status' = 'PARTIALLY_ALLOCATED', 'S6 가용 0에서 PARTIAL은 0 배정 · 부족 전량 표시');
+reset role;
+update core.stock_balance set normal_qty = 25 where item_id = 'ITEMT06';
+set role authenticated;
+select order_test.as_user(:'planner1') \g /dev/null
+select core.request_manual_allocation(:'oq', 'ITEMT06', 5, null) ->> 'allocation_status' as q_manual \gset
+select order_test.check(:'q_manual' = 'FIRM', 'S6 Q(1순번) 정상 순서 수동 배정 FIRM 5');
+select order_test.as_user(:'sales1') \g /dev/null
+select order_test.expect_error(format('select core.change_allocation_priority(%L, 1, %L)', :'orr', '영업 요청'), 'ALLOC_PRIORITY_EDIT', 'S6 영업은 우선순위 변경 불가');
+select order_test.as_user(:'bizdev') \g /dev/null
+select order_test.expect_error(format('select core.change_allocation_priority(%L, 1, %L)', :'orr', ' '), 'PRIORITY_REASON_REQUIRED', 'S6 우선순위 변경 사유 필수');
+select order_test.expect_error(format('select core.change_allocation_priority(%L, 0, %L)', :'orr', '사유'), 'PRIORITY_INVALID', 'S6 우선순위 범위 검사');
+select core.change_allocation_priority(:'orr', 1, '전략 고객 지정') \g /dev/null
+select order_test.expect_error(format('select core.change_allocation_priority(%L, 1, %L)', :'orr', '사유'), 'PRIORITY_UNCHANGED', 'S6 같은 우선순위 재지정 거절');
+select order_test.check((select string_agg(order_id::text || ':' || queue_rank, ',' order by queue_rank) from analytics.v_allocation_queue where item_id = 'ITEMT06' and queue_rank is not null)
+  = :'orr' || ':1,' || :'oq' || ':2', 'S6 사업강화부가 볼 때 우선순위 1인 R이 먼저 요청한 Q보다 앞 순번');
+select order_test.as_user(:'planner1') \g /dev/null
+select order_test.expect_error(format('select core.request_manual_allocation(%L, %L, 5, null)', :'oq', 'ITEMT06'), 'PRIORITY_REASON_REQUIRED', 'S6 우선순위 변경 뒤 Q 수동 배정은 순서 건너뜀');
+select core.request_manual_allocation(:'oq', 'ITEMT06', 5, '긴급 설치') ->> 'approval_id' as ap3 \gset
+reset role;
+select allocation_id as oq_firm from core.stock_allocation where order_id = :'oq' and status = 'FIRM' \gset
+set role authenticated;
+select order_test.as_user(:'planner1') \g /dev/null
+select core.cancel_firm_allocation(:'oq_firm', '고객 사정으로 취소') \g /dev/null
+select order_test.as_user(:'lead1') \g /dev/null
+select order_test.expect_error(format('select core.decide_approval(%L, %L, %L)', :'ap3', 'APPROVED', 'x'), '이미 처리되었거나 취소된', 'S6 취소된 주문의 우선 배정 요청은 승인 불가');
+select order_test.as_user(:'sales2') \g /dev/null
+select order_test.check((select available_qty from analytics.v_order_available_stock where item_id = 'ITEMT06') = 25, 'S6 Q 취소로 임시 10 · 확정 5 · 확보 5 모두 복원 → 가용 25');
+reset role;
+select order_test.check((select previous_priority = 5 and priority = 1 and changed_by = :'bizdev'::uuid and changed_by_name = '사업강화1' and reason = '전략 고객 지정' and changed_at is not null
+  from core.allocation_priority where order_id = :'orr'), 'S6 우선순위 변경 이력: 전후 · 변경자 · 시각 · 사유');
+select order_test.check((select status = 'CANCELLED' and decided_by = :'planner1'::uuid from core.approval_request where approval_id = :'ap3'), 'S6 주문 취소로 우선 배정 승인 요청 CANCELLED');
+select order_test.check((select count(*) from core.approval_event where approval_id = :'ap3' and event_type = 'CANCELLED') = 1, 'S6 승인 취소 이력');
+select order_test.check((select count(*) from core.notification_outbox where payload ->> 'approval_id' = :'ap3' and template_code = 'APPROVAL_PENDING' and status = 'PENDING') = 0, 'S6 취소된 요청의 팀장 대기 알림 중단');
+select order_test.check((select string_agg(status || ':' || (payload_cause), ',' order by status) from (
+    select a.status, (select e.payload ->> 'cause' from core.stock_allocation_event e where e.allocation_id = a.allocation_id and e.event_type = 'RELEASED') as payload_cause
+      from core.stock_allocation a where a.order_id = :'oq') x) = 'RELEASED:FIRM_CANCELLED,RELEASED:ORDER_CANCELLED,RELEASED:ORDER_CANCELLED',
+  'S6 취소한 확정배정과 나머지 임시 · 확보가 모두 해제 이력');
+select order_test.check((select status from core.sales_order where order_id = :'orr') = 'PARTIALLY_ALLOCATED', 'S6 다른 주문 R은 영향 없음');
+
+\echo '== S7 직접 쓰기 차단 · 권한 · 미분류 재고 =='
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select order_test.expect_error('update core.stock_allocation set status = ''RELEASED''', 'permission denied', 'S7 영업이 배정 테이블 직접 UPDATE 불가');
+select order_test.expect_error(format('insert into core.stock_allocation (order_id, line_id, item_id, status, qty, source, created_by_name) values (%L, 1, %L, %L, 1, %L, %L)', :'oh', 'ITEMT04', 'FIRM', 'MANUAL', 'x'),
+  'permission denied', 'S7 배정 테이블 직접 INSERT 불가');
+select order_test.expect_error(format('update core.sales_order set temporary_expires_at = now() where order_id = %L', :'oh'), 'permission denied', 'S7 authenticated는 주문 만료일 직접 UPDATE 불가');
+select order_test.expect_error('delete from core.sales_order_event', 'permission denied', 'S7 주문 이력 직접 DELETE 불가');
+select order_test.expect_error(format('select core.allocate_to_order_line(1, 10, %L, null)', 'RECEIPT'), 'permission denied', 'S7 내부 후속 배정 함수 직접 실행 불가');
+select order_test.expect_error(format('select core.create_stock_allocation(1, %L, 1, %L, null, null)', 'FIRM', 'MANUAL'), 'permission denied', 'S7 내부 배정 생성 함수 직접 실행 불가');
+select order_test.as_user(:'planner1') \g /dev/null
+select order_test.expect_error(format('select core.request_approval(%L, %L, %L, %L::jsonb, null, %L)', 'ALLOC_PRIORITY', 'STOCK_ALLOCATION', gen_random_uuid(), '{}', '우회'),
+  '승인대기 확보에만', 'S7 확보 없이 만든 ALLOC_PRIORITY 승인 요청 차단');
+select order_test.as_user(:'marketing') \g /dev/null
+select order_test.expect_error(format('select core.create_sales_order(null, %L, %L::jsonb)', '고객', '[{"item_id":"ITEMT01","qty":1}]'), 'ORDER_CREATE', 'S7 권한 없는 사용자 주문 등록 거절');
+select order_test.check((select count(*) from core.sales_order) = 0 and (select count(*) from analytics.v_allocation_queue) = 0 and (select count(*) from core.stock_allocation) = 0
+  and (select count(*) from core.v_item_allocation_qty) = 0, 'S7 권한 없는 사용자는 주문 · 배정 · 배정합계 행을 볼 수 없다');
+select order_test.as_user(:'sales2') \g /dev/null
+select order_test.check((select count(*) from analytics.v_my_sales_order where owner_user_id <> :'sales2') = 0 and (select count(*) from analytics.v_my_sales_order) > 0
+  and (select count(*) from core.sales_order where owner_user_id = :'sales1') = 0, 'S7 영업2는 본인 주문만 본다');
+select order_test.check((select count(*) from analytics.v_allocation_queue) = 0 and (select count(*) from analytics.v_available_stock) = 0, 'S7 영업은 배정 대기열 · 재고 상세를 볼 수 없다');
+select order_test.as_user(:'sales1') \g /dev/null
+select core.create_sales_order(null, '고객 U', '[{"item_id":"ITEMU01","qty":5}]'::jsonb) as ou \gset
+select order_test.expect_error(format('select core.request_order_review(%L, %L)', :'ou', 'PARTIAL'), 'INVENTORY_SCOPE_UNCLASSIFIED', 'S7 정상 재고 미분류 품목은 0 배정 성공이 아니라 거절');
+select order_test.check((select available_qty is null and reason_code = 'INVENTORY_SCOPE_UNCLASSIFIED' from analytics.v_order_available_stock where item_id = 'ITEMU01'), 'S7 미분류 품목 주문 가능 수량은 null + 사유 코드');
+select order_test.expect_error(format('select core.create_sales_order(null, %L, %L::jsonb)', '고객', '[{"item_id":"NOITEM","qty":1}]'), 'ORDER_ITEM_UNKNOWN', 'S7 품목 마스터에 없는 품목 거절');
+select order_test.expect_error(format('select core.create_sales_order(null, %L, %L::jsonb)', '고객', '[{"item_id":"ITEMT01","qty":1},{"item_id":"itemt-01","qty":2}]'), 'ORDER_ITEM_DUPLICATED', 'S7 같은 품목 두 줄 거절');
+select order_test.expect_error(format('select core.create_sales_order(null, %L, %L::jsonb)', '고객', '[{"item_id":"ITEMT01","qty":"abc"}]'), 'ORDER_QTY_INVALID', 'S7 숫자가 아닌 수량 거절');
+set role anon;
+select order_test.expect_error('select count(*) from analytics.v_my_sales_order', 'permission denied', 'S7 anon은 주문 뷰 조회 불가');
+select order_test.expect_error(format('select core.create_sales_order(null, %L, %L::jsonb)', '고객', '[]'), 'permission denied', 'S7 anon은 주문 함수 실행 불가');
+reset role;
+update core.app_user set active = false where user_id = :'planner1';
+set role authenticated;
+select order_test.as_user(:'planner1') \g /dev/null
+select order_test.expect_error(format('select core.request_manual_allocation(%L, %L, 1, null)', :'oj', 'ITEMT04'), '활성 사용자', 'S7 비활성 계정의 수동 배정 거절');
+reset role;
+update core.app_user set active = true where user_id = :'planner1';
+select order_test.check((select status from core.sales_order where order_id = :'ou') = 'DRAFT', 'S7 거절된 검토 요청은 주문을 DRAFT로 유지');
+select order_test.expect_error('delete from core.stock_allocation', '삭제할 수 없습니다', 'S7 superuser도 배정 DELETE 불가(트리거)');
+select order_test.expect_error('update core.sales_order_event set reason = ''x''', '수정하거나 삭제할 수 없습니다', 'S7 superuser도 주문 이력 UPDATE 불가');
+select order_test.expect_error('update core.allocation_priority set reason = ''x''', '수정하거나 삭제할 수 없습니다', 'S7 superuser도 우선순위 이력 UPDATE 불가');
+select order_test.expect_error('update core.stock_allocation set qty = qty + 1 where status <> ''RELEASED''', '변경할 수 없습니다', 'S7 배정 수량 변경 차단(트리거)');
+select order_test.expect_error(format('update core.sales_order set status = %L where order_id = %L', 'WAITING_FULL', :'of'), '허용되지 않는 주문 상태 전환', 'S7 취소 주문 복구 차단(트리거)');
+select order_test.expect_error(format('update core.sales_order_line set requested_qty = 1 where order_id = %L', :'oh'), '변경할 수 없습니다', 'S7 주문 품목 요청수량 변경 차단(트리거)');
+
+\echo '== S8 영업담당자 주문 취소 (ITEMT07 · ITEMT08 · ITEMT09) =='
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select core.create_sales_order(null, '고객 OA', '[{"item_id":"ITEMT07","qty":60}]'::jsonb) as oa \gset
+select core.request_order_review(:'oa', 'PARTIAL') \g /dev/null
+select order_test.check((select available_qty from analytics.v_order_available_stock where item_id = 'ITEMT07') = 40, 'S8 취소 전 임시배정 60 → 주문 가능 40');
+select order_test.as_user(:'sales2') \g /dev/null
+select order_test.expect_error(format('select core.cancel_sales_order(%L, %L)', :'oa', '남의 주문'), '본인이 등록한', 'S8 남의 주문 취소 거절');
+select order_test.as_user(:'planner1') \g /dev/null
+select order_test.expect_error(format('select core.cancel_sales_order(%L, %L)', :'oa', '품목담당자'), 'ORDER_CREATE', 'S8 ORDER_CREATE 없는 사용자 주문 취소 거절');
+select order_test.as_user(:'sales1') \g /dev/null
+select order_test.expect_error(format('select core.cancel_sales_order(%L, %L)', :'oa', ' '), 'CANCEL_REASON_REQUIRED', 'S8 사유 없는 주문 취소 거절');
+select core.cancel_sales_order(:'oa', '고객 요청 철회') \g /dev/null
+select order_test.check((select available_qty from analytics.v_order_available_stock where item_id = 'ITEMT07') = 100, 'S8 주문 취소로 임시배정 60 해제 → 주문 가능 100');
+select order_test.expect_error(format('select core.cancel_sales_order(%L, %L)', :'oa', '다시'), 'ORDER_ALREADY_CLOSED', 'S8 이미 취소된 주문 재취소 거절');
+select core.copy_cancelled_order(:'oa') as oa_copy \gset
+select core.cancel_sales_order(:'oa_copy', '작성 중 주문 정리') \g /dev/null
+reset role;
+select order_test.check((select status = 'CANCELLED' and cancel_reason = '고객 요청 철회' and cancelled_by = :'sales1'::uuid from core.sales_order where order_id = :'oa'), 'S8 주문 CANCELLED · 사유 · 취소자');
+select order_test.check((select count(*) = 1 and bool_and(a.status = 'RELEASED' and e.payload ->> 'cause' = 'ORDER_CANCELLED')
+  from core.stock_allocation a join core.stock_allocation_event e on e.allocation_id = a.allocation_id and e.event_type = 'RELEASED' where a.order_id = :'oa'),
+  'S8 임시배정 RELEASED + 해제 이력(ORDER_CANCELLED)');
+select order_test.check((select payload ->> 'kind' = 'ORDER_CANCELLED' and (payload ->> 'released_qty')::numeric = 60 and previous_status = 'REVIEW_REQUESTED' and reason = '고객 요청 철회'
+  from core.sales_order_event where order_id = :'oa' and event_type = 'CANCELLED'), 'S8 주문 취소 이력 · 해제 수량 60 · 사유');
+select order_test.check((select count(*) from core.v_allocation_queue_line where order_id = :'oa') = 0, 'S8 취소 주문은 대기열에서 빠진다');
+select order_test.check((select count(*) from core.notification_outbox where template_code = 'TEMP_ALLOCATION_EXPIRY_WARNING' and payload ->> 'series_id' = :'oa' and status = 'PENDING') = 0,
+  'S8 취소 주문의 만료 예고 중단');
+select order_test.check((select status = 'CANCELLED' and replaces_order_id = :'oa'::uuid from core.sales_order where order_id = :'oa_copy'), 'S8 취소 주문 재등록 가능 · 작성 중(DRAFT) 주문도 취소 가능');
+
+set role authenticated;
+select order_test.as_user(:'sales2') \g /dev/null
+select core.create_sales_order(null, '고객 OB0', '[{"item_id":"ITEMT08","qty":120}]'::jsonb) as ob0 \gset
+select core.request_order_review(:'ob0', 'PARTIAL') \g /dev/null
+select order_test.as_user(:'sales1') \g /dev/null
+select core.create_sales_order(null, '고객 OB2', '[{"item_id":"ITEMT08","qty":50},{"item_id":"ITEMT07","qty":10}]'::jsonb) as ob2 \gset
+select core.request_order_review(:'ob2', 'PARTIAL') \g /dev/null
+reset role;
+update core.stock_balance set normal_qty = 130 where item_id = 'ITEMT08';
+set role authenticated;
+select order_test.as_user(:'planner1') \g /dev/null
+select core.request_manual_allocation(:'ob2', 'ITEMT08', 30, '다품목 주문 우선 확보') ->> 'approval_id' as ap4 \gset
+reset role;
+select order_test.check((select count(*) from core.notification_outbox where template_code = 'APPROVAL_PENDING' and payload ->> 'approval_id' = :'ap4' and status = 'PENDING') > 0, 'S8 취소 전 팀장 대기 알림 존재');
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select core.cancel_sales_order(:'ob2', '고객 계약 무산') \g /dev/null
+select order_test.check((select available_qty from analytics.v_order_available_stock where item_id = 'ITEMT08') = 30, 'S8 승인대기 확보 30 해제 → ITEMT08 주문 가능 130-100 = 30');
+select order_test.check((select available_qty from analytics.v_order_available_stock where item_id = 'ITEMT07') = 100, 'S8 다품목 주문의 ITEMT07 임시배정 10도 해제 → 100');
+select order_test.as_user(:'lead1') \g /dev/null
+select order_test.expect_error(format('select core.decide_approval(%L, %L, %L)', :'ap4', 'APPROVED', 'x'), '이미 처리되었거나 취소된', 'S8 취소된 주문의 우선 배정 요청은 승인 불가');
+reset role;
+select order_test.check((select status = 'CANCELLED' and decided_by = :'sales1'::uuid from core.approval_request where approval_id = :'ap4'), 'S8 우선 배정 승인 요청 PENDING → CANCELLED');
+select order_test.check((select count(*) from core.approval_event where approval_id = :'ap4' and event_type = 'CANCELLED') = 1, 'S8 승인 취소 이력');
+select order_test.check((select count(*) from core.notification_outbox where template_code = 'APPROVAL_PENDING' and payload ->> 'approval_id' = :'ap4' and status in ('PENDING', 'PROCESSING')) = 0,
+  'S8 팀장 반복 알림 대기 행 0');
+select order_test.check((select count(*) = 2 and bool_and(status = 'RELEASED') from core.stock_allocation where order_id = :'ob2'), 'S8 다품목 주문 임시 10 · 확보 30 모두 RELEASED');
+select order_test.check((select status from core.sales_order where order_id = :'ob0') = 'PARTIALLY_ALLOCATED', 'S8 다른 주문 OB0은 영향 없음');
+
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select core.create_sales_order(null, '고객 OC', '[{"item_id":"ITEMT09","qty":150}]'::jsonb) as oc9 \gset
+select core.request_order_review(:'oc9', 'PARTIAL') \g /dev/null
+reset role;
+update core.stock_balance set normal_qty = 120 where item_id = 'ITEMT09';
+set role authenticated;
+select order_test.as_user(:'planner1') \g /dev/null
+select core.request_manual_allocation(:'oc9', 'ITEMT09', 20, null) ->> 'allocation_status' as oc9_manual \gset
+select order_test.check(:'oc9_manual' = 'FIRM', 'S8 확정 전 주문에 정상 순서 수동 FIRM 20');
+select order_test.as_user(:'sales1') \g /dev/null
+select order_test.expect_error(format('select core.cancel_sales_order(%L, %L)', :'oc9', '취소 시도'), 'FIRM_ALLOCATION_EXISTS', 'S8 확정배정이 있는 주문은 주문 취소 거절');
+select core.create_sales_order(null, '고객 OE', '[{"item_id":"ITEMT07","qty":5}]'::jsonb) as oe9 \gset
+select core.request_order_review(:'oe9', 'PARTIAL') \g /dev/null
+select core.confirm_sales_order(:'oe9', 'ERP-900') \g /dev/null
+select order_test.expect_error(format('select core.cancel_sales_order(%L, %L)', :'oe9', '취소 시도'), 'ORDER_ALREADY_CONFIRMED', 'S8 수주 확정 주문은 주문 취소 거절');
+reset role;
+select order_test.check((select status = 'PARTIALLY_ALLOCATED' from core.sales_order where order_id = :'oc9')
+  and (select count(*) = 2 and bool_and(status <> 'RELEASED') from core.stock_allocation where order_id = :'oc9'), 'S8 거절된 취소는 주문 · 배정을 그대로 둔다');
+
+\echo '== S9 만료 시각이 지난 확정 전 주문 — 임시배정 · 수주 확정 차단, 수동 FIRM · 확보는 허용 (ITEMT10) =='
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select core.create_sales_order(null, '고객 EX', '[{"item_id":"ITEMT10","qty":80}]'::jsonb) as ex \gset
+select core.create_sales_order(null, '고객 NB', '[{"item_id":"ITEMT10","qty":20}]'::jsonb) as nb \gset
+reset role;
+-- 테스트 전용 경로: 최초 검토 요청 시각을 "지금 − 30일 + 5초"로 처음 한 번 기록해 5초 뒤 만료되는 주문을 만든다.
+-- 만료일 불변 트리거는 null에서 처음 채우는 것을 허용하므로 트리거를 끄지 않고, 만료 = 최초 검토 요청 + 30일도 유지된다.
+update core.sales_order o
+   set status = 'REVIEW_REQUESTED', allocation_choice = 'PARTIAL', allocation_choice_by = :'sales1',
+       first_review_requested_at = t.review_at, temporary_expires_at = t.review_at + interval '30 days'
+  from (select clock_timestamp() - interval '30 days' + interval '5 seconds' as review_at) t
+ where o.order_id in (:'ex', :'nb');
+select core.log_sales_order_event(o.order_id, 'REVIEW_REQUESTED', 'DRAFT', 'REVIEW_REQUESTED', :'sales1', '검증용 최초 검토 요청 시각 소급', '{}'::jsonb)
+  from core.sales_order o where o.order_id in (:'ex', :'nb') \g /dev/null
+select line_id as ex_line from core.sales_order_line where order_id = :'ex' \gset
+select line_id as nb_line from core.sales_order_line where order_id = :'nb' \gset
+select order_test.check(core.allocate_to_order_line(:'ex_line', 60, 'RECEIPT', null) = 60, 'S9 만료 전에는 후속 임시배정 60 생성');
+select order_test.check(core.allocate_to_order_line(:'nb_line', 20, 'RECEIPT', null) = 20, 'S9 만료 전에는 후속 임시배정 20 생성');
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select core.confirm_sales_order(:'nb', 'ERP-EXP-OK') \g /dev/null
+reset role;
+select order_test.check((select status = 'CONFIRMED' and clock_timestamp() < temporary_expires_at from core.sales_order where order_id = :'nb'),
+  'S9 만료 직전 주문은 수주 확정된다');
+select pg_sleep(greatest(0, extract(epoch from ((select temporary_expires_at from core.sales_order where order_id = :'ex') - clock_timestamp()))) + 0.5) \g /dev/null
+select order_test.check((select clock_timestamp() >= temporary_expires_at from core.sales_order where order_id = :'ex'), 'S9 만료 시각 경과');
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select order_test.expect_error(format('select core.confirm_sales_order(%L, %L)', :'ex', 'ERP-EXP-LATE'), 'TEMPORARY_ALLOCATION_EXPIRED', 'S9 만료 뒤 수주 확정 거절');
+reset role;
+select order_test.expect_error(format('select core.allocate_to_order_line(%s, 20, %L, null)', :'ex_line', 'RECEIPT'), 'TEMPORARY_ALLOCATION_EXPIRED', 'S9 만료 뒤 자동 후속 임시배정 거절');
+select order_test.expect_error(format('select core.create_stock_allocation(%s, %L, 1, %L, null)', :'ex_line', 'TEMPORARY', 'RECEIPT'), 'TEMPORARY_ALLOCATION_EXPIRED', 'S9 만료 뒤 임시배정 생성 내부 함수도 거절');
+select order_test.expect_error(format('select core.transition_stock_allocation((select allocation_id from core.stock_allocation where order_id = %L and status = %L), %L, null, null, %L)', :'ex', 'TEMPORARY', 'FIRM', 'TEST'),
+  'TEMPORARY_ALLOCATION_EXPIRED', 'S9 만료 뒤 임시배정 → 확정배정 전환 내부 함수도 거절');
+select order_test.check((select count(*) = 1 and bool_and(status = 'TEMPORARY') and sum(qty) = 60 from core.stock_allocation where order_id = :'ex'),
+  'S9 거절된 요청은 기존 임시배정을 바꾸지 않는다');
+set role authenticated;
+select order_test.as_user(:'planner1') \g /dev/null
+select core.request_manual_allocation(:'ex', 'ITEMT10', 10, null) ->> 'allocation_status' as ex_manual \gset
+select order_test.check(:'ex_manual' = 'FIRM', 'S9 만료 뒤에도 정상 순서 수동 FIRM은 허용(시간 제한 없음)');
+select order_test.as_user(:'sales2') \g /dev/null
+select core.create_sales_order(null, '고객 EB', '[{"item_id":"ITEMT10","qty":50}]'::jsonb) as eb \gset
+select core.request_order_review(:'eb', 'PARTIAL') \g /dev/null
+select order_test.as_user(:'bizdev') \g /dev/null
+select core.change_allocation_priority(:'eb', 1, '만료 주문보다 앞 순번 지정') \g /dev/null
+reset role;
+update core.stock_balance set normal_qty = 110 where item_id = 'ITEMT10';
+set role authenticated;
+select order_test.as_user(:'planner1') \g /dev/null
+select core.request_manual_allocation(:'ex', 'ITEMT10', 5, '만료 주문 확보 검증') as ex_hold \gset
+select order_test.check((:'ex_hold'::jsonb ->> 'allocation_status') = 'APPROVAL_HOLD', 'S9 만료 뒤에도 순서 건너뜀 승인대기 확보는 허용(자동 해제 기한 없음)');
+select (:'ex_hold'::jsonb ->> 'approval_id') as ap5 \gset
+select order_test.as_user(:'lead1') \g /dev/null
+select core.decide_approval(:'ap5', 'APPROVED', '승인대기 확보는 시간 제한 없음') \g /dev/null
+reset role;
+select order_test.check((select count(*) filter (where status = 'FIRM') = 2 and sum(qty) filter (where status = 'FIRM') = 15
+  from core.stock_allocation where order_id = :'ex'), 'S9 만료 뒤 확보 승인 → FIRM 전환 허용 (수동 10 + 승인 5)');
