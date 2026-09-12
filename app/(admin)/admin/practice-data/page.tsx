@@ -122,7 +122,7 @@ export default async function PracticeDataPage() {
             <Panel title="제거 방법" description="화면에 버튼을 두지 않았습니다 — 되돌릴 수 없는 작업이라 SQL로만 실행합니다.">
               <p className="muted">Supabase SQL Editor에서 관리자 자격으로 실행합니다.</p>
               <pre className="master-history-item">
-{`select jsonb_pretty(core.remove_practice_dataset('${status.label ?? 'PRACTICE-2026-09'}', p_confirm => true));`}
+{`select jsonb_pretty(core.remove_practice_dataset('${status.label ?? '<실습 묶음 라벨>'}', p_confirm => true));`}
               </pre>
               <p className="muted">
                 무엇이 지워졌고(<code>removed</code>) 무엇이 왜 남았는지(<code>blocked</code>)를 JSON으로 돌려줍니다.

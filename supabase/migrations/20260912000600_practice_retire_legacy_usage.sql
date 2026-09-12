@@ -175,7 +175,13 @@ grant execute on function core.retire_unverified_usage_history(text, boolean) to
 
 -- ══ 5. 보관 현황 뷰 ════════════════════════════════════════════════
 
-create or replace view analytics.v_practice_retired_usage as
+-- ★ fix round 3 — security_invoker를 반드시 붙인다. 아래에서 core.retired_usage_history에 RLS를
+--   켜고 core.is_admin()으로 제한해 놓고도, 뷰가 소유자 권한으로 돌면 일반 사용자가 이 뷰를 통해
+--   보관 건수·기간을 그대로 읽는다(원본 테이블은 0행인데 뷰는 1행이 보이는 상태). 이 저장소의
+--   다른 운영 뷰와 같은 관례다(SCHEMA.md — 신규 analytics 운영 뷰는 security_invoker = true).
+create or replace view analytics.v_practice_retired_usage
+with (security_invoker = true)
+as
 select d.label,
        d.active,
        count(r.archive_id)   as retired_rows,
@@ -445,6 +451,20 @@ begin
   -- ★ fix round 2 (N1) — "지워졌는가"로 판정한다. 살아남은 행의 등기는 종류와 무관하게 남긴다.
   --   이전 정의는 종류별 예외 목록이라 BACKTEST_RUN · ITEM_POLICY_REVISION처럼 목록에 없는 종류의
   --   등기가 행이 남았는데도 지워졌다(표식이 벗겨졌다).
+  -- ★ fix round 3 — 아래 case가 모르는 종류(나중에 추가될 object_kind)는 **남긴다**. 남겼다는
+  --   사실을 결과에 함께 보고해 조용히 넘어가지 않게 한다. 모르는 것을 지우는 쪽으로 기본값을
+  --   두면, 종류가 늘어날 때마다 N1과 똑같은 방식으로 표식이 벗겨진다.
+  select v_blocked || coalesce(jsonb_agg(jsonb_build_object(
+           'kind', o.object_kind, 'key', o.object_key, 'reason', 'UNKNOWN_OBJECT_KIND')), '[]'::jsonb)
+    into v_blocked
+    from core.practice_object o
+   where o.dataset_id = v_dataset.dataset_id
+     and o.object_kind not in (
+       'ITEM', 'ITEM_POLICY', 'ITEM_POLICY_REVISION', 'UPLOAD_BATCH', 'FORECAST_RUN', 'BACKTEST_RUN',
+       'PROCUREMENT_PLAN', 'PLANNING_CYCLE', 'DEMAND_SUBMISSION', 'SUPPLIER', 'SUPPLIER_DEPARTURE',
+       'BUSINESS_CALENDAR', 'CALENDAR_READINESS', 'FORECAST_SETTING', 'SUPPLY_ENTITY'
+     );
+
   delete from core.practice_object o
    where o.dataset_id = v_dataset.dataset_id
      and not case o.object_kind
@@ -466,7 +486,9 @@ begin
        when 'FORECAST_SETTING'     then exists (select 1 from core.forecast_setting s where s.setting_id::text = o.object_key)
        -- 해외법인 행은 지우지 않고 준비기간만 원래 값으로 되돌리므로, 더 이상 실습 객체가 아니다.
        when 'SUPPLY_ENTITY'        then false
-       else false
+       -- ★ fix round 3 — 모르는 종류는 **남긴다**(위에서 UNKNOWN_OBJECT_KIND로 보고했다).
+       --   이전 정의는 else false였고, 그래서 case에 없는 종류의 등기가 조용히 지워졌다.
+       else true
      end;
 
   update core.practice_dataset

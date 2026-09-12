@@ -62,8 +62,26 @@ sed -i '' 's/PRACTICE-2026-09/PRACTICE-2027-03/g' supabase/practice-data/*.sql
 sed -i    's/PRACTICE-2026-09/PRACTICE-2027-03/g' supabase/practice-data/*.sql
 ```
 
-바꾼 뒤 `grep -rn 'PRACTICE-' supabase/practice-data/` 로 남은 것이 없는지 확인하세요.
-`/admin/practice-data` 화면과 마이그레이션에는 라벨이 하드코딩돼 있지 않습니다(등기부에서 읽습니다).
+**이 폴더 밖에도 라벨이 적힌 곳이 있습니다.** `sed` 한 번으로 끝나지 않으니 아래를 함께 보세요.
+
+| 위치 | 성격 | 바꿔야 하나 |
+|---|---|---|
+| `supabase/practice-data/*.sql` | 실제로 실행되는 값 | **예** (위 `sed`) |
+| `docs/stage1-supabase-수동적용.md` | 운영자 안내 문구(3곳) | 예 — 안내가 틀리면 혼동됩니다 |
+| `supabase/migrations/20260912000400`·`000600` | **주석의 확인 쿼리 예시**뿐 | 아니오(동작과 무관) |
+| `app/(admin)/admin/practice-data/page.tsx` | 등기부에서 읽어 표시 | 아니오 |
+
+```bash
+# 실행되는 값 + 운영자 안내를 함께 바꿉니다 (macOS는 -i '' / Linux는 -i)
+sed -i '' 's/PRACTICE-2026-09/PRACTICE-2027-03/g' \
+  supabase/practice-data/*.sql 'docs/stage1-supabase-수동적용.md'
+```
+
+바꾼 뒤 남은 것이 없는지 확인하세요 — 마이그레이션 주석에만 남는 것이 정상입니다.
+
+```bash
+grep -rn 'PRACTICE-2026-09' supabase/ docs/ app/ lib/
+```
 
 ### 먼저 필요한 것
 
@@ -106,6 +124,21 @@ Task 9b의 원천 게이트는 학습·검증 기간의 사용 이력이 **전�
 - 현황은 `analytics.v_practice_retired_usage`와 `/admin/practice-data`에서 보입니다.
 
 ⚠️ 사용자가 만들지 않은 기존 데이터를 옮기므로 **실행 전에 백업을 받으세요.**
+
+### ⚠️ 정리하면 5회차 화면 일부가 빕니다
+
+`core.v_usage_effective`가 `raw.usage_history`를 **기간 제한 없이 전역 집계**하고, 그 값이
+`analytics.v_stockout_risk`(재고 소진 위험)와 `analytics.v_usage_anomaly`(사용량 이상)로
+들어갑니다. 그래서 **정리 시점부터 `99-remove.sql`로 되돌리기 전까지**:
+
+| 화면 | 어떻게 보이는가 |
+|---|---|
+| `/analysis` 재고 소진 위험 | 5회차 더미 19품목의 `daily_usage_avg`가 null → `NO_USAGE`(계산 불가) |
+| `/analysis` 사용량 이상 | 집계할 사용 이력이 없어 비어 보임 |
+| `/dashboard` 관련 패널 · `v_data_coverage` | 데이터 기간이 함께 줄어듦 |
+
+이 화면들은 5회차 더미 분석용이며 stage1 운영 흐름과는 무관합니다. 복구하면 그대로 돌아옵니다.
+**그 화면을 수업에서 쓸 계획이면 이 정리를 하지 마세요**(대신 실습 기준월이 미래가 됩니다).
 
 정리 후 기간은 이렇게 잡힙니다(실행 시점 기준).
 

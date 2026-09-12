@@ -67,7 +67,7 @@ run_part "$DB_PIPE"   part2 pipeline-fixtures.psql pipeline-scenarios.psql "2부
 run_part "$DB_RETIRE" part3 retire-fixtures.psql   retire-scenarios.psql   "3부"
 
 echo "scenarios: PASS $(count '^PASS' "$COMBINED") · FAIL/ERROR $(count 'FAIL|ERROR' "$COMBINED")"
-for scenario in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17 S18 S19 S20 S21; do
+for scenario in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17 S18 S19 S20 S21 S22; do
   printf '  %s PASS %s\n' "$scenario" "$(count "^PASS: $scenario " "$COMBINED")"
 done
 

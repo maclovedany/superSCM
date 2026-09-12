@@ -91,6 +91,24 @@ select practice_test.check(
   'S20 ★ 기준월이 실제 달력의 다음 달이 된다');
 
 
+\echo '== S20 보관 현황은 관리자만 본다 =='
+-- ★ fix round 3 — core.retired_usage_history에 RLS를 걸어 놓고도 뷰가 소유자 권한으로 돌면
+--   일반 사용자가 뷰를 통해 보관 건수·기간을 그대로 읽는다(원본은 0행인데 뷰는 1행).
+set role authenticated;
+select practice_test.as_user(:'marketing1') \g /dev/null
+select practice_test.check(
+  (select count(*) = 0 from core.retired_usage_history),
+  'S20 일반 사용자는 보관소 원본을 볼 수 없다');
+select practice_test.check(
+  (select count(*) = 0 from analytics.v_practice_retired_usage),
+  'S20 ★ 일반 사용자는 보관 현황 뷰로도 볼 수 없다(뷰가 정책을 우회하지 않는다)');
+select practice_test.as_user(:'admin1') \g /dev/null
+select practice_test.check(
+  (select count(*) = 1 from analytics.v_practice_retired_usage where label = 'TEST-RETIRE'),
+  'S20 관리자는 보관 현황을 본다');
+reset role;
+
+
 \echo '== S21 복구 — 실습 묶음을 제거하면 원래대로 돌아온다 =='
 select practice_test.as_user(:'admin1') \g /dev/null
 insert into practice_test.remove_result (result)
@@ -123,3 +141,26 @@ select practice_test.check(
 select practice_test.check(
   (select not active from core.practice_dataset where label = 'TEST-RETIRE'),
   'S21 묶음은 제거됨으로 표시된다');
+
+
+\echo '== S22 모르는 등기 종류는 지우지 않고 보고한다 =='
+-- ★ fix round 3 — 제거 절차의 등기 정리가 아는 종류만 나열하고 나머지를 지우면, 종류가 늘어날
+--   때마다 N1과 똑같은 방식으로 표식이 벗겨진다. 모르는 종류는 **남기고 보고**해야 한다.
+select practice_test.as_user(:'admin1') \g /dev/null
+insert into practice_test.remove_result (result)
+select core.remove_practice_dataset('TEST-UNKNOWNKIND', p_confirm => true);
+
+select practice_test.check(
+  (select result -> 'blocked' @> '[{"kind": "FUTURE_KIND", "key": "FK-1", "reason": "UNKNOWN_OBJECT_KIND"}]'::jsonb
+     from practice_test.remove_result order by ctid desc limit 1),
+  'S22 ★ 모르는 종류가 UNKNOWN_OBJECT_KIND로 보고된다(조용히 넘어가지 않는다)');
+select practice_test.check(
+  (select count(*) = 1 from core.practice_object where object_kind = 'FUTURE_KIND'),
+  'S22 ★ 모르는 종류의 등기가 지워지지 않고 남는다');
+select practice_test.check(
+  (select (result ->> 'residual_objects')::bigint = 1
+     from practice_test.remove_result order by ctid desc limit 1),
+  'S22 남은 등기 수가 결과에 보고된다');
+select practice_test.check(
+  (select not active from core.practice_dataset where label = 'TEST-UNKNOWNKIND'),
+  'S22 그래도 묶음 자체는 제거됨으로 표시된다');

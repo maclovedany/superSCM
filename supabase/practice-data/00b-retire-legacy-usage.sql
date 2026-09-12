@@ -22,6 +22,22 @@
 --
 -- ⚠️ 그래도 **실행 전에 백업을 받으세요.** 이 스크립트는 사용자가 만들지 않은 기존 데이터를 옮깁니다.
 --
+-- ══ ⚠️ 정리하면 5회차 화면 일부가 빕니다 (수업 전에 꼭 알아두세요) ══
+--
+-- `core.v_usage_effective`는 raw.usage_history를 **기간 제한 없이 전역 집계**합니다. 그 값이
+-- `analytics.v_stockout_risk`(재고 소진 위험)와 `analytics.v_usage_anomaly`(사용량 이상)로
+-- 들어갑니다. 그래서 이 정리를 하는 순간부터 `99-remove.sql`로 되돌리기 전까지:
+--
+--   · /analysis 의 **재고 소진 위험** — 5회차 더미 19품목의 daily_usage_avg가 null이 되어
+--     stockout_days가 계산 불가(NO_USAGE)로 보입니다.
+--   · /analysis 의 **사용량 이상** — 집계할 사용 이력이 없어 행이 비어 보입니다.
+--   · /dashboard 의 관련 패널과 `analytics.v_data_coverage`의 데이터 기간도 함께 줄어듭니다.
+--
+-- 이 화면들은 5회차 더미 분석용이며 stage1 운영 흐름(수요 → 승인 → 배정 → 발주계획 → 일정)과는
+-- 무관합니다. 복구하면 그대로 돌아옵니다. 다만 **수업 중에 갑자기 빈 화면을 만나지 않도록**
+-- 미리 알고 계세요 — 그 화면을 수업에서 쓸 계획이면 이 정리를 하지 마세요(대신 실습 기준월이
+-- 미래가 됩니다).
+--
 -- ══ 선행 조건 ══════════════════════════════════════════════════════
 --   supabase/migrations/20260912000600_practice_retire_legacy_usage.sql 적용
 --   supabase/practice-data/00-open-dataset.sql 실행(묶음이 열려 있어야 합니다)

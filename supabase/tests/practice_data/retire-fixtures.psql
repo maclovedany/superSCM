@@ -63,6 +63,23 @@ begin
   values ('LEGACY-6', 'RET001', '2025-08-15', 95, 'MAIN', '00000000-0000-4000-8000-0000000006ff', 'FILE_UPLOAD', 'L6');
 end $$;
 
+-- ★ fix round 3 (S22) — 등록 정리가 "모르는 종류"를 만나면 지우지 말고 남겨야 한다.
+--   운영 스키마의 CHECK 제약은 현재 15종류만 허용하므로, **임시 DB에서만** 제약을 풀고 앞으로
+--   추가될 법한 종류(FUTURE_KIND)를 심어 둔다. 제약을 되돌리지 않는 이유는 이 행이 그 제약을
+--   위반하기 때문이다 — 이 DB는 스위트가 끝나면 삭제된다.
+alter table core.practice_object drop constraint if exists practice_object_object_kind_check;
+
+do $$
+declare
+  v_admin uuid := '00000000-0000-4000-8000-000000000501';
+  v_dataset uuid;
+begin
+  perform practice_test.as_user(v_admin);
+  v_dataset := core.open_practice_dataset('TEST-UNKNOWNKIND', '모르는 등기 종류 검증용', '{}'::jsonb);
+  insert into core.practice_object (dataset_id, object_kind, object_key, note)
+  values (v_dataset, 'FUTURE_KIND', 'FK-1', '나중에 추가될 종류를 흉내낸 등기');
+end $$;
+
 -- 기준선 — 복구 후 이 값들이 그대로 돌아와야 한다.
 insert into practice_test.baseline (name, n) values
   ('retire_unverified', (select count(*) from raw.usage_history u

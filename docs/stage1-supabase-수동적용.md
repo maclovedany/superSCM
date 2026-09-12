@@ -481,9 +481,26 @@ Auth 사용자와 `core.app_user` 프로필을 함께 만들었고, 로그인까
 제출 마감일(대상월 1일 − 2일)이 이미 지나 미제출 반복 알림이 즉시 쌓이기 때문입니다.
 `00b` 를 건너뛰면 기간이 더미 뒤로 밀리며, `04` 가 그 사실을 `notice` 로 알려 줍니다.
 
+**⚠️ 정리하면 5회차 화면 일부가 빕니다.** `core.v_usage_effective` 가 `raw.usage_history` 를 기간
+제한 없이 전역 집계해 `analytics.v_stockout_risk`(재고 소진 위험) · `analytics.v_usage_anomaly`
+(사용량 이상)로 들어갑니다. **정리 시점부터 `99-remove.sql` 로 되돌리기 전까지** `/analysis` 의
+재고 소진 위험 패널이 5회차 더미 19품목에 대해 `NO_USAGE`(계산 불가)로, 사용량 이상 패널이 빈
+상태로 보이고 `/dashboard` 관련 패널과 `v_data_coverage` 기간도 줄어듭니다. 복구하면 그대로
+돌아옵니다 — 그 화면을 수업에서 쓸 계획이면 이 정리를 하지 마세요(대신 실습 기준월이 미래가 됩니다).
+
 **★ 라벨은 재사용할 수 없습니다.** 제거한 라벨(`PRACTICE-2026-09`)은 다시 열 수 없습니다.
-다음 기수 실습을 준비할 때는 `sed -i '' 's/PRACTICE-2026-09/<새 라벨>/g' supabase/practice-data/*.sql`
-로 한 번에 바꾸세요(자세한 내용은 `supabase/practice-data/README.md`).
+다음 기수 실습을 준비할 때는 **실행되는 값(`supabase/practice-data/*.sql`)과 이 문서의 안내 문구를
+함께** 바꿔야 합니다.
+
+```bash
+sed -i '' 's/PRACTICE-2026-09/<새 라벨>/g' \
+  supabase/practice-data/*.sql 'docs/stage1-supabase-수동적용.md'
+grep -rn 'PRACTICE-2026-09' supabase/ docs/ app/ lib/   # 마이그레이션 주석에만 남으면 정상
+```
+
+마이그레이션(`20260912000400`·`000600`)에도 라벨이 보이지만 **확인 쿼리 예시 주석**일 뿐 동작과
+무관합니다. 화면(`/admin/practice-data`)은 등기부에서 라벨을 읽습니다. 자세한 내용은
+`supabase/practice-data/README.md`.
 
 ⚠️ **`09-build-plan.sql`은 되돌릴 수 없습니다.** `core.procurement_plan`은 Task 9b 트리거가
 **DRAFT 를 포함한 모든 상태에서** DELETE 를 막습니다(승인본만이 아닙니다). 계획을 만들면
