@@ -6,6 +6,10 @@
 //   집계한 값을 그대로 읽는다(20260912000700). 예전엔 화면이 core.model_performance 원본 행을
 //   내려받아 최솟값·최댓값을 직접 계산했는데, 이 저장소에 화면 계층이 집계하는 선례가 없어서 SQL로
 //   내렸다(lib/scm-model.ts의 BacktestPerformanceSummary 주석 참고).
+// ★ fix round 2 — 요약 조회 실패를 페이지 전체 오류로 승격하지 않는다. 마이그레이션이 코드보다
+//   먼저 푸시되고 나중에 적용되므로, 그 사이 구간에는 뷰가 아직 없는 상태가 실제로 존재한다
+//   (forecast-runs가 원천 게이트 조회 실패를 다루는 것과 같은 이유 · 같은 방식).
+//   실행 목록(runsError)만 페이지 오류다 — 요약 실패는 열 단위로 EmptyValue + 안내로 내려간다.
 
 import PageHeader from '@/components/shell/page-header';
 import DataTable, { type Column } from '@/components/ui/data-table';
@@ -43,7 +47,7 @@ export default async function BacktestRunsPage() {
   await requireAdmin();
   const [{ rows: runs, error: runsError }, practiceRunIds] = await Promise.all([getBacktestRuns(), getPracticeBacktestRunIds()]);
   const { rows: summaryRows, error: summaryError } = await getBacktestPerformanceSummaries(runs.map((run) => run.backtestRunId));
-  const error = runsError ?? summaryError;
+  const error = runsError;
 
   const summaryByRun = new Map(summaryRows.map((summary) => [summary.backtestRunId, summary]));
   const rows: Row[] = runs.map((run) => ({ ...run, summary: summaryByRun.get(run.backtestRunId) ?? EMPTY_SUMMARY }));
@@ -68,14 +72,16 @@ export default async function BacktestRunsPage() {
     { key: 'referenceModelId', label: '기준 모델', render: (row) => row.referenceModelId ?? <EmptyValue reasonCode="REFERENCE_MODEL_UNSET" /> },
     {
       key: 'scored', label: '채점 완료', align: 'right',
-      render: (row) => row.summary.scoredCount === 0 && row.summary.unavailableCount === 0
+      render: (row) => summaryError
+        ? <EmptyValue reasonCode="SUMMARY_UNAVAILABLE" />
+        : row.summary.scoredCount === 0 && row.summary.unavailableCount === 0
         ? <EmptyValue reasonCode="NO_CANDIDATES" />
         : <>{row.summary.scoredCount.toLocaleString('ko-KR')}건{row.summary.unavailableCount > 0 ? <span className="muted"> (판정 불가 {row.summary.unavailableCount}건)</span> : null}</>,
     },
     {
       key: 'wapeRange', label: 'WAPE 범위', align: 'right',
-      render: (row) => row.summary.wapeMin === null || row.summary.wapeMax === null
-        ? <EmptyValue reasonCode="WAPE_UNAVAILABLE" />
+      render: (row) => summaryError || row.summary.wapeMin === null || row.summary.wapeMax === null
+        ? <EmptyValue reasonCode={summaryError ? 'SUMMARY_UNAVAILABLE' : 'WAPE_UNAVAILABLE'} />
         : <>{formatWape(row.summary.wapeMin)} ~ {formatWape(row.summary.wapeMax)}</>,
     },
     { key: 'startedAt', label: '시작', render: (row) => formatDateTime(row.startedAt) },
@@ -101,7 +107,8 @@ export default async function BacktestRunsPage() {
                 <h3>실행 이력</h3>
                 <span>채점 완료 · WAPE 범위는 analytics.v_backtest_performance_summary가 core.model_performance를
                   집계한 값입니다(화면은 다시 계산하지 않습니다). 판정 불가 건은 검증 기간에 짝지을 Actual이
-                  없거나 WAPE 분모가 0인 경우입니다.</span>
+                  없거나 WAPE 분모가 0인 경우입니다.
+                  {summaryError ? <span className="text-danger"> 채점 요약 조회에 실패했습니다: {summaryError}</span> : null}</span>
               </div>
             </div>
             <DataTable columns={columns} rows={rows} rowKey={(row) => row.backtestRunId} empty="Backtest 실행 이력이 없습니다." />

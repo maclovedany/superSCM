@@ -50,8 +50,16 @@ grant execute on function core.forecast_run_source_status_for_admin(uuid[]) to a
 --   계산한 열을 읽는다) — 그 선례를 만들지 않기로 하고 집계를 뷰로 내린다.
 -- ★ core.model_performance는 (backtest_run_id, model_id, item_id) 기준 — Backtest 실행 하나가
 --   여러 모델 × 품목 조합을 채점하므로 backtest_run_id로 group by한다.
+-- ★ fix round 2 — security_invoker = true를 빠뜨렸다. core.model_performance의 RLS는
+--   core.is_active_user()로 SELECT를 제한하는데(20260828000600), 뷰가 소유자 권한(기본값)으로
+--   돌면 비활성 인증 계정도 이 뷰를 거쳐 집계된 WAPE·건수를 읽는다. SCHEMA.md:91-92의 관례이고
+--   바로 전날 20260912000600:176-180에서 같은 부류를 고치며 "이 저장소의 다른 운영 뷰와 같은
+--   관례"라고 확정한 항목이다 — 이 저장소의 다른 analytics 뷰(core RLS 테이블을 참조하는 것)는
+--   전부 이 옵션을 켠다.
 
-create or replace view analytics.v_backtest_performance_summary as
+create or replace view analytics.v_backtest_performance_summary
+with (security_invoker = true)
+as
 select backtest_run_id,
   count(*) filter (where calculation_status = 'SUCCESS') as scored_count,
   count(*) filter (where calculation_status <> 'SUCCESS') as unavailable_count,
