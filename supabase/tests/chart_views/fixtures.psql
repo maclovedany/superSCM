@@ -56,13 +56,18 @@ on conflict (user_id) do update
 --   CHDEM06  fix round 1(리뷰 B-4) — p80만 있고 p90은 없는 **부분 밴드**. CHDEM05(둘 다 null)만
 --            있으면 `p90 := coalesce(p90, p80)` 같은 날조가 검증을 그대로 통과한다(리뷰 M5) —
 --            이 품목이 그 틈을 막는다.
+--   CHDEM07  fix round 2 R-1(리뷰어 재현, 팀장 최종 판정) — core.forecast_result 행은 있지만
+--            predicted_qty 자체가 null(p80·p90도 null). ②(조인 성사 판정)만 두면 이 경로가
+--            predicted_reason_code도 null인 채로(사유 없는 재현 가능한 null) 빠져나간다 —
+--            PREDICTED_QTY_NULL이 이 품목으로 검증된다.
 insert into raw.item_master ("품목코드", "품목명", "품목구분", batch_id) values
   ('CHDEM01', '차트 테스트 실적예측 정상', '완제품', gen_random_uuid()),
   ('CHDEM02', '차트 테스트 Champion 미선정', '완제품', gen_random_uuid()),
   ('CHDEM03', '차트 테스트 기간 갭', '완제품', gen_random_uuid()),
   ('CHDEM04', '차트 테스트 유효후보없음', '완제품', gen_random_uuid()),
   ('CHDEM05', '차트 테스트 밴드결측', '완제품', gen_random_uuid()),
-  ('CHDEM06', '차트 테스트 부분밴드', '완제품', gen_random_uuid())
+  ('CHDEM06', '차트 테스트 부분밴드', '완제품', gen_random_uuid()),
+  ('CHDEM07', '차트 테스트 predicted_qty null', '완제품', gen_random_uuid())
 on conflict do nothing;
 
 -- 출처 확인된 실적(batch_id not null)만 actual_qty에 잡혀야 한다 — CHDEM01에 출처 없는(batch_id
@@ -85,29 +90,39 @@ insert into core.model_version (model_version, run_id, model_id, version, defini
   ('00000000-0000-4000-8000-000000000913', '00000000-0000-4000-8000-000000000910', 'MA_6M', '1.0.0', '{}'::jsonb, '{}'::jsonb)
 on conflict (run_id, model_id) do nothing;
 
--- CHDEM01 — 같은 달(2026-07)에 MA_3M(진짜 champion, 밴드 포함) · MA_6M(decoy, champion이 아니라
+-- CHDEM01 — 같은 달(2026-07)에 MA_6M(진짜 champion, 밴드 포함) · MA_3M(decoy, champion이 아니라
 -- v_demand_series에 나오면 안 됨) 두 모델 예측을 함께 넣어 "champion 모델만 고른다"를 확인한다.
+-- fix round 2 R-1 부록(리뷰어 ③ 재지적) — champion을 일부러 MA_6M(알파벳순 마지막·predicted_qty
+-- 최솟값)으로, decoy를 MA_3M(알파벳순 첫 번째·predicted_qty 최댓값)으로 뒤집었다. 이전
+-- 배치(champion=MA_3M·decoy=MA_6M)는 "알파벳순 첫 모델을 champion으로 대체"하는 변조(M4)가
+-- 우연히 정답과 같아져 S2를 통과시켰다 — champion 판정 로직이 옳아서가 아니라 픽스처가 그
+-- 변조축을 덮지 못해서였다. 이제 "알파벳순"과 "predicted_qty 최댓값" 두 대체 축 모두 champion과
+-- 반대 방향이라, 둘 중 어느 쪽으로 대체해도 S2가 잡는다.
 insert into core.forecast_result (run_id, model_id, item_id, period, model_version, predicted_qty, p80, p90) values
-  ('00000000-0000-4000-8000-000000000910', 'MA_3M', 'CHDEM01', '2026-07-01', '00000000-0000-4000-8000-000000000911', 100, 110, 120),
-  ('00000000-0000-4000-8000-000000000910', 'MA_6M', 'CHDEM01', '2026-07-01', '00000000-0000-4000-8000-000000000913', 999, 999, 999),
+  ('00000000-0000-4000-8000-000000000910', 'MA_6M', 'CHDEM01', '2026-07-01', '00000000-0000-4000-8000-000000000913', 100, 110, 120),
+  ('00000000-0000-4000-8000-000000000910', 'MA_3M', 'CHDEM01', '2026-07-01', '00000000-0000-4000-8000-000000000911', 999, 999, 999),
   ('00000000-0000-4000-8000-000000000910', 'MA_3M', 'CHDEM03', '2026-08-01', '00000000-0000-4000-8000-000000000911', 50,  55,  60),
   ('00000000-0000-4000-8000-000000000910', 'MA_3M', 'CHDEM05', '2026-07-01', '00000000-0000-4000-8000-000000000911', 70,  null, null),
-  ('00000000-0000-4000-8000-000000000910', 'MA_3M', 'CHDEM06', '2026-07-01', '00000000-0000-4000-8000-000000000911', 90,  95,   null)
+  ('00000000-0000-4000-8000-000000000910', 'MA_3M', 'CHDEM06', '2026-07-01', '00000000-0000-4000-8000-000000000911', 90,  95,   null),
+  ('00000000-0000-4000-8000-000000000910', 'MA_3M', 'CHDEM07', '2026-09-01', '00000000-0000-4000-8000-000000000911', null, null, null)
 on conflict (run_id, model_id, item_id, period) do nothing;
 
 insert into core.backtest_run (backtest_run_id, forecast_run_id, status, metric, started_at, finished_at)
 values ('00000000-0000-4000-8000-000000000912', '00000000-0000-4000-8000-000000000910', 'SUCCESS', 'WAPE', now(), now())
 on conflict (backtest_run_id) do nothing;
 
--- CHDEM01 · 03 · 05 — champion = MA_3M(정상 후보). CHDEM04 — champion_model_id null(NO_VALID_CANDIDATE).
--- CHDEM02는 champion_model_selection 행 자체가 없다(Backtest를 받은 적 없음).
+-- CHDEM01 — champion = MA_6M(위 부록 참고, 알파벳순·predicted_qty 최댓값 둘 다 decoy(MA_3M)
+-- 쪽이 이기도록 뒤집었다). CHDEM03·05 — champion = MA_3M(정상 후보). CHDEM04 —
+-- champion_model_id null(NO_VALID_CANDIDATE). CHDEM02는 champion_model_selection 행 자체가
+-- 없다(Backtest를 받은 적 없음).
 insert into core.champion_model_selection
   (backtest_run_id, item_id, champion_model_id, model_version, champion_metric, selection_reason, selection_method) values
-  ('00000000-0000-4000-8000-000000000912', 'CHDEM01', 'MA_3M', '00000000-0000-4000-8000-000000000911', 'WAPE', 'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO'),
+  ('00000000-0000-4000-8000-000000000912', 'CHDEM01', 'MA_6M', '00000000-0000-4000-8000-000000000913', 'WAPE', 'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO'),
   ('00000000-0000-4000-8000-000000000912', 'CHDEM03', 'MA_3M', '00000000-0000-4000-8000-000000000911', 'WAPE', 'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO'),
   ('00000000-0000-4000-8000-000000000912', 'CHDEM04', null,    null,                                  'WAPE', 'NO_VALID_CANDIDATE', 'AUTO'),
   ('00000000-0000-4000-8000-000000000912', 'CHDEM05', 'MA_3M', '00000000-0000-4000-8000-000000000911', 'WAPE', 'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO'),
-  ('00000000-0000-4000-8000-000000000912', 'CHDEM06', 'MA_3M', '00000000-0000-4000-8000-000000000911', 'WAPE', 'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO')
+  ('00000000-0000-4000-8000-000000000912', 'CHDEM06', 'MA_3M', '00000000-0000-4000-8000-000000000911', 'WAPE', 'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO'),
+  ('00000000-0000-4000-8000-000000000912', 'CHDEM07', 'MA_3M', '00000000-0000-4000-8000-000000000911', 'WAPE', 'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO')
 on conflict do nothing;
 
 

@@ -117,8 +117,9 @@ revoke all on core.v_demand_actual_monthly from anon;
 -- 성사 여부로 판정해도 RLS가 이미 그 행을 지운 뒤라 조인 자체가 실패한다). 그래서 아래
 -- PERIOD_NOT_FORECASTED 같은 사유 코드는 "예측이 없다"가 아니라 "이 호출자에게는 예측이
 -- 보이지 않는다"로 읽어야 한다 — 이 한계는 고칠 수 있는 버그가 아니라 RLS 기반 뷰의 구조적
--- 성질이라, S13(scenarios.psql)이 비활성 계정에서 실제로 이 사유 코드가 뜨는 것을 알려진
--- 상태로 고정해 둔다(놀라움이 아니라 문서화된 동작).
+-- 성질이라, S13b(scenarios.psql)가 비활성 계정에서 실제로 이 사유 코드가 뜨고 값까지
+-- PERIOD_NOT_FORECASTED로 확정되는 것을 단언해 알려진 상태로 고정한다(S13 자체는 행 수만
+-- 세므로 이 단언의 근거가 아니다 — S13b가 근거다. fix round 2 R-1, 리뷰어 정정).
 --
 -- 사유 코드 3개 — 값 하나가 비는 이유마다 서로 다른 사실만 주장한다(구조적 조건과 데이터 조건을
 -- 섞지 않는다. 위 문단대로 "호출자 시야 안의 사실"이라는 단서가 항상 붙는다):
@@ -128,29 +129,33 @@ revoke all on core.v_demand_actual_monthly from anon;
 --                                                   적이 호출자 시야에 없다
 --                          NO_CHAMPION_MODEL        Backtest는 됐지만 유효 후보가 없었다(core.run_backtest의
 --                                                   NO_VALID_CANDIDATE — champion_model_id가 null)
+--                          PREDICTED_QTY_NULL       core.forecast_result 행은 호출자 시야에
+--                                                   있지만(조인 성사) predicted_qty 자체가
+--                                                   null이다 — predicted_qty·p80·p90 모두
+--                                                   nullable이라(20260828000500:70-73) 스키마가
+--                                                   허용하는 실재 경로다(지금 배포 데이터 0건,
+--                                                   이론이 아니다). fix round 2 R-1(팀장 최종
+--                                                   판정) — ②(조인 성사 판정)만 두면 이 경로가
+--                                                   사유 코드 없이 null만 내는 더 나쁜 회귀가
+--                                                   된다(재현 가능한 null에 사유 없음, 이 트랙의
+--                                                   핵심 계약 위반) — 그래서 이 코드를 별도로
+--                                                   낸다.
 --                          PERIOD_NOT_FORECASTED    Champion 모델은 있지만 이 기간엔 그 모델의
 --                                                   core.forecast_result 행이 호출자 시야에
 --                                                   없다(조인 실패 기준 — fix round 1, 리뷰어
---                                                   지적. predicted_qty is not null로 판정하면
---                                                   "행은 있는데 값만 null"인 경우(predicted_qty·
---                                                   p80·p90 모두 nullable, 20260828000500:70-73)
---                                                   "예측 행이 없다"는 틀린 문장을 낸다 — 사유코드는
---                                                   자기가 알 수 있는 것만 주장해야 한다). RLS가
---                                                   행을 가린 경우도 이 코드로 나온다(위 문단) —
---                                                   "행이 없다"와 "안 보인다"를 이 뷰는 구별하지
---                                                   못한다
+--                                                   지적. predicted_qty is not null만으로
+--                                                   판정하면 "행은 있는데 값만 null"인 경우까지
+--                                                   "예측 행이 없다"는 틀린 문장을 낸다 — 위
+--                                                   PREDICTED_QTY_NULL로 그 경우를 분리했다).
+--                                                   RLS가 행을 가린 경우도 이 코드로 나온다
+--                                                   (위 문단) — "행이 없다"와 "안 보인다"를 이
+--                                                   뷰는 구별하지 못한다
 --   band_reason_code      predicted_qty가 없으면 predicted_reason_code를 그대로 물려받는다(예측이
 --                          없는데 밴드만 있을 수 없다 — v_inventory_performance의 계단식 사유코드와
---                          같은 원칙). predicted_qty는 있는데 p80·p90 중 하나라도 없으면
+--                          같은 원칙. PREDICTED_QTY_NULL도 이 계단식으로 자동 물려받는다 — 별도
+--                          분기가 필요 없다). predicted_qty는 있는데 p80·p90 중 하나라도 없으면
 --                          BAND_UNAVAILABLE — ★ 이 경우 절대 null을 다른 값으로 채우지 않는다.
 --                          실측 450행 중 180행이 이 경로다.
---
--- ★ 잔여 이론적 틈 하나 — core.forecast_result 행이 존재하지만 predicted_qty 자체가 null인
---   경우(스키마상 가능, 지금 데이터에는 없음)는 조인이 성사되므로 predicted_reason_code가
---   null(성공)로 나가면서 predicted_qty는 null인 상태가 된다. 이 트랙의 "재현 가능한 null에는
---   반드시 사유"라는 원칙과 형식적으로 충돌하지만, 팀장 지시(조인 성사 여부로만 판정)를 그대로
---   따랐다 — 이 경로에 별도 사유 코드(예: PREDICTED_QTY_NULL)를 추가할지는 실제로 이런 행이
---   생기는지 관측한 뒤 별도로 판단한다(지금 배포 데이터 0건).
 create or replace view analytics.v_demand_series
 with (security_invoker = true)
 as
@@ -202,10 +207,16 @@ reasoned as (
     -- 성사 여부(has_forecast_row)로 판정한다. predicted_qty만으로 판정하면 core.forecast_result
     -- 행이 있는데 그 값만 null인 경우(스키마상 가능)까지 "그 기간에 예측 행이 없다"는 틀린
     -- 문장을 낸다 — 사유코드는 자기가 알 수 있는 것(조인 성사 여부)만 주장해야 한다.
+    -- fix round 2 R-1(팀장 최종 판정) — 위 판정만 두면 "조인은 성사됐는데 predicted_qty가
+    -- null"인 경우 predicted_reason_code가 null(성공)로 나가면서 predicted_qty는 null인 채로
+    -- 남는다 — 재현 가능한 null에 사유가 없는, 이 트랙이 막으려는 바로 그 결함이다(리뷰어가
+    -- 합법적인 INSERT 한 번으로 재현). has_forecast_row와 predicted_qty is not null을 함께
+    -- 확인해야 진짜 성공이다.
     case
-      when j.has_forecast_row          then null
-      when not j.has_champion_row      then 'NO_CHAMPION_SELECTION'
-      when j.champion_model_id is null then 'NO_CHAMPION_MODEL'
+      when j.has_forecast_row and j.predicted_qty is not null then null
+      when j.has_forecast_row                                 then 'PREDICTED_QTY_NULL'
+      when not j.has_champion_row                             then 'NO_CHAMPION_SELECTION'
+      when j.champion_model_id is null                        then 'NO_CHAMPION_MODEL'
       else 'PERIOD_NOT_FORECASTED'
     end as predicted_reason_code
   from joined j

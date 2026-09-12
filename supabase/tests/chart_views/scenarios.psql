@@ -40,21 +40,25 @@ select chart_test.check(:'s1b_item' = '8', 'S1b 마케팅도 v_shipment_monthly_
 -- "syntax error at or near \":\""로 죽어 원인이 로그에 안 남는다(리뷰어가 밴드 회귀 변조로
 -- 재현). 모든 `_ok` 판정을 coalesce(<서브쿼리>, false)로 감싸 항상 true/false만 나오게 한다 —
 -- 그래야 실패해도 chart_test.check가 "FAIL: <설명>"을 정확히 낸다.
-\echo '== S2 실적과 예측(밴드 포함)이 같은 달에 다 있으면 사유 코드 전부 null이고 champion(MA_3M)만 나온다 =='
+-- fix round 2 R-1 부록(리뷰어 ③ 재지적) — champion=MA_6M(100)·decoy=MA_3M(999)로 뒤집었다
+-- (fixtures.psql 주석 참고) — 알파벳순으로도 predicted_qty 크기로도 decoy가 이기지 못하게 해서,
+-- "champion 대신 알파벳순 첫 모델/최대 predicted_qty 모델을 고른다" 두 변조 모두 이 시나리오가
+-- 잡는다(이전엔 champion이 우연히 알파벳순 첫 모델과 같아 그 축의 변조를 못 잡았다).
+\echo '== S2 실적과 예측(밴드 포함)이 같은 달에 다 있으면 사유 코드 전부 null이고 champion(MA_6M)만 나온다 =='
 set role authenticated;
 select chart_test.as_user(:'planner1') \g /dev/null
 select
   coalesce((select actual_qty = 80 and actual_reason_code is null
      from analytics.v_demand_series where item_id = 'CHDEM01' and period = '2026-07-01'), false) as s2_actual_ok \gset
 select
-  coalesce((select model_id = 'MA_3M' and predicted_qty = 100 and predicted_reason_code is null
+  coalesce((select model_id = 'MA_6M' and predicted_qty = 100 and predicted_reason_code is null
      from analytics.v_demand_series where item_id = 'CHDEM01' and period = '2026-07-01'), false) as s2_predicted_ok \gset
 select
   coalesce((select p80 = 110 and p90 = 120 and band_reason_code is null
      from analytics.v_demand_series where item_id = 'CHDEM01' and period = '2026-07-01'), false) as s2_band_ok \gset
 reset role;
 select chart_test.check(:'s2_actual_ok', 'S2 출처 없는(batch_id null) 행은 합계에서 빠진다(80, 999 아님) + 사유코드 null');
-select chart_test.check(:'s2_predicted_ok', 'S2 champion 모델(MA_3M, 100)만 나온다 — decoy(MA_6M, 999) 아님, 사유코드 null');
+select chart_test.check(:'s2_predicted_ok', 'S2 champion 모델(MA_6M, 100)만 나온다 — decoy(MA_3M, 999) 아님, 사유코드 null');
 select chart_test.check(:'s2_band_ok', 'S2 밴드도 champion 모델 값(110·120) + 사유코드 null');
 
 
@@ -239,3 +243,18 @@ select
      from analytics.v_demand_series where item_id = 'CHDEM01' and period = '2026-07-01'), false) as s13b_ok \gset
 reset role;
 select chart_test.check(:'s13b_ok', 'S13b CHDEM01의 2026-07 예측은 planner1(활성)에게는 실재(S2)하지만, inactive1에게는 RLS로 가려져 PERIOD_NOT_FORECASTED로 보인다 — 뷰가 "행 없음"과 "안 보임"을 구별 못 하는 구조적 한계를 알려진 상태로 고정');
+
+
+-- fix round 2 R-1(리뷰어 재현, 팀장 최종 판정) — CHDEM07은 core.forecast_result 행이 있지만
+-- predicted_qty 자체가 null이다(스키마상 허용, 조인 성사 판정만으로는 이 경우가 사유 코드 없는
+-- null로 빠져나간다). PREDICTED_QTY_NULL이 이 경로를 정확히 잡고, band_reason_code도 계단식
+-- 상속으로 같은 사유를 자동으로 받는지 함께 확인한다(밴드 쪽에 별도 분기를 추가하지 않았다).
+\echo '== S14 예측 행은 있지만 predicted_qty 자체가 null이면 PREDICTED_QTY_NULL이다 =='
+set role authenticated;
+select chart_test.as_user(:'planner1') \g /dev/null
+select
+  coalesce((select predicted_qty is null and predicted_reason_code = 'PREDICTED_QTY_NULL'
+     and p80 is null and p90 is null and band_reason_code = 'PREDICTED_QTY_NULL'
+     from analytics.v_demand_series where item_id = 'CHDEM07' and period = '2026-09-01'), false) as s14_ok \gset
+reset role;
+select chart_test.check(:'s14_ok', 'S14 predicted_qty null + PREDICTED_QTY_NULL(사유 없는 null이 아니다), band_reason_code도 계단식으로 같은 사유를 물려받는다');
