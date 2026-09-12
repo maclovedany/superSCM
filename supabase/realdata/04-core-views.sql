@@ -69,14 +69,57 @@ where model_base is not null
 --
 --   설계변경으로 부품 코드가 계속 바뀝니다.
 --   출고 Trend 는 연계 코드의 "합계"로 봐야 하고, 발주는 hoc_item 으로 합니다.
+--
+--   ★★ fix round(supabase/migrations/20260912001100_hoc_fanout_fix.sql과 같은 정의 —
+--   고칠 때 두 파일을 함께 고친다) — 원래 정의(select distinct related_item, hoc_item)는
+--   raw.bridge_xcn에서 같은 related_item이 서로 다른 hoc_item 두 개를 가리키는 454건
+--   (20,306개 related_item 중, 실측)을 그대로 통과시켰다. core.v_shipment_by_hoc가 이 뷰를
+--   left join한 뒤 sum(qty)를 내므로, 팬아웃된 related_item의 출고 실적 전량이 두 hoc_item
+--   양쪽에 각각 통째로 합산돼(관계가 아니라 결함) 총량이 956만큼 부풀었다(raw.fact_shipment
+--   4,710,425 vs core.v_shipment_by_hoc 4,711,381, analytics.v_shipment_trend도 동일하게
+--   부풀어 있었다 — 기존 화면이 이미 틀린 값을 보여주고 있었다).
+--
+--   454건 중 451건은 "family·설명 중 하나 이상 채워진 행 1 + 전부 빈 행 1" 단일 서명이고
+--   1건(051K40992)은 완전성(채워진 칸 수)으로 가려진다. 진짜 모호한 2건(285K38666 —
+--   두 행 다 전부 빔, 893K40191 — 두 행 다 채워져 있지만 서로 다른 기종의 서로 다른 부품)은
+--   완전성 최댓값이 서로 다른 hoc_item에 걸려 임의로 고를 근거가 없다 — 뷰에서 뺀다(아래
+--   n_distinct_hoc = 1 조건). core.v_shipment_by_hoc의 coalesce(x.hoc_item, f.item_code)가
+--   그 2개 코드를 XCN 미적용(자기 코드가 대표코드)으로 되돌릴 뿐이라 총량은 그대로 보존된다.
 -- ------------------------------------------------------------
 create or replace view core.v_part_linkage as
-select distinct
-       related_item,
-       hoc_item
-from raw.bridge_xcn
-where related_item is not null
-  and hoc_item     is not null;
+with scored as (
+  select
+    related_item,
+    hoc_item,
+    (
+      (case when nullif(btrim(coalesce(family,       '')), '') is not null then 1 else 0 end) +
+      (case when nullif(btrim(coalesce(related_desc, '')), '') is not null then 1 else 0 end) +
+      (case when nullif(btrim(coalesce(hoc_desc,     '')), '') is not null then 1 else 0 end)
+    ) as completeness
+  from raw.bridge_xcn
+  where related_item is not null
+    and hoc_item     is not null
+),
+ranked as (
+  select related_item, hoc_item,
+         rank() over (partition by related_item order by completeness desc) as rnk
+  from scored
+),
+winners as (
+  select distinct related_item, hoc_item
+  from ranked
+  where rnk = 1
+),
+winner_counts as (
+  select related_item, count(distinct hoc_item) as n_distinct_hoc
+  from winners
+  group by related_item
+)
+select w.related_item, w.hoc_item
+from winners w
+join winner_counts c
+  on c.related_item = w.related_item
+ and c.n_distinct_hoc = 1;
 
 
 -- ------------------------------------------------------------

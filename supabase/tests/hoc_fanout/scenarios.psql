@@ -1,0 +1,56 @@
+-- core.v_part_linkage 팬아웃 수정 검증 시나리오. 로컬 임시 DB(scm_test_*) 전용,
+-- fixtures.psql 적용 뒤 실행.
+\set ON_ERROR_STOP 1
+\ir guard.psql
+\pset tuples_only on
+\pset format unaligned
+
+
+-- bool_and로 판정한다 — 행이 2개로 깨져 있어도(수정 전 정의로 되돌리는 변조 상황) 스칼라
+-- 서브쿼리 "more than one row returned"로 죽지 않고 정확한 FAIL:로 알려준다.
+\echo '== T1 완전성 규칙 — 서술 있는 행(HXCNA)만 남고 서술 빈 행(HXCNB)은 빠진다 =='
+select count(*) as t1_rows from core.v_part_linkage where related_item = 'HXCN1' \gset
+select
+  coalesce((select bool_and(hoc_item = 'HXCNA') from core.v_part_linkage where related_item = 'HXCN1'), false) as t1_hoc_ok \gset
+select hocfanout_test.check(:'t1_rows' = '1', 'T1 HXCN1은 core.v_part_linkage에 정확히 1행만 남는다(2행이 아니다)');
+select hocfanout_test.check(:'t1_hoc_ok', 'T1 남는 행은 서술이 있는 쪽(HXCNA) — 완전성 규칙');
+
+
+\echo '== T2 진짜 모호(둘 다 서술 없음) — 임의로 고르지 않고 통째로 뺀다 =='
+select count(*) as t2_rows from core.v_part_linkage where related_item = 'HXCN2' \gset
+select hocfanout_test.check(:'t2_rows' = '0', 'T2 HXCN2는 완전성으로 못 갈라 core.v_part_linkage에서 아예 빠진다(HXCNC·HXCND 어느 쪽도 임의로 고르지 않는다)');
+
+
+\echo '== T3 출고 실적이 팬아웃되지 않는다 — HXCN1은 HXCNA 한 곳에만, HXCNB는 그 실적을 받지 않는다 =='
+select
+  coalesce((select qty = 100 from core.v_shipment_by_hoc where hoc_item = 'HXCNA' and ym = '2026-01'), false) as t3_a_ok \gset
+select count(*) as t3_b_rows from core.v_shipment_by_hoc where hoc_item = 'HXCNB' and ym = '2026-01' \gset
+select hocfanout_test.check(:'t3_a_ok', 'T3 HXCNA는 HXCN1의 실적(100)을 그대로 받는다');
+select hocfanout_test.check(:'t3_b_rows' = '0', 'T3 HXCNB는 아무 실적도 받지 않는다(팬아웃이었다면 100이 여기도 잡혔을 것)');
+
+
+\echo '== T4 진짜 모호 품목은 자기 코드로 남는다(어느 쪽으로도 합산되지 않는다) =='
+select
+  coalesce((select qty = 50 from core.v_shipment_by_hoc where hoc_item = 'HXCN2' and ym = '2026-01'), false) as t4_self_ok \gset
+select count(*) as t4_c_rows from core.v_shipment_by_hoc where hoc_item = 'HXCNC' and ym = '2026-01' \gset
+select count(*) as t4_d_rows from core.v_shipment_by_hoc where hoc_item = 'HXCND' and ym = '2026-01' \gset
+select hocfanout_test.check(:'t4_self_ok', 'T4 HXCN2는 자기 코드로 그대로 남는다(coalesce(x.hoc_item, f.item_code))');
+select hocfanout_test.check(:'t4_c_rows' = '0', 'T4 HXCNC는 HXCN2의 실적을 받지 않는다');
+select hocfanout_test.check(:'t4_d_rows' = '0', 'T4 HXCND도 마찬가지');
+
+
+\echo '== T5 대조군 — XCN 연계가 없는 품목은 원래대로 자기 코드다(회귀 없음) =='
+select
+  coalesce((select qty = 30 from core.v_shipment_by_hoc where hoc_item = 'HXCN3' and ym = '2026-01'), false) as t5_ok \gset
+select hocfanout_test.check(:'t5_ok', 'T5 HXCN3(연계 없음)은 그대로 자기 코드로 30을 낸다');
+
+
+-- qty는 numeric(18,4)라 텍스트로 \gset해 비교하면 '180' vs '180.0000'로 어긋난다 — 숫자 비교는
+-- 서브쿼리 안에서 끝낸다(chart_views 스위트와 같은 관례).
+\echo '== T6 총량 보존 — 세 품목의 raw 합계와 core.v_shipment_by_hoc 합계가 정확히 같다(팬아웃 없음) =='
+select
+  coalesce((select sum(qty) = 180 from raw.fact_shipment where item_code in ('HXCN1','HXCN2','HXCN3') and ym = '2026-01'), false) as t6_raw_ok \gset
+select
+  coalesce((select sum(qty) = 180 from core.v_shipment_by_hoc where hoc_item in ('HXCNA','HXCNB','HXCN2','HXCNC','HXCND','HXCN3') and ym = '2026-01'), false) as t6_hoc_ok \gset
+select hocfanout_test.check(:'t6_raw_ok', 'T6 raw 합계는 100+50+30=180');
+select hocfanout_test.check(:'t6_hoc_ok', 'T6 core.v_shipment_by_hoc 합계도 180 — 팬아웃 전이었다면 230(HXCN1이 두 번 세어짐)이었을 것');

@@ -1,0 +1,43 @@
+-- core.v_part_linkage 팬아웃 수정 검증 fixture — 로컬 임시 DB(scm_test_*) 전용. 운영
+-- 마이그레이션에 넣지 않는다. 이 뷰들은 permission 게이트도 security_invoker도 없는(definer)
+-- 순수 계산 뷰라 사용자 컨텍스트가 필요 없다 — supabase/tests/chart_views보다 단순하다.
+\set ON_ERROR_STOP 1
+\ir guard.psql
+
+create schema if not exists hocfanout_test;
+
+create or replace function hocfanout_test.check(p_ok boolean, p_label text) returns text language plpgsql as $$
+begin
+  if p_ok is distinct from true then
+    raise exception 'FAIL: %', p_label;
+  end if;
+  return 'PASS: ' || p_label;
+end $$;
+
+-- ══ raw.bridge_xcn — 중복 related_item 시나리오 3개 ═══════════════════════
+--
+--   HXCN1  실측 다수 패턴(451/454건)의 축소판 — 서술 있는 행(HXCNA) + 서술 빈 행(HXCNB).
+--          완전성 규칙으로 HXCNA만 남아야 한다.
+--   HXCN2  실측 진짜 모호(285K38666과 같은 패턴) — 두 행 다 family·서술 전부 빔. 완전성으로
+--          못 가르므로 뷰에서 통째로 빠져야 한다(임의로 하나를 고르지 않는다).
+--   HXCN3  XCN 연계가 아예 없는 대조군 — 자기 코드가 대표코드(항상 그랬다, 회귀 확인용).
+insert into raw.bridge_xcn (family, related_item, related_desc, hoc_item, hoc_desc) values
+  ('FAM1', 'HXCN1', 'PART ONE', 'HXCNA', 'PART ONE'),
+  (null,   'HXCN1', null,       'HXCNB', null),
+  (null,   'HXCN2', null,       'HXCNC', null),
+  (null,   'HXCN2', null,       'HXCND', null)
+on conflict do nothing;
+
+-- ══ raw.fact_shipment — 위 세 품목의 실제 출고 실적 ══════════════════════
+--
+-- 수정 전 정의로는 HXCN1의 qty가 HXCNA·HXCNB 양쪽에 각각 통째로 합산돼(팬아웃) 총량이
+-- 100만큼 더 부푼다. HXCN2는 완전성으로 못 가르므로 core.v_part_linkage에서 빠져야 하고,
+-- 그러면 core.v_shipment_by_hoc는 coalesce(x.hoc_item, f.item_code)로 자기 코드(HXCN2)를
+-- 그대로 대표코드로 쓴다 — HXCNC·HXCND 어느 쪽으로도 합산되지 않는다.
+insert into raw.fact_shipment (item_code, ym, qty, item_type, source_file) values
+  ('HXCN1', '2026-01', 100, 'PART', 'hoc_fanout_test_fixture'),
+  ('HXCN2', '2026-01', 50,  'PART', 'hoc_fanout_test_fixture'),
+  ('HXCN3', '2026-01', 30,  'PART', 'hoc_fanout_test_fixture')
+on conflict do nothing;
+
+select 'fixtures ok';
