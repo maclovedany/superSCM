@@ -57,10 +57,11 @@ Resend 설정 누락을 영구 실패로 보고, Edge Function은 재시도 대�
 
 `app/api/cron/notifications`(그리고 `/api/cron/allocations`, `/api/cron/demand-submissions`)
 라우트는 그대로 저장소에 남아 있으며, Vercel Pro 이상이거나 같은 주기를 보장하는 외부
-스케줄러가 있는 배포는 계속 이 경로를 쓸 수 있습니다. `vercel.json`의 10분 Cron은
-**Vercel Hobby에서는 지원되지 않습니다.** 두 경로(Supabase pg_cron과 Vercel Cron)를
-동시에 켜 두어도 `core.claim_due_notifications`의 `for update skip locked`가 중복 처리를
-막으므로 안전하지만, 보통은 하나만 씁니다.
+스케줄러가 있는 배포는 이 경로를 대신 쓸 수 있습니다. `vercel.json`의 10분 Cron은
+**Vercel Hobby에서는 지원되지 않습니다.** 둘 중 하나만 켜세요 — 위 "Vercel Cron과 동시에
+켜 두지 마세요"를 참고하세요. `for update skip locked`가 같은 알림을 중복 처리하는 것은
+막아 주지만, 처리 자체가 겹치지 않는다고 해서 두 경로를 함께 운영해도 괜찮다는 뜻은
+아닙니다 — 발송 이력이 경로마다 다르게 남아 운영 판단을 헷갈리게 합니다.
 
 외부 스케줄러(Vercel Cron 포함)를 사용할 때도 `Authorization: Bearer <CRON_SECRET>` 또는
 `x-cron-secret: <CRON_SECRET>` 헤더를 반드시 전달합니다. Edge Function도 같은 방식(둘 중

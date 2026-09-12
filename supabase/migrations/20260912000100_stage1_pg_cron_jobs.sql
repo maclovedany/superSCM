@@ -11,9 +11,11 @@
 -- (`supabase/functions/notify/index.ts`) 안에서 끝나야 합니다 — pg_cron/pg_net은 "깨우기"만
 -- 담당합니다. 나머지 두 작업은 순수 SQL이라 HTTP 없이 DB 함수를 직접 호출합니다.
 --
--- 이 파일은 기존 Vercel Cron 라우트(app/api/cron/*)를 대체하지 않습니다 — 유료 플랜을 쓰는
--- 배포는 계속 그 라우트를 쓸 수 있습니다(docs/notification-operations.md). 두 경로가 동시에
--- 켜져 있어도 core.claim_due_notifications의 `for update skip locked`가 중복 처리를 막습니다.
+-- 이 파일은 기존 Vercel Cron 라우트(app/api/cron/*)의 코드를 지우지 않습니다 — 유료 플랜을
+-- 쓰기로 한 배포는 이 마이그레이션 대신 그 라우트를 쓸 수 있습니다. 다만 **둘을 동시에 켜 두지
+-- 마세요**(docs/notification-operations.md). `for update skip locked`가 같은 알림의 중복
+-- 처리는 막아 주지만, 한쪽은 어떤 실패를 영구 실패로 다른 쪽은 재시도 대상으로 다르게 판단할
+-- 수 있어 발송 이력이 경로마다 모순되게 남습니다(fix round 2 · 어조 통일).
 --
 -- 재실행 안전성: 확장 설치는 `if not exists`로, 작업 등록은 이름으로 먼저 해제한 뒤 다시
 -- 등록하는 방식으로 전체를 몇 번 다시 적용해도 안전합니다(stage1-supabase-수동적용.md §0 원칙).

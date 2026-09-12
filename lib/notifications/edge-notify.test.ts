@@ -90,6 +90,102 @@ test('Resend 키 미설정은 EMAIL_SENDER_NOT_CONFIGURED 재시도 대상 실�
   }
 });
 
+// fix round 2 — 리뷰어가 변이 테스트로 확인한 두 가지 회귀가 정규식 테스트를 걷어낸 뒤
+// 대체 없이 사라져 있었습니다: idempotency key에서 'notification/' 접두어를 빼도, 409의
+// 재시도 허용 목록을 전부 통과시켜도 기존 테스트가 그대로 통과했습니다. 아래 두 테스트로
+// 채웁니다(각각 실제로 망가뜨려 실패하는지 확인한 결과는 cron-edge-report.md 참고).
+
+test('Resend 요청은 notification/<id> 형태의 idempotency-key를 그대로 쓴다(접두어 누락 감지)', async () => {
+  const requests: Array<{ idempotencyKey: string | null }> = [];
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    requests.push({ idempotencyKey: new Headers(init?.headers).get('idempotency-key') });
+    return new Response(JSON.stringify({ id: 'email-1' }), { status: 200 });
+  };
+
+  await sendEmail(
+    { to: 'planner@example.com', subject: '제목', text: '본문' },
+    { apiKey: 'key', from: 'from@example.com', idempotencyKey: 'notification/notice-42', fetchImpl },
+  );
+
+  assert.equal(requests[0].idempotencyKey, 'notification/notice-42');
+});
+
+test('processClaimedNotifications이 sendEmail에 넘기는 idempotencyKey는 notification/<알림ID>다', async () => {
+  const { rpc } = makeRpc({ isValid: true });
+  const seenOptions: Array<{ idempotencyKey: string }> = [];
+  const fakeSendEmail: typeof sendEmail = async (_message, options) => {
+    seenOptions.push({ idempotencyKey: options.idempotencyKey });
+    return { ok: true, externalMessageId: null };
+  };
+
+  await processClaimedNotifications(
+    [{ notification_id: 'notice-99', claim_token: 't1', channel: 'EMAIL', recipient_email: 'a@example.com', template_code: 'X', payload: {} }],
+    'worker-1',
+    rpc,
+    { apiKey: 'key', from: 'from@example.com' },
+    fakeSendEmail,
+  );
+
+  assert.equal(seenOptions[0].idempotencyKey, 'notification/notice-99');
+});
+
+test('Resend 409는 concurrent_idempotent_requests·resource_locked일 때만 재시도 대상이다(허용목록 감지)', async () => {
+  const makeFetch = (name: string): typeof fetch => async () =>
+    new Response(JSON.stringify({ name, message: '충돌' }), { status: 409 });
+
+  const concurrent = await sendEmail(
+    { to: 'a@example.com', subject: '제목', text: '본문' },
+    { apiKey: 'key', from: 'from@example.com', idempotencyKey: 'n/1', fetchImpl: makeFetch('concurrent_idempotent_requests') },
+  );
+  assert.equal(concurrent.ok, false);
+  if (!concurrent.ok) assert.equal(concurrent.retryable, true);
+
+  const locked = await sendEmail(
+    { to: 'a@example.com', subject: '제목', text: '본문' },
+    { apiKey: 'key', from: 'from@example.com', idempotencyKey: 'n/2', fetchImpl: makeFetch('resource_locked') },
+  );
+  assert.equal(locked.ok, false);
+  if (!locked.ok) assert.equal(locked.retryable, true);
+
+  // 허용 목록에 없는 409는 재시도 대상이 아니어야 한다 — "409는 전부 재시도"로 바뀌면 이 값만 깨진다.
+  const invalid = await sendEmail(
+    { to: 'a@example.com', subject: '제목', text: '본문' },
+    { apiKey: 'key', from: 'from@example.com', idempotencyKey: 'n/3', fetchImpl: makeFetch('invalid_idempotent_request') },
+  );
+  assert.equal(invalid.ok, false);
+  if (!invalid.ok) assert.equal(invalid.retryable, false, '허용 목록에 없는 409는 영구 실패여야 합니다');
+
+  const noName = await sendEmail(
+    { to: 'a@example.com', subject: '제목', text: '본문' },
+    { apiKey: 'key', from: 'from@example.com', idempotencyKey: 'n/4', fetchImpl: makeFetch('') },
+  );
+  assert.equal(noName.ok, false);
+  if (!noName.ok) assert.equal(noName.retryable, false);
+});
+
+test('408·425·429·5xx는 재시도 대상, 4xx(409 제외)는 영구 실패다', async () => {
+  const statusFetch = (status: number): typeof fetch => async () =>
+    new Response(JSON.stringify({ message: '오류' }), { status });
+
+  for (const status of [408, 425, 429, 500, 503]) {
+    const result = await sendEmail(
+      { to: 'a@example.com', subject: '제목', text: '본문' },
+      { apiKey: 'key', from: 'from@example.com', idempotencyKey: `n/${status}`, fetchImpl: statusFetch(status) },
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.retryable, true, `${status}는 재시도 대상이어야 합니다`);
+  }
+
+  for (const status of [400, 404, 422]) {
+    const result = await sendEmail(
+      { to: 'a@example.com', subject: '제목', text: '본문' },
+      { apiKey: 'key', from: 'from@example.com', idempotencyKey: `n/${status}`, fetchImpl: statusFetch(status) },
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.retryable, false, `${status}는 영구 실패여야 합니다`);
+  }
+});
+
 test('reply_to는 값이 있을 때만 Resend 요청 본문에 실린다', async () => {
   const requests: Array<{ body: string }> = [];
   const fetchImpl: typeof fetch = async (_url, init) => {
