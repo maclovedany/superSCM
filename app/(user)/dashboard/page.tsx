@@ -3,8 +3,11 @@ import InsightBanner from '@/components/ui/insight-banner';
 import KpiCard from '@/components/ui/kpi-card';
 import Panel from '@/components/ui/panel';
 import BaseMonthValue from '@/components/ui/base-month-value';
+import PracticeDataBanner from '@/components/ui/practice-banner';
 import { formatBaseMonthDotted } from '@/lib/kpi/model';
 import { getDashboardSummary } from '@/lib/kpi/repository';
+import { showsPracticeBanner } from '@/lib/practice/model';
+import { getPracticeDataStatus } from '@/lib/practice/repository';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,12 +22,16 @@ export const dynamic = 'force-dynamic';
 //   이전에는 baseMonth가 null이면 항상 PLANNING_CYCLE_NOT_OPEN으로 표시해, 조회가 실제로
 //   실패했을 때도 "SCM이 아직 안 열었나 보다"로 보였다.
 export default async function DashboardPage() {
-  const summary = await getDashboardSummary();
+  const [summary, { status: practiceStatus }] = await Promise.all([getDashboardSummary(), getPracticeDataStatus()]);
   const baseMonth = formatBaseMonthDotted(summary.baseMonth);
+  // ★ Task 15 — 대시보드는 재고 · 발주계획 · 월말 재고 요약을 한 화면에 모으므로, 그중 하나라도
+  //   실습 데이터의 영향을 받으면 배너를 띄운다.
+  const showPractice = showsPracticeBanner(practiceStatus, 'DASHBOARD');
 
   return (
     <section className="analysis-page">
       <PageHeader eyebrow="OVERVIEW" title="전체 현황" description="출고 실적 기반 분석 화면으로 이동합니다." />
+      {showPractice && practiceStatus !== null ? <PracticeDataBanner status={practiceStatus} /> : null}
       <div className="grid grid-3">
         <KpiCard label="분석 화면" value="2" foot="수요 패턴 · OL 예측 정확도" />
         <KpiCard

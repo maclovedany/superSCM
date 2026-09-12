@@ -41,6 +41,7 @@ export const ADMIN_MENU: MenuItem[] = [
   { href: '/admin/users', label: '사용자 관리', description: '계정 권한과 활성 상태 관리', icon: Users },
   { href: '/admin/demand', label: '수요 관리', description: '수요 데이터 관리', icon: BarChart3 },
   { href: '/admin/data-management', label: '데이터 관리', description: '파일 적재와 이력 관리', icon: Database },
+  { href: '/admin/practice-data', label: '실습용 데이터', description: '실습 데이터 현황 · 영향받는 화면 · 제거 방법', icon: Database },
   { href: '/admin/forecast-models', label: 'Forecast Models', description: '예측 모델 설정 관리', icon: Bot },
   { href: '/admin/forecast-runs', label: 'Forecast Runs', description: '예측 실행 이력 관리', icon: Bot },
   { href: '/admin/backtest-runs', label: 'Backtest Runs', description: '검증 실행 이력 관리', icon: Bot },

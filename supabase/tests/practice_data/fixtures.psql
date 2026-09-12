@@ -1,0 +1,191 @@
+-- 실습용 데이터 표식·제거(Task 15) 검증 fixture — 로컬 임시 DB(scm_test_*) 전용.
+--
+-- ★ 이 fixture의 핵심은 **실데이터 대역과 실습 데이터를 나란히 두는 것**이다. 제거 절차가
+--   실습 행만 지우고 실데이터 행은 한 줄도 건드리지 않는다는 것을 증명하려면 둘 다 있어야 한다.
+--
+--   실데이터 대역 — batch_id가 null이다(배포 DB의 5회차 더미 · 실데이터와 같은 모양).
+--     raw.dim_item DIMREAL1·DIMREAL2 · raw.item_master REALT001 · raw.usage_history 3행
+--     core.item_policy REALT001 · core.stock_balance REALT001 · core.supplier REAL-SUP
+--
+--   실습 데이터 — 전부 등기부에 올라간다.
+--     품목 PRCT001~003 · 적재 배치 2개 · 정책 3건 · 재고 · 월말 스냅샷 · 취합 주기 ·
+--     공급처 PRC-T15 · 법인 JP 준비기간 변경 · Forecast 설정
+--
+--   ★ PRCT003에는 긴급발주(core.urgent_order)를 하나 달아 둔다 — "사람이 이미 업무를 한 품목"을
+--     제거가 어떻게 다루는지(지우지 않고 blocked로 보고) 검증하기 위한 것이다.
+
+\set ON_ERROR_STOP 1
+\ir guard.psql
+
+create schema if not exists practice_test;
+grant usage on schema practice_test to anon, authenticated;
+
+create or replace function practice_test.as_user(p_user uuid) returns text language sql as $$
+  select set_config('request.jwt.claim.sub', p_user::text, false)
+$$;
+
+create or replace function practice_test.check(p_ok boolean, p_label text) returns text language plpgsql as $$
+begin
+  if p_ok is distinct from true then
+    raise exception 'FAIL: %', p_label;
+  end if;
+  return 'PASS: ' || p_label;
+end $$;
+
+create or replace function practice_test.expect_error(p_sql text, p_pattern text, p_label text) returns text language plpgsql as $$
+declare
+  v_state text;
+  v_message text;
+begin
+  begin
+    execute p_sql;
+  exception when others then
+    get stacked diagnostics v_state = returned_sqlstate, v_message = message_text;
+    if v_message !~ p_pattern then
+      raise exception 'FAIL: % — 다른 오류: % (%)', p_label, v_message, v_state;
+    end if;
+    return 'PASS: ' || p_label || ' → ' || v_state || ' ' || v_message;
+  end;
+  raise exception 'FAIL: % — 오류가 나지 않았습니다: %', p_label, p_sql;
+end $$;
+
+-- 제거 전후 실데이터 건수를 비교하기 위한 기준선 저장소.
+create table if not exists practice_test.baseline (name text primary key, n bigint);
+create table if not exists practice_test.remove_result (result jsonb);
+
+grant execute on all functions in schema practice_test to anon, authenticated;
+
+-- ══ 사용자 ═════════════════════════════════════════════════════════
+insert into auth.users (id, email) values
+  ('00000000-0000-4000-8000-000000000501', 't15-admin1@example.test'),
+  ('00000000-0000-4000-8000-000000000502', 't15-planner1@example.test'),
+  ('00000000-0000-4000-8000-000000000503', 't15-lead1@example.test'),
+  ('00000000-0000-4000-8000-000000000504', 't15-marketing1@example.test')
+on conflict (id) do nothing;
+
+insert into core.app_user (user_id, email, name, department, role, active, job_role) values
+  ('00000000-0000-4000-8000-000000000501', 't15-admin1@example.test', '관리자1', null, 'ADMIN', true, null),
+  ('00000000-0000-4000-8000-000000000502', 't15-planner1@example.test', 'SCM품목담당1', 'SCM', 'USER', true, 'SCM_PLANNER'),
+  ('00000000-0000-4000-8000-000000000503', 't15-lead1@example.test', 'SCM팀장1', 'SCM', 'USER', true, 'SCM_LEAD'),
+  ('00000000-0000-4000-8000-000000000504', 't15-marketing1@example.test', '마케팅1', 'MARKETING', 'USER', true, 'MARKETING')
+on conflict (user_id) do update
+  set job_role = excluded.job_role, department = excluded.department, role = excluded.role,
+      name = excluded.name, active = true;
+
+-- ══ 실데이터 대역 (batch_id null — 제거가 절대 건드리면 안 되는 행) ══
+insert into raw.dim_item (item_code, description, item_type) values
+  ('DIMREAL1', '실데이터 품목 1', 'REAL'),
+  ('DIMREAL2', '실데이터 품목 2', 'REAL')
+on conflict (item_code) do nothing;
+
+insert into raw.item_master ("품목코드", "품목명", "품목구분", supplier_id) values
+  ('REALT001', '실데이터 대역 품목', '소모품', 'REAL-SUP');
+
+insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse) values
+  ('REAL-U1', 'REALT001', '2025-01-15', 100, 'MAIN'),
+  ('REAL-U2', 'REALT001', '2025-02-15', 110, 'MAIN'),
+  ('REAL-U3', 'REALT001', '2025-03-15', 120, 'MAIN');
+
+insert into core.item_policy (item_id, item_grade, service_level) values ('REALT001', 'A', 0.95)
+on conflict (item_id) do nothing;
+
+insert into core.stock_balance (item_id, snapshot_qty, normal_qty, snapshot_at)
+values ('REALT001', 500, 500, '2026-01-31T00:00:00Z')
+on conflict (item_id) do nothing;
+
+insert into core.supplier (supplier_id, supplier_name, entity_id, lead_time_days, active)
+values ('REAL-SUP', '실데이터 대역 공급처', 'JP', 20, true)
+on conflict (supplier_id) do nothing;
+
+-- 실습 전 활성 Forecast 설정(제거 시 되살아나야 한다).
+insert into core.forecast_setting (active, train_start, train_end, test_start, test_end, granularity, forecast_horizon)
+values (true, '2025-01-01', '2025-06-30', '2025-07-01', '2025-09-30', 'MONTH', 3);
+
+-- ══ 실습 데이터 ════════════════════════════════════════════════════
+do $$
+declare
+  v_admin uuid := '00000000-0000-4000-8000-000000000501';
+  v_label text := 'TEST-PRACTICE';
+  v_prev_setting uuid;
+  v_prep jsonb;
+  v_batch_usage uuid := '00000000-0000-4000-8000-0000000005b1';
+  v_batch_item  uuid := '00000000-0000-4000-8000-0000000005b2';
+  v_cycle uuid := '00000000-0000-4000-8000-0000000005c1';
+  v_setting uuid;
+  v_item text;
+begin
+  perform practice_test.as_user(v_admin);
+
+  select setting_id into v_prev_setting from core.forecast_setting where active order by updated_at desc limit 1;
+  select coalesce(jsonb_object_agg(entity_id, prep_days), '{}'::jsonb) into v_prep from core.supply_entity;
+
+  perform core.open_practice_dataset(v_label, '검증용 실습 묶음',
+    jsonb_build_object('supply_entity_prep_days', v_prep, 'previous_forecast_setting_id', v_prev_setting));
+
+  -- 마스터 — 운영 표(법인)는 지우지 않고 값만 바꾼다. 제거하면 원래 값으로 돌아가야 한다.
+  perform core.upsert_supply_entity('JP', '일본', 'JP', 7, true, null, null, '실습', '[실습용] 검증');
+  perform core.register_practice_object(v_label, 'SUPPLY_ENTITY', 'JP', '준비기간만 변경');
+
+  perform core.upsert_supplier('PRC-T15', '실습 공급처', 'JP', 15, true, null, null, '실습', '[실습용] 검증');
+  perform core.register_practice_object(v_label, 'SUPPLIER', 'PRC-T15', null);
+
+  -- 적재 배치 2개 — 실습 행은 전부 batch_id를 갖는다(실데이터와 구분되는 유일한 근거).
+  insert into core.upload_batch (batch_id, file_name, import_type, import_mode, total_rows, success_rows,
+                                 warning_rows, error_rows, status, uploaded_by, imported_at)
+  values (v_batch_usage, '[실습용 TEST-PRACTICE] usage.csv', 'usage_history', 'append', 3, 3, 0, 0, 'IMPORTED', v_admin, now()),
+         (v_batch_item,  '[실습용 TEST-PRACTICE] item.csv',  'item_master',   'append', 3, 3, 0, 0, 'IMPORTED', v_admin, now());
+  perform core.register_practice_object(v_label, 'UPLOAD_BATCH', v_batch_usage::text, '사용 이력');
+  perform core.register_practice_object(v_label, 'UPLOAD_BATCH', v_batch_item::text, '품목 마스터');
+
+  insert into raw.item_master ("품목코드", "품목명", "품목구분", supplier_id, batch_id, source_type, source_record_id)
+  values ('PRCT001', '실습 품목 1', '소모품', 'PRC-T15', v_batch_item, 'FILE_UPLOAD', 'P1'),
+         ('PRCT002', '실습 품목 2', '소모품', 'PRC-T15', v_batch_item, 'FILE_UPLOAD', 'P2'),
+         ('PRCT003', '실습 품목 3', '소모품', 'PRC-T15', v_batch_item, 'FILE_UPLOAD', 'P3');
+
+  insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse, batch_id, source_type, source_record_id)
+  values ('PRC-U1', 'PRCT001', '2026-02-15', 200, 'MAIN', v_batch_usage, 'FILE_UPLOAD', 'PU1'),
+         ('PRC-U2', 'PRCT002', '2026-02-15', 210, 'MAIN', v_batch_usage, 'FILE_UPLOAD', 'PU2'),
+         ('PRC-U3', 'PRCT003', '2026-02-15', 220, 'MAIN', v_batch_usage, 'FILE_UPLOAD', 'PU3');
+
+  foreach v_item in array array['PRCT001', 'PRCT002', 'PRCT003'] loop
+    perform core.register_practice_object(v_label, 'ITEM', v_item, null);
+    insert into core.item_policy (item_id, item_grade, service_level) values (v_item, 'B', 0.9)
+    on conflict (item_id) do nothing;
+    perform core.register_practice_object(v_label, 'ITEM_POLICY', v_item, null);
+  end loop;
+
+  insert into core.stock_balance (item_id, snapshot_qty, normal_qty, snapshot_at)
+  values ('PRCT001', 300, 300, '2026-03-15T00:00:00Z')
+  on conflict (item_id) do nothing;
+
+  insert into core.month_end_inventory_snapshot (plan_month, item_id, normal_qty, snapshot_at)
+  values ('2026-03-01', 'PRCT001', 300, '2026-03-15T00:00:00Z')
+  on conflict (plan_month, item_id) do nothing;
+
+  insert into core.planning_cycle (cycle_id, plan_month, submission_deadline, opened_by)
+  values (v_cycle, '2026-03-01', '2026-02-27', v_admin);
+  perform core.register_practice_object(v_label, 'PLANNING_CYCLE', v_cycle::text, null);
+
+  -- 실습 Forecast 설정 — 활성은 하나만 허용되므로 기존 것을 내린다.
+  update core.forecast_setting set active = false, updated_at = now() where active;
+  insert into core.forecast_setting (active, train_start, train_end, test_start, test_end, granularity, forecast_horizon)
+  values (true, '2026-01-01', '2026-09-30', '2026-10-01', '2026-12-31', 'MONTH', 9)
+  returning setting_id into v_setting;
+  perform core.register_practice_object(v_label, 'FORECAST_SETTING', v_setting::text, null);
+
+  -- ★ PRCT003 — 수업 중 학생이 긴급발주를 등록한 상황. 제거가 이 품목을 건드리면 안 된다.
+  insert into core.urgent_order (item_id, qty, needed_by, reason, owner_user_id, owner_name)
+  values ('PRCT003', 10, '2026-04-01', '수업 중 등록', v_admin, '관리자1');
+end $$;
+
+-- ══ 기준선 — 제거 뒤 이 숫자들이 그대로여야 한다 ═══════════════════
+insert into practice_test.baseline (name, n) values
+  ('dim_item',            (select count(*) from raw.dim_item)),
+  ('usage_legacy',        (select count(*) from raw.usage_history where batch_id is null)),
+  ('item_master_legacy',  (select count(*) from raw.item_master where batch_id is null)),
+  ('real_policy',         (select count(*) from core.item_policy where item_id = 'REALT001')),
+  ('real_stock',          (select count(*) from core.stock_balance where item_id = 'REALT001')),
+  ('real_supplier',       (select count(*) from core.supplier where supplier_id = 'REAL-SUP'))
+on conflict (name) do update set n = excluded.n;
+
+select 'fixtures ok';

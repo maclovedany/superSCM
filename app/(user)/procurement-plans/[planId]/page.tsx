@@ -10,9 +10,11 @@ import Panel from '@/components/ui/panel';
 import PlanSummary from '@/components/procurement/plan-summary';
 import PlanLineTable from '@/components/procurement/plan-line-table';
 import { ConfirmPlanForm, PlanDecisionForm } from '@/components/procurement/plan-actions';
+import PracticeDataBanner from '@/components/ui/practice-banner';
 import { getPermissions, requireAnyPermission } from '@/lib/auth';
 import { WORK_ROUTE_PERMISSIONS } from '@/lib/permission';
 import { PLAN_EVENT_LABELS, validatePlanId } from '@/lib/procurement/model';
+import { getPracticeDataStatus, getPracticePlanIds } from '@/lib/practice/repository';
 import {
   getProcurementPlan,
   getProcurementPlanBlockers,
@@ -48,12 +50,18 @@ export default async function ProcurementPlanDetailPage({ params }: { params: Pr
   }
   if (!plan) notFound();
 
-  const [lines, kpis, blockers, events] = await Promise.all([
+  const [lines, kpis, blockers, events, practicePlanIds, { status: practiceStatus }] = await Promise.all([
     getProcurementPlanLines(planId),
     getProcurementPlanKpis(planId),
     getProcurementPlanBlockers(planId),
     getProcurementPlanEvents(planId),
+    getPracticePlanIds(),
+    getPracticeDataStatus(),
   ]);
+
+  // ★ Task 15 — 이 계획이 실습 데이터로 계산됐을 때만 배너를 띄운다. 실습 데이터는 진짜 적재 경로로
+  //   들어와 원천 게이트까지 통과하므로, 화면이 말해 주지 않으면 이 숫자를 실적으로 읽게 된다.
+  const isPracticePlan = practicePlanIds.has(planId);
 
   const canConfirm = permissions.has('PLAN_CONFIRM') && (plan.status === 'DRAFT' || plan.status === 'REJECTED');
   const canDecide = permissions.has('PLAN_APPROVE') && plan.status === 'PENDING_APPROVAL' && plan.approvalId !== null
@@ -68,6 +76,8 @@ export default async function ProcurementPlanDetailPage({ params }: { params: Pr
         action={<Link className="button" href="/procurement-plans">목록</Link>}
       />
       <div className="analysis-content">
+        {isPracticePlan && practiceStatus !== null ? <PracticeDataBanner status={practiceStatus} /> : null}
+
         {kpis.error || blockers.error
           ? <div className="card"><QueryError message={kpis.error ?? blockers.error ?? ''} /></div>
           : <PlanSummary plan={plan} firstMonthKpi={kpis.rows.find((kpi) => kpi.monthNo === 1) ?? null} blockers={blockers.rows} />}

@@ -1,6 +1,9 @@
 // 발주계획 목록 — Task 9b
 //
 // ★ 계산은 core.build_procurement_plan이 하고, 이 화면은 analytics.v_procurement_plan에 저장된 버전 목록만 보여준다.
+// ★ Task 15 — 실습용 데이터로 계산된 계획은 행에 '실습용' 태그를 붙인다. 계획 단위로 가리는 이유는,
+//   실습 계획이 하나라도 있다고 해서 실데이터로만 만든 다른 계획까지 경고를 달면 거짓 경고가 되기
+//   때문이다(거짓 경고는 진짜 경고를 무디게 만든다).
 
 import Link from 'next/link';
 import PageHeader from '@/components/shell/page-header';
@@ -12,51 +15,58 @@ import { getPermissions, requireAnyPermission } from '@/lib/auth';
 import { WORK_ROUTE_PERMISSIONS } from '@/lib/permission';
 import { PLAN_STATUS_LABELS, planReasonLabel, planStatusTone, type ProcurementPlan } from '@/lib/procurement/model';
 import { getForecastRunOptions, getProcurementPlans } from '@/lib/procurement/repository';
+import { getPracticePlanIds } from '@/lib/practice/repository';
 
 export const dynamic = 'force-dynamic';
 
-const planColumns: Column<ProcurementPlan>[] = [
-  {
-    key: 'planMonth', label: '기준월 · 버전',
-    render: (plan) => (
-      <>
-        <Link href={`/procurement-plans/${plan.planId}`}><b>{plan.planMonth.slice(0, 7)}</b> · v{plan.version}</Link>
-        {plan.isLatestApproved ? <><br /><span className="tag green">최신 승인본</span></> : null}
-      </>
-    ),
-  },
-  {
-    key: 'status', label: '상태', align: 'center',
-    render: (plan) => <span className={`tag ${planStatusTone(plan.status)}`}>{PLAN_STATUS_LABELS[plan.status]}</span>,
-  },
-  {
-    key: 'sourceStatus', label: 'Forecast 원천', align: 'center',
-    render: (plan) => plan.sourceStatus === 'VERIFIED'
-      ? <span className="tag green">검증됨</span>
-      : <span title={planReasonLabel(plan.sourceStatus) ?? ''}><EmptyValue reasonCode={plan.sourceStatus ?? 'FORECAST_SOURCE_UNVERIFIED'} /></span>,
-  },
-  { key: 'nItems', label: '품목', align: 'right', render: (plan) => String(plan.nItems) },
-  {
-    key: 'nUnavailableLines', label: '계산 불가 라인', align: 'right',
-    render: (plan) => plan.nUnavailableLines === 0 ? <span className="muted">0</span> : <span className="text-danger">{plan.nUnavailableLines} / {plan.nLines}</span>,
-  },
-  {
-    key: 'confirmable', label: '확정 가능', align: 'center',
-    render: (plan) => plan.status === 'DRAFT' || plan.status === 'REJECTED'
-      ? (plan.confirmable ? <span className="tag green">가능</span> : <span className="tag red">차단</span>)
-      : <span className="muted">—</span>,
-  },
-  { key: 'builtAt', label: '계산', render: (plan) => <>{plan.builtByName ?? '미상'}<br /><span className="muted">{plan.builtAt ?? ''}</span></> },
-];
+function planColumns(practicePlanIds: Set<string>): Column<ProcurementPlan>[] {
+  return [
+    {
+      key: 'planMonth', label: '기준월 · 버전',
+      render: (plan) => (
+        <>
+          <Link href={`/procurement-plans/${plan.planId}`}><b>{plan.planMonth.slice(0, 7)}</b> · v{plan.version}</Link>
+          {plan.isLatestApproved ? <><br /><span className="tag green">최신 승인본</span></> : null}
+          {practicePlanIds.has(plan.planId)
+            ? <><br /><span className="tag amber" title="실습용 데이터로 계산된 계획입니다. 실제 실적이 아닙니다.">실습용</span></>
+            : null}
+        </>
+      ),
+    },
+    {
+      key: 'status', label: '상태', align: 'center',
+      render: (plan) => <span className={`tag ${planStatusTone(plan.status)}`}>{PLAN_STATUS_LABELS[plan.status]}</span>,
+    },
+    {
+      key: 'sourceStatus', label: 'Forecast 원천', align: 'center',
+      render: (plan) => plan.sourceStatus === 'VERIFIED'
+        ? <span className="tag green">검증됨</span>
+        : <span title={planReasonLabel(plan.sourceStatus) ?? ''}><EmptyValue reasonCode={plan.sourceStatus ?? 'FORECAST_SOURCE_UNVERIFIED'} /></span>,
+    },
+    { key: 'nItems', label: '품목', align: 'right', render: (plan) => String(plan.nItems) },
+    {
+      key: 'nUnavailableLines', label: '계산 불가 라인', align: 'right',
+      render: (plan) => plan.nUnavailableLines === 0 ? <span className="muted">0</span> : <span className="text-danger">{plan.nUnavailableLines} / {plan.nLines}</span>,
+    },
+    {
+      key: 'confirmable', label: '확정 가능', align: 'center',
+      render: (plan) => plan.status === 'DRAFT' || plan.status === 'REJECTED'
+        ? (plan.confirmable ? <span className="tag green">가능</span> : <span className="tag red">차단</span>)
+        : <span className="muted">—</span>,
+    },
+    { key: 'builtAt', label: '계산', render: (plan) => <>{plan.builtByName ?? '미상'}<br /><span className="muted">{plan.builtAt ?? ''}</span></> },
+  ];
+}
 
 export default async function ProcurementPlansPage() {
   await requireAnyPermission(...WORK_ROUTE_PERMISSIONS['/procurement-plans']);
   const permissions = await getPermissions();
   const canBuild = permissions.has('PLAN_CONFIRM');
 
-  const [{ rows: plans, error: planError }, runs] = await Promise.all([
+  const [{ rows: plans, error: planError }, runs, practicePlanIds] = await Promise.all([
     getProcurementPlans(),
     canBuild ? getForecastRunOptions() : Promise.resolve({ rows: [], error: null }),
+    getPracticePlanIds(),
   ]);
 
   return (
@@ -81,7 +91,7 @@ export default async function ProcurementPlansPage() {
               <p className="muted">{planError}</p>
             </>
           ) : (
-            <DataTable columns={planColumns} rows={plans} rowKey={(plan) => plan.planId} empty="아직 계산한 발주계획이 없습니다." />
+            <DataTable columns={planColumns(practicePlanIds)} rows={plans} rowKey={(plan) => plan.planId} empty="아직 계산한 발주계획이 없습니다." />
           )}
         </Panel>
       </div>

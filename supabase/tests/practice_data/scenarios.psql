@@ -1,0 +1,222 @@
+-- 실습용 데이터 표식·제거(Task 15) 검증 시나리오. 로컬 임시 DB(scm_test_*) 전용, fixtures.psql 적용 뒤 실행.
+--
+-- 구조는 supabase/tests/item_policy/scenarios.psql과 같다: 사용자 컨텍스트가 필요한 구간은
+-- as_user()로 auth.uid()를 지정하고, RLS·GRANT 자체를 검증하는 구간(S12)만 `set role authenticated`
+-- 안에서 확인한다.
+--
+-- 증명하려는 것은 세 가지다.
+--   (1) 표식  — 무엇이 실습이고 무엇이 실데이터인지 DB가 한 곳에서 답한다
+--   (2) 제거  — 실습 행이 사라진다
+--   (3) ★ 안전 — 실데이터는 한 줄도 사라지지 않고, 사람이 업무를 한 것은 지우지 않고 보고한다
+
+\set ON_ERROR_STOP 1
+\ir guard.psql
+\pset tuples_only on
+\pset format unaligned
+
+\set admin1 '00000000-0000-4000-8000-000000000501'
+\set planner1 '00000000-0000-4000-8000-000000000502'
+\set marketing1 '00000000-0000-4000-8000-000000000504'
+
+
+\echo '== S1 권한 — 관리자가 아니면 묶음을 열거나 등기하거나 제거할 수 없다 =='
+select practice_test.as_user(:'marketing1') \g /dev/null
+select practice_test.expect_error(
+  $f$select core.open_practice_dataset('NOPE', null, '{}'::jsonb)$f$,
+  '관리자 권한이 필요합니다', 'S1 비관리자는 실습 묶음을 열 수 없다');
+select practice_test.expect_error(
+  $f$select core.register_practice_object('TEST-PRACTICE', 'ITEM', 'HACK001', null)$f$,
+  '관리자 권한이 필요합니다', 'S1 비관리자는 객체를 등기할 수 없다');
+select practice_test.expect_error(
+  $f$select core.remove_practice_dataset('TEST-PRACTICE', true)$f$,
+  '관리자 권한이 필요합니다', 'S1 비관리자는 실습 데이터를 제거할 수 없다');
+-- SCM 품목담당자도 관리자가 아니다 — 업무 권한이 많다고 제거 권한이 생기지 않는다.
+select practice_test.as_user(:'planner1') \g /dev/null
+select practice_test.expect_error(
+  $f$select core.remove_practice_dataset('TEST-PRACTICE', true)$f$,
+  '관리자 권한이 필요합니다', 'S1 SCM 품목담당자도 제거할 수 없다');
+
+
+\echo '== S2 실수 방지 — p_confirm 없이는 제거되지 않는다 =='
+select practice_test.as_user(:'admin1') \g /dev/null
+select practice_test.expect_error(
+  $f$select core.remove_practice_dataset('TEST-PRACTICE')$f$,
+  'p_confirm', 'S2 p_confirm 기본값(false)으로는 제거가 실행되지 않는다');
+select practice_test.expect_error(
+  $f$select core.remove_practice_dataset('NO-SUCH-LABEL', true)$f$,
+  '찾을 수 없습니다', 'S2 없는 라벨은 거절된다');
+select practice_test.check(
+  (select count(*) from raw.usage_history where batch_id is not null) = 3,
+  'S2 거절된 호출은 아무것도 지우지 않았다');
+
+
+\echo '== S3 표식 — 실습 품목·배치와 실데이터를 구분한다 =='
+select practice_test.check(core.is_practice_item('PRCT001'), 'S3 등기된 품목은 실습으로 판정된다');
+select practice_test.check(not core.is_practice_item('REALT001'), 'S3 실데이터 품목은 실습이 아니다');
+-- 품목코드 정규화가 적용되는지 — 공백·하이픈이 섞여 들어와도 같은 품목으로 본다.
+select practice_test.check(core.is_practice_item('prc-t001'), 'S3 품목코드는 정규화해서 판정한다');
+select practice_test.check(
+  core.is_practice_batch('00000000-0000-4000-8000-0000000005b1'::uuid),
+  'S3 등기된 적재 배치는 실습으로 판정된다');
+select practice_test.check(not core.is_practice_batch(null), 'S3 batch_id가 null이면 실습이 아니다');
+select practice_test.check(
+  not core.is_practice_forecast_run('00000000-0000-4000-8000-0000000005f9'::uuid),
+  'S3 등기되지 않은 Forecast 실행은 실습이 아니다');
+
+
+\echo '== S4 현황 뷰 — 항상 1행이고 영향받는 화면을 알려 준다 =='
+select practice_test.check((select count(*) from analytics.v_practice_data_status) = 1,
+  'S4 현황 뷰는 항상 정확히 1행이다');
+select practice_test.check(
+  (select has_practice_data and active and label = 'TEST-PRACTICE' and n_items = 3
+     from analytics.v_practice_data_status),
+  'S4 라벨 · 활성 여부 · 실습 품목 수를 보고한다');
+select practice_test.check(
+  (select affects_inventory and affects_month_end_kpi from analytics.v_practice_data_status),
+  'S4 실습 재고·월말 스냅샷이 있으면 그 화면이 영향받는다고 알린다');
+select practice_test.check((select count(*) from analytics.v_practice_item) = 3,
+  'S4 실습 품목 목록은 3건이다');
+select practice_test.check(
+  not exists (select 1 from analytics.v_practice_item where item_id = 'REALT001'),
+  'S4 실데이터 품목은 실습 목록에 없다');
+
+
+\echo '== S5 제거 실행 =='
+select practice_test.as_user(:'admin1') \g /dev/null
+insert into practice_test.remove_result (result)
+select core.remove_practice_dataset('TEST-PRACTICE', p_confirm => true);
+select practice_test.check((select count(*) from practice_test.remove_result) = 1, 'S5 제거가 결과를 돌려준다');
+
+
+\echo '== S6 ★ 실데이터가 한 줄도 사라지지 않았다 =='
+-- 이 스위트에서 가장 중요한 시나리오다. 제거 절차가 등기부만 보고 지운다는 설계가 실제로 성립하는가.
+select practice_test.check(
+  (select count(*) from raw.dim_item) = (select n from practice_test.baseline where name = 'dim_item'),
+  'S6 raw.dim_item(실데이터 원본)은 그대로다');
+select practice_test.check(
+  (select count(*) from raw.usage_history where batch_id is null) = (select n from practice_test.baseline where name = 'usage_legacy'),
+  'S6 batch_id가 null인 사용 이력(더미·실데이터)은 그대로다');
+select practice_test.check(
+  (select count(*) from raw.item_master where batch_id is null) = (select n from practice_test.baseline where name = 'item_master_legacy'),
+  'S6 batch_id가 null인 품목 마스터는 그대로다');
+select practice_test.check(
+  (select count(*) from core.item_policy where item_id = 'REALT001') = 1,
+  'S6 실데이터 품목 정책은 그대로다');
+select practice_test.check(
+  (select count(*) from core.stock_balance where item_id = 'REALT001') = 1,
+  'S6 실데이터 재고는 그대로다');
+select practice_test.check(
+  (select count(*) from core.supplier where supplier_id = 'REAL-SUP') = 1,
+  'S6 실데이터 공급처는 그대로다');
+
+
+\echo '== S7 실습 행은 사라졌다 =='
+select practice_test.check(
+  not exists (select 1 from raw.usage_history where item_id in ('PRCT001', 'PRCT002')),
+  'S7 실습 사용 이력이 지워졌다');
+select practice_test.check(
+  not exists (select 1 from raw.item_master where "품목코드" in ('PRCT001', 'PRCT002')),
+  'S7 실습 품목 마스터가 지워졌다');
+select practice_test.check(
+  not exists (select 1 from core.item_policy where item_id in ('PRCT001', 'PRCT002')),
+  'S7 실습 품목 정책이 지워졌다');
+select practice_test.check(
+  not exists (select 1 from core.stock_balance where item_id = 'PRCT001'),
+  'S7 실습 재고가 지워졌다');
+select practice_test.check(
+  not exists (select 1 from core.month_end_inventory_snapshot where item_id = 'PRCT001'),
+  'S7 실습 월말 스냅샷이 지워졌다');
+select practice_test.check(
+  not exists (select 1 from core.planning_cycle where cycle_id = '00000000-0000-4000-8000-0000000005c1'),
+  'S7 실습 취합 주기가 지워졌다');
+select practice_test.check(
+  not exists (select 1 from core.supplier where supplier_id = 'PRC-T15'),
+  'S7 실습 공급처가 지워졌다');
+
+
+\echo '== S8 ★ 사람이 업무를 한 품목은 지우지 않고 사유와 함께 보고한다 =='
+-- PRCT003에는 긴급발주가 달려 있다. 그 품목에 딸린 것은 정책도 마스터도 사용 이력도 남아야 한다 —
+-- 정책만 남기고 마스터를 지우면 "존재하지 않는 품목의 정책"이 화면에 남는다.
+-- ★ result는 최상위 객체({label, removed, blocked, …})다. blocked 배열을 꺼내서 containment로 본다 —
+--   객체에 배열 containment를 걸면 언제나 false라 시나리오가 조용히 통과하는 것처럼 보일 수 있다.
+select practice_test.check(
+  (select result -> 'blocked' @> '[{"kind": "ITEM", "key": "PRCT003", "reason": "ACTED_ON_BY_USER"}]'::jsonb
+     from practice_test.remove_result limit 1),
+  'S8 blocked 목록에 ACTED_ON_BY_USER 사유로 보고된다');
+select practice_test.check(
+  (select result -> 'blocked' @> '[{"kind": "UPLOAD_BATCH", "reason": "RETAINED_FOR_BLOCKED_ITEM"}]'::jsonb
+     from practice_test.remove_result limit 1),
+  'S8 남은 품목의 적재 배치도 사유와 함께 보고된다');
+select practice_test.check(
+  (select count(*) from core.item_policy where item_id = 'PRCT003') = 1,
+  'S8 그 품목의 정책은 남는다');
+select practice_test.check(
+  (select count(*) from raw.item_master where "품목코드" = 'PRCT003') = 1,
+  'S8 그 품목의 마스터 행도 남는다(정책만 남기고 지우지 않는다)');
+select practice_test.check(
+  (select count(*) from raw.usage_history where item_id = 'PRCT003') = 1,
+  'S8 그 품목의 사용 이력도 남는다');
+select practice_test.check(
+  (select count(*) from core.upload_batch where batch_id = '00000000-0000-4000-8000-0000000005b2') = 1,
+  'S8 남은 행의 적재 배치도 함께 남는다(출처를 잃지 않는다)');
+
+
+\echo '== S9 남은 실습 객체는 계속 실습으로 표시된다 =='
+-- 제거했다는 이유로 살아남은 실습 숫자가 실적처럼 보이면 안 된다.
+select practice_test.check(core.is_practice_item('PRCT003'),
+  'S9 지우지 못한 품목의 등기는 남아 계속 실습으로 판정된다');
+select practice_test.check(not core.is_practice_item('PRCT001'),
+  'S9 지워진 품목의 등기는 사라진다');
+select practice_test.check(
+  (select count(*) from analytics.v_practice_item) = 1,
+  'S9 실습 품목 목록에는 남은 1건만 보인다');
+select practice_test.check(
+  (select not active and removed_at is not null from core.practice_dataset where label = 'TEST-PRACTICE'),
+  'S9 묶음은 제거됨으로 표시되고 행 자체는 이력으로 남는다');
+select practice_test.check(
+  (select has_practice_data from analytics.v_practice_data_status),
+  'S9 남은 객체가 있으면 현황 뷰가 계속 실습 데이터 있음으로 답한다');
+
+
+\echo '== S10 복원 — 운영 마스터와 Forecast 설정이 실습 전 값으로 돌아간다 =='
+-- 법인 준비기간 0은 "아직 현업에서 못 받은 값"이라는 뜻이다. 실습이 넣은 7이 그대로 남으면
+-- 받지 못한 값이 받은 값처럼 보인다.
+select practice_test.check(
+  (select prep_days = 0 from core.supply_entity where entity_id = 'JP'),
+  'S10 법인 출항 준비기간이 실습 전 값(0)으로 복원된다');
+select practice_test.check(
+  (select count(*) from core.supply_entity where entity_id = 'JP') = 1,
+  'S10 법인 행 자체는 지워지지 않는다(운영 마스터다)');
+select practice_test.check(
+  (select count(*) from core.forecast_setting where active) = 1,
+  'S10 활성 Forecast 설정은 정확히 하나다');
+select practice_test.check(
+  (select train_start = '2025-01-01' and test_end = '2025-09-30' from core.forecast_setting where active),
+  'S10 실습 전 Forecast 설정이 다시 활성화된다');
+
+
+\echo '== S11 같은 라벨을 다시 열 수 없다 =='
+select practice_test.as_user(:'admin1') \g /dev/null
+select practice_test.expect_error(
+  $f$select core.open_practice_dataset('TEST-PRACTICE', null, '{}'::jsonb)$f$,
+  '이미 제거된', 'S11 제거된 라벨은 재사용할 수 없다(새 라벨을 쓰게 한다)');
+select practice_test.expect_error(
+  $f$select core.remove_practice_dataset('TEST-PRACTICE', true)$f$,
+  '이미 제거된', 'S11 두 번 제거할 수 없다');
+
+
+\echo '== S12 권한 — 등기부는 읽기만 열려 있다 =='
+set role authenticated;
+select practice_test.as_user(:'marketing1') \g /dev/null
+-- 숫자의 출처가 실습인지는 그 숫자를 보는 사람 누구나 알아야 하므로 읽기는 모두에게 연다.
+select practice_test.check(
+  (select count(*) from analytics.v_practice_data_status) = 1,
+  'S12 일반 사용자도 실습 현황을 읽을 수 있다');
+select practice_test.expect_error(
+  $f$insert into core.practice_object (dataset_id, object_kind, object_key)
+     values ((select dataset_id from core.practice_dataset limit 1), 'ITEM', 'HACK002')$f$,
+  'permission denied|denied', 'S12 일반 사용자는 등기부에 직접 쓸 수 없다');
+select practice_test.expect_error(
+  $f$insert into core.practice_dataset (label) values ('HACK')$f$,
+  'permission denied|denied', 'S12 일반 사용자는 실습 묶음을 직접 만들 수 없다');
+reset role;

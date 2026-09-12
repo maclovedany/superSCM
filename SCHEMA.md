@@ -112,6 +112,15 @@ RLS가 호출자 기준으로 적용되는지 확인합니다. 뷰 소유자 권
 
 ## core — 정제와 계산
 
+**업무 표의 사용자 참조 규칙(관리자 계정 관리, fix round 2).** 담당자·요청자·승인자처럼
+업무 표가 "누가 했는가"를 담을 때는 `auth.users(id)`를 참조하는 uuid 컬럼을 쓰고, 그 표는
+`core` 스키마에 둡니다. `core.app_user_blocking_tables()`
+(`supabase/migrations/20260912000300_stage1_user_admin.sql`)가 계정 완전 삭제 전 업무 이력을
+확인할 때 이 관례(스키마 `core` + `auth.users(id)` 직접 참조)를 전제로 `pg_constraint`를
+훑습니다 — `public`·`analytics`·`raw` 스키마의 표나 `core.app_user`를 대신 참조하는 컬럼은
+이 검사가 보지 못합니다. 지금까지 이 관례를 따르지 않은 표는 없습니다(`auth.users(id)`를
+참조하는 FK 49개 전부 `core` 스키마에 있습니다, 2026-09-12 기준).
+
 ### `leadtime_plan` (테이블 · 쓰기 가능)
 오전 분석에서 확정한 계획 리드타임.
 `supplier_id`(PK), `planned_lead_time`, `basis`, `service_level`, `confirmed_reason`, `confirmed_at`
@@ -193,6 +202,28 @@ STEP 8 Croston 계열 엔진이 추가될 때 registry 설정으로 연결합니
 과거 Run과 결과 행은 stale이어도 삭제하거나 덮어쓰지 않습니다.
 
 ### STEP 7 Backtest와 Champion
+
+### Task 15 실습용(practice) 데이터 표식
+
+| 객체 | 역할 |
+|---|---|
+| `core.practice_dataset` | 실습 데이터 묶음 하나(라벨 · 활성 여부 · 되돌릴 값 `restore_payload`) |
+| `core.practice_object` | 그 묶음이 만든 모든 객체의 등기부(종류 · 키). **제거 절차는 이 목록만 보고 지웁니다** |
+| `core.is_practice_item/batch/forecast_run/plan()` | 화면·뷰가 쓰는 실습 여부 판정 함수 |
+| `core.remove_practice_dataset(label, p_confirm)` | ADMIN 전용 제거. 지울 수 없는 것은 사유와 함께 보고 |
+| `analytics.v_practice_data_status` | 실습 현황 한 줄(**항상 1행**). 화면 배너가 이 값을 씁니다 |
+| `analytics.v_practice_item` · `v_practice_plan` | 행 단위로 실습 여부를 가릴 때 쓰는 목록 |
+
+실데이터는 등기부에 없으므로 제거 절차가 **구조적으로** 건드릴 수 없습니다. 적재 원본은
+`batch_id`로만 지우므로 `batch_id`가 null인 행(5회차 더미 · 실데이터)은 어떤 경우에도 걸리지
+않습니다. 실습 데이터 본체는 마이그레이션이 아니라 `supabase/practice-data/*.sql`에 있습니다 —
+운영 배포가 스키마를 적용하는 것만으로 더미 행이 설치되면 안 되기 때문입니다.
+
+기존 뷰(`v_available_stock` · `v_inventory_performance` · `v_procurement_plan`)에는 열을
+**덧붙이지 않았습니다.** `create or replace view`는 열을 뺄 수 없어(error.md #16 · #24),
+"전체를 파일명 순서로 다시 적용"하는 표준 복구 절차가 앞 파일에서 멈추기 때문입니다.
+
+적용 파일 — `supabase/migrations/20260912000400_stage1_practice_dataset.sql`
 
 `core.backtest_run`, `core.model_performance`, `core.champion_model_selection`은 Forecast 실행과 분리된 검증 이력입니다.
 Backtest는 `core.forecast_result + core.v_test_actual`만 사용합니다. Bias는 `Forecast - Actual`이며 양수는 과대예측입니다.

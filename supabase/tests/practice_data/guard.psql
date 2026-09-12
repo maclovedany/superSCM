@@ -1,0 +1,16 @@
+-- 테스트 전용 안전장치 — 모든 .psql 파일이 가장 먼저 포함한다(\ir guard.psql).
+-- 접속한 DB 이름이 scm_test_로 시작하고, TCP 접속이면 루프백 주소일 때만 계속한다.
+-- 원격 Supabase(DB 이름 postgres)나 다른 DB를 가리키면 아무것도 실행하지 않고 오류로 멈춘다.
+--
+-- ★ 이 스위트는 데이터를 **지우는** 절차를 검증한다. 가드가 없으면 실수로 운영 DB를 가리켰을 때
+--   core.remove_practice_dataset이 거기서 돈다. 다른 어느 스위트보다 이 가드가 중요하다.
+\set ON_ERROR_STOP 1
+select current_database() like 'scm\_test\_%'
+       and coalesce(host(inet_server_addr()) in ('127.0.0.1', '::1'), true) as practice_test_safe_target
+\gset
+\if :practice_test_safe_target
+\else
+  do $$ begin
+    raise exception 'supabase/tests는 로컬 임시 DB(scm_test_*)에서만 실행합니다. 현재 DB: %', current_database();
+  end $$;
+\endif
