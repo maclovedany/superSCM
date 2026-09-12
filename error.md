@@ -39,6 +39,7 @@
 | `npm run build`에서 `Cannot find module 'jsr:@supabase/supabase-js@2'`(Deno Edge Function 파일에서) | Next.js `tsconfig.json`이 `supabase/functions/**`도 타입체크 대상에 포함시킴 | [#30](#30-npm-run-build가-supabasefunctions의-deno-edge-function을-타입체크하려다-실패한다) |
 | `ERROR: extension "pg_cron" is not available` (로컬 DB 검증 스위트 bootstrap) | 일반 로컬 PostgreSQL(Homebrew)에는 Supabase 전용 확장 `pg_cron`·`pg_net`이 없음 | [#31](#31-로컬-db-검증-스위트가-pg_cron-확장-없음으로-멈춘다) |
 | Backtest 를 돌리면 항상 `status='FAILED'`, message `FILTER specified, but sqrt is not an aggregate function` | `FILTER` 절이 집계(`avg`)가 아니라 그것을 감싼 `sqrt()` 에 붙어 있음 | [#32](#32-backtest-가-항상-실패한다-filter-specified-but-sqrt-is-not-an-aggregate-function) |
+| `invalid input syntax for type numeric: "1,000"` (`analytics.v_available_stock` 조회 시) | `raw.purchase_order`/`raw.goods_receipt` 텍스트 열을 콤마 허용 없이 곧바로 `::numeric` 캐스트 | [#33](#33-invalid-input-syntax-for-type-numeric-1000-콤마-섞인-텍스트-캐스트) |
 
 ## #32 Backtest 가 항상 실패한다 (`FILTER specified, but sqrt is not an aggregate function`)
 
@@ -939,3 +940,38 @@ available`일 때만 그 파일을 건너뛰고 계속 진행하도록 했습니
 이 패턴(로그 문구로 좁혀 건너뛰기)을 반복하거나, 더 근본적으로는 pg_cron 의존 마이그레이션을
 `do $$ ... exception when others then raise notice ... $$`로 감싸 확장이 없는 환경에서도
 파일 자체가 통과하도록 만드는 방법이 있습니다(이번 작업 범위 밖이라 적용하지 않았습니다).
+
+## #33 `invalid input syntax for type numeric: "1,000"` (콤마 섞인 텍스트 캐스트)
+
+**증상.** STOCK_VIEW_ALL 등 재고 상세 권한을 가진 사용자가 `analytics.v_available_stock`을
+전체 열로 조회하면(즉 `/inventory` 화면을 열면) 다음 오류로 화면 전체가 막혔습니다.
+
+```text
+22P02: invalid input syntax for type numeric: "1,000"
+```
+
+**원인.** `raw.purchase_order`에 출처 없는(batch_id·source_type 모두 null) 5회차 더미 한 줄이
+`"발주수량"`에 천단위 콤마가 섞인 텍스트 `'1,000'`을 갖고 있었습니다. `core.v_open_po_qty`가
+`raw.purchase_order."발주수량"`·`raw.goods_receipt."입고수량"`을 곧바로
+`nullif(..., '')::numeric`으로 캐스트했는데, PostgreSQL의 numeric 입력 파서는 콤마를 허용하지
+않습니다. 이 한 줄이 뷰 전체 집계(`group by`)를 실패시켰고, `analytics.v_available_stock`이
+그 뷰를 매 조회마다 참조하므로 화면 전체가 막혔습니다. 92행 중 이 한 줄만 문제였는데도, 집계
+쿼리는 한 줄이라도 캐스트가 실패하면 결과 전체가 아니라 쿼리 자체가 실패합니다.
+
+**해결.** `supabase/migrations/20260912000800_fix_open_po_qty_cast.sql`이 `core.parse_lenient_numeric(text)`
+공용 파서를 추가했습니다 — 앞뒤 공백·천단위 콤마를 뗀 뒤에도 숫자가 아니면 예외 대신 null을
+돌려줍니다(콤마는 정상 복원 가능한 값이라 `'1,000'` → `1000`으로 계산에 들어가며, 값을 잃지
+않습니다). `core.v_open_po_qty` · `core.apply_stock_receipts_from_batch`가 이 파서를 쓰도록
+다시 정의됐고, 그래도(콤마를 떼도) 정말 숫자가 아닌 값이 하나라도 있는 품목은 부분합을 보여주지
+않고 `open_po_qty` 전체를 null + `reason_code='OPEN_PO_QTY_UNPARSEABLE'`로 냅니다(일부 줄만
+조용히 빼고 계산한 부분합은 "정확해 보이는 틀린 숫자"가 되기 때문입니다). `analytics.v_available_stock`
+끝에 `open_po_reason_code` 열을 추가해 이 사유를 화면까지 전달합니다(기존 `reason_code`는 정상
+창고재고 분류 사유라 서로 다른 열로 분리했습니다).
+
+**예방.** `raw.*` 텍스트 열을 `::numeric`으로 캐스트하는 새 뷰·함수를 추가할 때는 항상
+`core.parse_lenient_numeric`을 거칩니다 — 직접 캐스트하지 않습니다. ERP 원천 데이터는 사람이
+엑셀에서 손으로 채우거나 붙여넣은 값이 섞여 있어 천단위 콤마·앞뒤 공백이 드물지 않게 나타납니다.
+특히 배치 필터가 없는 "전체 raw를 그룹핑하는" 뷰(`core.v_open_po_qty`처럼)는 오래된 출처 없는
+더미 행 단 한 줄만으로도 전체 화면을 막을 수 있다는 점을 기억합니다 — batch_id가 있는 최근
+데이터만 검증하는 경로(`lib/import/validate.ts`)를 통과했다고 해서 과거에 쌓인 raw 전체가
+깨끗하다는 뜻은 아닙니다.

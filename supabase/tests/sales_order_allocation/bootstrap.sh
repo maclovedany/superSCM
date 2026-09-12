@@ -1,7 +1,7 @@
 #!/bin/bash
 # 로컬 PostgreSQL에 검증 DB를 만든다 — error.md #14 · #15 · #21 절차
 #   클러스터 역할 확인 → createdb → auth 스텁 → schema-dump → STEP 4 · 7 정책 선삭제 → 전체 마이그레이션
-#   → 0600 한 번 더 적용(재실행 안전성)
+#   (0600 · 0610은 각자 자기 순서 자리에서 한 번 더 적용 — 재실행 안전성, error.md #24)
 # 사용: bootstrap.sh <scm_test_* DB 이름> <로그 디렉터리>   (보통 run-all.sh가 부른다)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -53,23 +53,37 @@ begin
 end $$;
 SQL
 
+# Task 14(20260912000100)는 pg_cron·pg_net 확장을 요구하는데, 이 두 확장은 Supabase 전용이라
+# 일반 로컬 PostgreSQL(Homebrew postgresql@17)에는 설치돼 있지 않다(error.md #31). 이 스위트는
+# pg_cron과 무관하므로, "정확히 그 파일이 그 이유로만" 실패하면 건너뛰고 계속 진행한다 — 다른
+# 파일이 같은 오류 문구를 우연히 내거나, 그 파일이 다른 이유로 실패하면 지금까지와 같이 즉시 멈춘다
+# (user_admin/bootstrap.sh의 fix round 1 · M1과 같은 패턴).
+PG_CRON_MIGRATION_NAME="20260912000100_stage1_pg_cron_jobs.sql"
+# ★ TARGET_MIGRATION · TARGET_MIGRATION_2는 전체 적용 뒤 따로 다시 돌리지 않고, 아래에서
+#   자기 순서 자리에 도달한 바로 그 시점에 한 번 더 적용한다(재실행 안전성 확인). 전체 적용이
+#   끝난 뒤에 돌리면, 뒤 마이그레이션(20260912000800)이 analytics.v_available_stock 끝에
+#   덧붙인 open_po_reason_code 열을 TARGET_MIGRATION의 좁은 뷰 정의가 지우려다
+#   "cannot drop columns from view"로 실패한다(error.md #24 — item_policy 스위트와 같은 문제).
 for migration in "$REPO"/supabase/migrations/*.sql; do
   name=$(basename "$migration")
   if ! "${PSQL[@]}" -d "$DB" -f "$migration" > "$LOG_DIR/migration-$name.log" 2>&1; then
+    if [ "$name" = "$PG_CRON_MIGRATION_NAME" ] && grep -qE 'extension "pg_(cron|net)" is not available' "$LOG_DIR/migration-$name.log"; then
+      echo "건너뜀(로컬에 pg_cron/pg_net 확장 없음, 이 스위트와 무관): $name" >&2
+      continue
+    fi
     echo "마이그레이션 실패: $name" >&2
     tail -5 "$LOG_DIR/migration-$name.log" >&2
     exit 1
   fi
+  if [ "$migration" = "$TARGET_MIGRATION" ] && ! "${PSQL[@]}" -d "$DB" -f "$TARGET_MIGRATION" > "$LOG_DIR/migration-rerun.log" 2>&1; then
+    echo "재적용 실패: $(basename "$TARGET_MIGRATION")" >&2
+    tail -5 "$LOG_DIR/migration-rerun.log" >&2
+    exit 1
+  fi
+  if [ "$migration" = "$TARGET_MIGRATION_2" ] && ! "${PSQL[@]}" -d "$DB" -f "$TARGET_MIGRATION_2" > "$LOG_DIR/migration-rerun-2.log" 2>&1; then
+    echo "재적용 실패: $(basename "$TARGET_MIGRATION_2")" >&2
+    tail -5 "$LOG_DIR/migration-rerun-2.log" >&2
+    exit 1
+  fi
 done
-
-if ! "${PSQL[@]}" -d "$DB" -f "$TARGET_MIGRATION" > "$LOG_DIR/migration-rerun.log" 2>&1; then
-  echo "재적용 실패: $(basename "$TARGET_MIGRATION")" >&2
-  tail -5 "$LOG_DIR/migration-rerun.log" >&2
-  exit 1
-fi
-if ! "${PSQL[@]}" -d "$DB" -f "$TARGET_MIGRATION_2" > "$LOG_DIR/migration-rerun-2.log" 2>&1; then
-  echo "재적용 실패: $(basename "$TARGET_MIGRATION_2")" >&2
-  tail -5 "$LOG_DIR/migration-rerun-2.log" >&2
-  exit 1
-fi
-echo "bootstrap 완료: $DB (마이그레이션 전체 적용 + $(basename "$TARGET_MIGRATION") · $(basename "$TARGET_MIGRATION_2") 재적용)"
+echo "bootstrap 완료: $DB (마이그레이션 전체 적용, $(basename "$TARGET_MIGRATION") · $(basename "$TARGET_MIGRATION_2")는 자기 순서에서 재적용)"

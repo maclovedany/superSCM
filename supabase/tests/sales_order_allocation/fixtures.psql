@@ -105,6 +105,15 @@ insert into auth.users (id, email) values
   ('00000000-0000-4000-8000-000000000061', 't5-admin@example.test')
 on conflict (id) do nothing;
 
+-- ★ 이 스위트와 무관한 선행 드리프트 — 20260912000300(관리자 계정 관리)이 core.app_user.job_role에
+--   실제 직책 목록만 허용하는 체크 제약을 새로 걸어서, 이 fixture가 오래전부터 써 온 테스트 전용
+--   가상 직책 T5_DUAL(요청 권한 + 승인 권한을 함께 가진 겸직 계정 — 자기 승인 차단 검증용)을
+--   더 이상 넣을 수 없게 됐다. 운영 제약은 그대로 두고, 이 임시 DB(guard.psql로 scm_test_*만
+--   허용됨)에서만 T5_DUAL을 허용하도록 넓힌다.
+alter table core.app_user drop constraint if exists app_user_job_role_chk;
+alter table core.app_user add constraint app_user_job_role_chk
+  check (job_role is null or job_role in ('SALES_REP', 'SCM_PLANNER', 'SCM_LEAD', 'BIZ_DEV', 'MARKETING', 'SERVICE', 'T5_DUAL'));
+
 insert into core.app_user (user_id, email, name, department, role, active, job_role) values
   ('00000000-0000-4000-8000-000000000001', 't5-sales1@example.test', '영업1', 'SALES', 'USER', true, 'SALES_REP'),
   ('00000000-0000-4000-8000-000000000002', 't5-sales2@example.test', '영업2', 'SALES', 'USER', true, 'SALES_REP'),

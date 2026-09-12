@@ -44,9 +44,30 @@ test('analytics.v_available_stock 행을 화면 모델로 옮긴다 — 정상 �
     approvalHoldQty: 0,
     availableQty: 15,
     openPoQty: 5,
+    openPoReasonCode: null,
     inTransitQty: 8,
     reasonCode: null,
   });
+});
+
+test('보정(2026-09-12) — Open PO 참고 열이 파싱 불가(콤마 발주수량 등)로 null이면 사유 코드를 유지한다', () => {
+  // core.v_open_po_qty는 정상 창고재고 분류(reason_code)와 별개로 open_po_reason_code를 낸다 —
+  // 두 사유는 서로 다른 문제(재고 상태 미상 vs 발주수량 텍스트 파싱 불가)이므로 섞이면 안 된다.
+  const row = normalizeAvailableStockRow({
+    item_id: 'ITEM007',
+    item_name: '콤마 발주수량 품목',
+    normal_warehouse_qty: 20,
+    available_qty: 20,
+    open_po_qty: null,
+    open_po_reason_code: 'OPEN_PO_QTY_UNPARSEABLE',
+    reason_code: null,
+  });
+
+  assert.equal(row.openPoQty, null);
+  assert.equal(row.openPoReasonCode, 'OPEN_PO_QTY_UNPARSEABLE');
+  // 재고 자체는 정상 분류돼 있으므로 reasonCode(정상 창고재고 사유)는 null이어야 한다.
+  assert.equal(row.reasonCode, null);
+  assert.equal(row.normalWarehouseQty, 20);
 });
 
 test('분류할 수 없는 행은 0이 아니라 null과 사유 코드를 유지한다', () => {

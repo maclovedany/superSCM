@@ -49,7 +49,7 @@ invariants:  PASS 8 · FAIL/ERROR 0
 | `guard.psql` | 모든 `.psql`이 먼저 포함하는 대상 DB 확인 |
 | `auth-stub.psql` | 최소 `auth.users` · `auth.uid()` 스텁(JWT claim 대역) |
 | `fixtures.psql` | 검증용 사용자 7명(직책별) · 품목 · 정상 창고재고, 검증 헬퍼 스키마 `order_test` |
-| `scenarios.psql` | S2 PARTIAL/WAIT_FULL · S3 만료 불변 · S4 확정/확정배정 취소/재등록 · S5 수동배정/승인 · S6 우선순위 · S7 권한/직접 쓰기 차단 · S8 주문 취소 · S9 만료 시각 이후 차단 · S10 만료 뒤 FIRM · 확보만 남은 주문의 수주 확정 · **S11(Task 6) 30일 자동 만료 경계 · 재실행 · FIRM 유지 · 배정 0건 WAITING_FULL 만료** · **S12(Task 6) 입고 후 AUTO 자동 배정 대기 순번 · CONFIRMED FIRM · WAIT_FULL 스킵 · 만료 주문 건너뜀** · **S13(Task 6) MANUAL 품목 자동 배정 0건 · 처리 필요 알림 · 대기 순번 조회** |
+| `scenarios.psql` | S2 PARTIAL/WAIT_FULL · S3 만료 불변 · S4 확정/확정배정 취소/재등록 · S5 수동배정/승인 · S6 우선순위 · S7 권한/직접 쓰기 차단 · S8 주문 취소 · S9 만료 시각 이후 차단 · S10 만료 뒤 FIRM · 확보만 남은 주문의 수주 확정 · **S11(Task 6) 30일 자동 만료 경계 · 재실행 · FIRM 유지 · 배정 0건 WAITING_FULL 만료** · **S12(Task 6) 입고 후 AUTO 자동 배정 대기 순번 · CONFIRMED FIRM · WAIT_FULL 스킵 · 만료 주문 건너뜀** · **S13(Task 6) MANUAL 품목 자동 배정 0건 · 처리 필요 알림 · 대기 순번 조회** · S14 다품목 문서번호 upsert 적재 · **S15(보정 2026-09-12) Open PO 발주수량 콤마·공란·정크 텍스트가 있어도 core.v_open_po_qty · analytics.v_available_stock 조회가 예외 없이 끝나고, 파싱 불가 값이 부분합이 아니라 null + reason_code로 남는다** |
 | `concurrency.sh` | 별도 psql 연결 C1(60+60) · C2(잠금 게이트 뒤 10건 동시) · C3(다른 품목 비차단) · C4(게이트 없는 10건) · **C5(Task 6) 만료 작업 · 입고 커밋 · 검토 요청 동시 실행** · **C6(Task 6) lock_timeout으로 한 주문 실패를 강제해 다른 주문 처리가 막히지 않는지 확인** |
 | `invariants.psql` | 초과 배정 0 · 줄 합계 = 배정 원장 · 이력 누락 0 · 만료 = 최초 검토 요청 + 30일 |
 

@@ -56,7 +56,8 @@ const columns: Column<AvailableStockRow>[] = [
     key: 'openPoQty',
     label: 'Open PO (참고)',
     align: 'right',
-    render: (row) => (row.openPoQty === null ? <span className="muted">—</span> : formatNumber(row.openPoQty, ' EA')),
+    render: (row) =>
+      row.openPoQty === null ? <EmptyValue reasonCode={row.openPoReasonCode ?? 'CALCULATION_UNAVAILABLE'} /> : formatNumber(row.openPoQty, ' EA'),
   },
   {
     key: 'inTransitQty',

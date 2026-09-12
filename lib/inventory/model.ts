@@ -26,6 +26,10 @@ export type AvailableStockRow = {
   availableQty: number | null;
   /** 참고 열. available_qty 에 더하지 않습니다 */
   openPoQty: number | null;
+  /** openPoQty가 null인 이유. 정상 창고재고 분류 사유(reasonCode)와는 별개입니다 —
+   *  예: 발주수량·입고수량 원본 텍스트가 숫자로 파싱되지 않는 행이 있으면
+   *  'OPEN_PO_QTY_UNPARSEABLE' (2026-09-12 보정) */
+  openPoReasonCode: string | null;
   /** 참고 열. available_qty 에 더하지 않습니다 */
   inTransitQty: number | null;
   reasonCode: string | null;
@@ -89,6 +93,7 @@ export function normalizeAvailableStockRow(row: Record<string, unknown>): Availa
     approvalHoldQty: numberValue(row, ['approval_hold_qty', '승인대기확보수량']) ?? 0,
     availableQty: numberValue(row, ['available_qty', '가용재고']),
     openPoQty: numberValue(row, ['open_po_qty', 'openpo수량']),
+    openPoReasonCode: text(row, ['open_po_reason_code']),
     inTransitQty: numberValue(row, ['in_transit_qty', '이동중수량']),
     reasonCode: text(row, ['reason_code', '사유코드']),
   };
