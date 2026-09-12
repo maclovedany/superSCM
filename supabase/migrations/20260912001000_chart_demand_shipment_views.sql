@@ -18,28 +18,35 @@
 --     반환). ③(품목×월, 103,784행)은 반드시 item_code 필터와 함께만 조회한다 — 주석 · 저장소 함수
 --     양쪽에 명시한다.
 --
--- 권한 — fix round 1(팀장 판정, 리뷰 §3-b) — 셋 다 게이트를 걸지 않는다. 최초 판(20260912001000
--- 원안)은 STOCK_VIEW_ALL로 셋 다 열었는데, 팀장이 배포 DB에서 직접 잰 선례가 그 판단을 뒤집었다:
--- analytics.v_forecast_result · v_champion_model · v_model_comparison_detail · v_ol_accuracy ·
--- v_shipment_trend · v_item_demand_profile · v_sku_demand_profile · v_usage_profile — 이 분석
--- 도메인의 기존 뷰는 전부 권한 게이트가 없다(authenticated 전체에 열려 있다). 오늘
--- SALES_REP·MARKETING·SERVICE·BIZ_DEV가 실제로 v_shipment_trend·v_forecast_result·
--- v_champion_model을 화면에서 본다. 이 세 뷰만 STOCK_VIEW_ALL(SCM_PLANNER·SCM_LEAD 단 둘)로
--- 좁히면 "오늘 보고 있는 사람에게서 접근을 빼앗는 회귀"가 된다 — 재고 상세(원가)를 가리려고 만든
--- 권한을 분석 도메인에 그대로 확장하는 것은 취지가 다르다. 그래서 이 세 뷰는 기존 이웃과 같은
--- 자세(게이트 없음)로 맞춘다 — security_invoker와 permission 게이트를 모두 뺀다. 새 전용 권한
--- 코드(SHIPMENT_VIEW·FORECAST_VIEW)를 신설하는 것은 core.permission·core.role_permission·
--- 관리자 권한 화면까지 번지는 별도 과제로 남긴다(이번 범위 밖).
+-- 권한 — fix round 1(팀장 판정, 리뷰 §3-b) — 셋 다 permission 게이트(core.has_permission 호출)를
+-- 걸지 않는다. 최초 판(20260912001000 원안)은 STOCK_VIEW_ALL로 셋 다 열었는데, 팀장이 배포 DB
+-- 에서 직접 잰 선례가 그 판단을 뒤집었다: analytics.v_forecast_result · v_champion_model ·
+-- v_model_comparison_detail · v_ol_accuracy · v_shipment_trend · v_item_demand_profile ·
+-- v_sku_demand_profile · v_usage_profile — 이 분석 도메인의 기존 뷰는 전부 permission 게이트가
+-- 없다(authenticated 전체에 열려 있다). 오늘 SALES_REP·MARKETING·SERVICE·BIZ_DEV가 실제로
+-- v_shipment_trend·v_forecast_result·v_champion_model을 화면에서 본다. 이 세 뷰만
+-- STOCK_VIEW_ALL(SCM_PLANNER·SCM_LEAD 단 둘)로 좁히면 "오늘 보고 있는 사람에게서 접근을
+-- 빼앗는 회귀"가 된다 — 재고 상세(원가)를 가리려고 만든 권한을 분석 도메인에 그대로 확장하는
+-- 것은 취지가 다르다. 새 전용 권한 코드(SHIPMENT_VIEW·FORECAST_VIEW)를 신설하는 것은
+-- core.permission·core.role_permission·관리자 권한 화면까지 번지는 별도 과제로 남긴다(이번
+-- 범위 밖).
+--
+-- ★★ fix round 1 정정(팀장 재판정) — permission 게이트와 security_invoker는 서로 다른 것이다.
+-- 게이트(where core.has_permission(...))는 "누가 이 뷰를 볼 수 있는가"이고, security_invoker는
+-- "뷰가 누구의 권한으로 기반 테이블을 읽는가"(RLS 적용 주체)다. **셋 다 security_invoker = true는
+-- 그대로 유지한다** — 처음에 게이트와 함께 뺐던 것은 잘못된 판단이었다. 이 저장소에는
+-- security_invoker = true이면서 has_permission 호출이 0건인 마이그레이션이 이미 4개 있다
+-- (20260911000300 · 20260911000950 · 20260912000600 · 20260912000700) — "게이트 없음 +
+-- invoker=true"는 어중간한 상태가 아니라 이 저장소의 정상 패턴이다. security_invoker를 빼면
+-- core.forecast_result의 is_active_user() RLS까지 함께 우회되어, **비활성 계정도 예측 데이터를
+-- 읽게 되는** 별개의 회귀가 생긴다 — 게이트를 빼는 것과는 완전히 다른 문제다.
 --
 -- ★ 게이트를 뺀다고 core를 노출하는 것은 아니다 — 화면은 여전히 analytics만 읽는다. core 뷰
--- (core.v_demand_actual_monthly · core.v_shipment_by_hoc)는 내부 계산 전용이고 이 analytics
--- 뷰들이 정의 시점에 그 위를 정적으로 참조할 뿐, authenticated에게 core 스키마 객체를 직접
--- 조회하게 열어 준 것이 아니다(기존 v_forecast_result·v_shipment_trend와 동일한 배선).
--- security_invoker를 빼는 것도 기존 이웃과 같은 모양을 만들기 위해서다 — 권한 게이트가 없는
--- 상태에서 security_invoker=true만 남기면 "누구나 통과하는 permission 체크 + 호출자 RLS"라는
--- 어중간한 상태가 되어, 기존 무게이트 뷰들과 다르게 core.forecast_result의 is_active_user()
--- RLS만 우연히 남는 비일관 조합이 된다 — 기존 이웃처럼 definer 방식(기본값)으로 완전히
--- 맞춘다.
+-- (core.v_demand_actual_monthly · core.v_shipment_by_hoc)는 내부 계산 전용이고, 그 뷰들
+-- 자신은 security_invoker가 없다(정의 그대로 owner 권한으로 raw를 읽는 우회 계층) — 이 analytics
+-- 뷰들이 security_invoker = true로 그 core 뷰를 호출자 권한으로 "향해" 읽어도, core 뷰 내부의
+-- raw 접근은 core 뷰 자신의(비-invoker) 설정을 그대로 따른다. authenticated에게 core 스키마
+-- 객체를 직접 조회하게 열어 준 것도 아니다(analytics 권한만 authenticated에 grant했다).
 --
 -- ── raw RLS 우회 계층 — core.v_demand_actual_monthly ───────────────────────
 --
@@ -94,7 +101,9 @@ revoke all on core.v_demand_actual_monthly from anon;
 --                          같은 원칙). predicted_qty는 있는데 p80·p90 중 하나라도 없으면
 --                          BAND_UNAVAILABLE — ★ 이 경우 절대 null을 다른 값으로 채우지 않는다.
 --                          실측 450행 중 180행이 이 경로다.
-create or replace view analytics.v_demand_series as
+create or replace view analytics.v_demand_series
+with (security_invoker = true)
+as
 with actual as (
   select item_id, period, actual_qty
   from core.v_demand_actual_monthly
@@ -169,10 +178,12 @@ comment on view analytics.v_demand_series is
   '수요 실적(raw.usage_history, 출처 확인분만) vs 예측(Champion 모델, analytics.v_champion_model
   기준) 월별 시계열. 실적 달과 예측 기간의 합집합이라 한쪽만 있는 달도 행이 남는다(화면은 이를
   이어 그리지 않고 끊는다). p80·p90 결손은 절대 다른 값으로 채우지 않고 band_reason_code로만
-  드러난다. fix round 1(팀장 판정) — 권한 게이트 없음. analytics.v_forecast_result·
-  v_champion_model과 같은 자세(오늘 이 데이터를 보는 화면들과 조회 범위를 맞춘다). definer
-  방식(security_invoker 없음) — core.forecast_result의 is_active_user() RLS를 우회해 기존
-  이웃과 동일하게 authenticated 전체에 연다';
+  드러난다. fix round 1(팀장 판정) — permission 게이트(has_permission) 없음.
+  analytics.v_forecast_result·v_champion_model과 같은 자세(오늘 이 데이터를 보는 화면들과 조회
+  범위를 맞춘다). security_invoker = true는 유지 — core.forecast_result의 is_active_user()
+  RLS가 호출자 기준으로 그대로 적용된다(비활성 계정은 예측 데이터를 못 읽는다). 게이트 없음 +
+  invoker=true 조합은 20260911000300·20260911000950·20260912000600·20260912000700과 같은
+  이 저장소의 정상 패턴';
 
 grant select on analytics.v_demand_series to authenticated;
 revoke all on analytics.v_demand_series from anon;
@@ -204,7 +215,9 @@ revoke all on analytics.v_demand_series from anon;
 -- 관측치 부족(INSUFFICIENT_TRAILING_HISTORY)과 기준선 0(TRAILING_AVG_ZERO)은 서로 다른 사실이라
 -- 우선순위를 두지 않고 배타적으로만 낸다(관측치가 3개월 미만이면 평균값 자체를 신뢰할 수 없어
 -- 그 사유가 우선이고, 3개월 이상인데 평균이 0이면 그때만 TRAILING_AVG_ZERO다).
-create or replace view analytics.v_shipment_monthly_rollup as
+create or replace view analytics.v_shipment_monthly_rollup
+with (security_invoker = true)
+as
 with total_level as (
   select 'TOTAL'::text as level, null::text as item_type, ym, sum(qty) as qty
   from core.v_shipment_by_hoc
@@ -258,14 +271,18 @@ comment on view analytics.v_shipment_monthly_rollup is
   달 배수로, 특정 달을 하드코딩해 표시하지 않고도 2026-07 같은 이상치를 화면이 계산으로 드러낼
   수 있게 한다. 관측치가 3개월 미만이면 INSUFFICIENT_TRAILING_HISTORY, 관측치는 충분한데 평균이
   정확히 0이면 TRAILING_AVG_ZERO(둘 다 재현 가능한 null에는 반드시 사유 코드가 딸려 있다). fix
-  round 1(팀장 판정) — 권한 게이트 없음, security_invoker 없음. 기존 v_shipment_trend와 같은
-  자세로 authenticated 전체에 연다(§3-b, 오늘 이미 이 데이터를 보는 화면들과 조회 범위를 맞춘다)';
+  round 1(팀장 판정) — permission 게이트 없음. 기존 v_shipment_trend와 같은 자세로
+  authenticated 전체에 연다(§3-b, 오늘 이미 이 데이터를 보는 화면들과 조회 범위를 맞춘다).
+  security_invoker = true는 유지(팀장 재판정) — 게이트 유무와 무관하게 이 저장소의 신규
+  analytics 뷰 표준이다';
 
 grant select on analytics.v_shipment_monthly_rollup to authenticated;
 revoke all on analytics.v_shipment_monthly_rollup from anon;
 
 
-create or replace view analytics.v_shipment_monthly_item as
+create or replace view analytics.v_shipment_monthly_item
+with (security_invoker = true)
+as
 select
   h.hoc_item  as item_code,
   h.item_type,
@@ -278,8 +295,9 @@ comment on view analytics.v_shipment_monthly_item is
   '출고 품목×월 — 대표코드(HOC) 기준. 실측 규모가 10만 행대라 PostgREST 1000행 상한(실측:
   v_shipment_trend가 10,228행 중 1000행만 반환)에 곧바로 걸린다 — ★ 반드시 item_code(hoc_item)
   eq 필터와 함께만 조회한다. 필터 없는 조회는 화면·저장소 양쪽에서 금지한다(lib 저장소 함수는
-  itemCode를 선택 인자가 아니라 필수 인자로 받는다). fix round 1(팀장 판정) — 권한 게이트 없음,
-  security_invoker 없음. 기존 v_shipment_trend와 같은 자세로 authenticated 전체에 연다(§3-b)';
+  itemCode를 선택 인자가 아니라 필수 인자로 받는다). fix round 1(팀장 판정) — permission 게이트
+  없음. 기존 v_shipment_trend와 같은 자세로 authenticated 전체에 연다(§3-b). security_invoker
+  = true는 유지(팀장 재판정)';
 
 grant select on analytics.v_shipment_monthly_item to authenticated;
 revoke all on analytics.v_shipment_monthly_item from anon;
