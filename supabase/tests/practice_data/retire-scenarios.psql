@@ -1,0 +1,125 @@
+-- 5회차 더미 사용 이력 정리·복구(fix round 2) 검증 시나리오. retire-fixtures.psql 적용 뒤 실행.
+--
+-- 증명하려는 것
+--   S20 정리  출처 없는 행만 보관소로 옮겨지고, 출처 있는 행은 한 줄도 건드려지지 않으며,
+--             그 결과 학습 기간이 **실제 달력 월**에 놓인다
+--   S21 복구  실습 묶음을 제거하면 원래 행 수 · 기간 그대로 돌아온다
+
+\set ON_ERROR_STOP 1
+\ir guard.psql
+\pset tuples_only on
+\pset format unaligned
+
+\set admin1 '00000000-0000-4000-8000-000000000501'
+\set marketing1 '00000000-0000-4000-8000-000000000504'
+
+
+\echo '== S20 정리 — 출처 없는 행만 옮긴다 =='
+
+-- 권한 · 실수 방지부터.
+select practice_test.as_user(:'marketing1') \g /dev/null
+select practice_test.expect_error(
+  $f$select core.retire_unverified_usage_history('TEST-RETIRE', true)$f$,
+  '관리자 권한이 필요합니다', 'S20 비관리자는 정리할 수 없다');
+select practice_test.as_user(:'admin1') \g /dev/null
+select practice_test.expect_error(
+  $f$select core.retire_unverified_usage_history('TEST-RETIRE')$f$,
+  'p_confirm', 'S20 p_confirm 없이는 정리되지 않는다');
+select practice_test.check(
+  (select count(*) from raw.usage_history) = (select n from practice_test.baseline where name = 'retire_total'),
+  'S20 거절된 호출은 아무것도 옮기지 않았다');
+
+-- 실제 정리.
+insert into practice_test.remove_result (result)
+select core.retire_unverified_usage_history('TEST-RETIRE', p_confirm => true);
+
+select practice_test.check(
+  (select (result ->> 'retired_rows')::bigint = (select n from practice_test.baseline where name = 'retire_unverified')
+     from practice_test.remove_result order by ctid desc limit 1),
+  'S20 출처 없는 행 전부가 보관되었다');
+select practice_test.check(
+  (select (result ->> 'remaining_unverified_rows')::bigint = 0
+     from practice_test.remove_result order by ctid desc limit 1),
+  'S20 정리 후 출처 없는 행이 한 줄도 남지 않는다');
+
+-- ★ 출처 있는 행은 건드리지 않는다.
+select practice_test.check(
+  (select count(*) from raw.usage_history u
+    where exists (select 1 from core.upload_batch b
+                   where b.batch_id = u.batch_id and b.status = 'IMPORTED' and b.import_type = 'usage_history')
+      and u.source_type is not distinct from 'FILE_UPLOAD')
+  = (select n from practice_test.baseline where name = 'retire_verified'),
+  'S20 ★ 출처 있는 행은 한 줄도 건드려지지 않는다');
+select practice_test.check(
+  (select count(*) = 2 from raw.usage_history where usage_id in ('VERIFIED-1', 'VERIFIED-2')),
+  'S20 출처 있는 행이 그대로 남아 있다');
+
+-- 보관소에 원본이 그대로 들어갔는지(복구 가능성의 근거).
+select practice_test.check(
+  (select count(*) from core.retired_usage_history) = (select n from practice_test.baseline where name = 'retire_unverified'),
+  'S20 보관소 행 수가 정리한 행 수와 같다');
+select practice_test.check(
+  (select bool_and(row_data ? 'usage_id' and row_data ? 'use_date' and row_data ? 'qty')
+     from core.retired_usage_history),
+  'S20 원본 행 전체가 보관된다(복구할 수 있다)');
+select practice_test.check(
+  (select retired_rows = (select n from practice_test.baseline where name = 'retire_unverified')
+     from analytics.v_practice_retired_usage where label = 'TEST-RETIRE'),
+  'S20 보관 현황 뷰가 건수를 보고한다');
+
+-- ★ 정리의 목적 — 학습 기간이 실제 달력 월에 놓인다.
+--   04-usage-history.sql의 규칙: M1 = max(이번 달 − 11개월, 마지막 미검증 행의 다음 달).
+--   미검증 행이 없으므로 M1은 "이번 달 − 11개월"이 되고, 기준월(M13)은 **다음 달**이 된다.
+select practice_test.check(
+  (select max(u.use_date) is null from raw.usage_history u
+    where not (exists (select 1 from core.upload_batch b
+                        where b.batch_id = u.batch_id and b.status = 'IMPORTED' and b.import_type = 'usage_history')
+               and u.source_type is not distinct from 'FILE_UPLOAD')),
+  'S20 미검증 행이 없으므로 학습 기간을 뒤로 밀 이유가 사라진다');
+select practice_test.check(
+  (select greatest(
+            (date_trunc('month', (clock_timestamp() at time zone 'Asia/Seoul')) - interval '11 months')::date,
+            (date_trunc('month', coalesce(
+               (select max(u.use_date) from raw.usage_history u
+                 where not (exists (select 1 from core.upload_batch b
+                                     where b.batch_id = u.batch_id and b.status = 'IMPORTED'
+                                       and b.import_type = 'usage_history')
+                            and u.source_type is not distinct from 'FILE_UPLOAD')),
+               date '1900-01-01')) + interval '1 month')::date)
+          + interval '12 months'
+        = date_trunc('month', (clock_timestamp() at time zone 'Asia/Seoul')) + interval '1 month'),
+  'S20 ★ 기준월이 실제 달력의 다음 달이 된다');
+
+
+\echo '== S21 복구 — 실습 묶음을 제거하면 원래대로 돌아온다 =='
+select practice_test.as_user(:'admin1') \g /dev/null
+insert into practice_test.remove_result (result)
+select core.remove_practice_dataset('TEST-RETIRE', p_confirm => true);
+
+select practice_test.check(
+  (select (result -> 'removed' ->> 'raw.usage_history_restored')::bigint
+     = (select n from practice_test.baseline where name = 'retire_unverified')
+     from practice_test.remove_result order by ctid desc limit 1),
+  'S21 제거 절차가 보관된 행을 되돌렸다고 보고한다');
+select practice_test.check(
+  (select count(*) from raw.usage_history) = (select n from practice_test.baseline where name = 'retire_total'),
+  'S21 ★ 전체 행 수가 정리 전과 같다(중복도 누락도 없다)');
+select practice_test.check(
+  (select count(*) from raw.usage_history u
+    where not (exists (select 1 from core.upload_batch b
+                        where b.batch_id = u.batch_id and b.status = 'IMPORTED' and b.import_type = 'usage_history')
+               and u.source_type is not distinct from 'FILE_UPLOAD'))
+  = (select n from practice_test.baseline where name = 'retire_unverified'),
+  'S21 출처 없는 행이 정리 전 건수 그대로 돌아온다');
+select practice_test.check(
+  (select count(*) = 6 from raw.usage_history where usage_id like 'LEGACY-%'),
+  'S21 네 가지 모양의 미검증 행이 모두 돌아온다(존재하지 않는 배치를 가리키던 행 포함)');
+select practice_test.check(
+  (select min(use_date) = '2025-03-15' and max(use_date) = '2026-02-15' from raw.usage_history),
+  'S21 기간(min · max use_date)이 정리 전과 같다');
+select practice_test.check(
+  (select count(*) = 0 from core.retired_usage_history),
+  'S21 보관소가 비워진다');
+select practice_test.check(
+  (select not active from core.practice_dataset where label = 'TEST-RETIRE'),
+  'S21 묶음은 제거됨으로 표시된다');

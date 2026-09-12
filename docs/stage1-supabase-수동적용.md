@@ -439,6 +439,7 @@ Auth 사용자와 `core.app_user` 프로필을 함께 만들었고, 로그인까
 |---|---|---|---|
 | 24 | `20260912000400_stage1_practice_dataset.sql` | 실습 데이터 표식·등기부·제거 절차 | `select * from analytics.v_practice_data_status;` → 1행, `reason_code = 'NO_PRACTICE_DATA'` |
 | 25 | `20260912000500_fix_backtest_rmse_filter.sql` | ★ **STEP 7 보정** — Backtest 가 항상 실패하던 것을 고칩니다 | 아래 참고 |
+| 26 | `20260912000600_practice_retire_legacy_usage.sql` | 5회차 더미 사용 이력 정리·복구 + 제거 표식 보강 | `select * from analytics.v_practice_retired_usage;` → 오류 없이 실행(정리 전이면 0행) |
 
 > ⚠️ **순서 25 는 실습 데이터와 무관하게 반드시 적용해야 합니다.** `core.run_backtest` 가
 > `FILTER specified, but sqrt is not an aggregate function` 으로 **항상 실패**하고 있었습니다
@@ -463,11 +464,26 @@ Auth 사용자와 `core.app_user` 프로필을 함께 만들었고, 로그인까
 파일의 확인 쿼리는 `supabase/practice-data/README.md` 에 있습니다.
 
 ```
-00-open-dataset.sql → 01-master.sql → 02-items.sql → 03-item-policies.sql
-→ 04-usage-history.sql → 05-inventory.sql → 06-forecast.sql → 07-planning-cycle.sql
+00-open-dataset.sql → 00b-retire-legacy-usage.sql → 01-master.sql → 02-items.sql
+→ 03-item-policies.sql → 04-usage-history.sql → 05-inventory.sql → 06-forecast.sql
+→ 07-planning-cycle.sql
 → 08-verify.sql   ★ 여기서 확인하고 수업에 들어갑니다 (조회만 합니다)
 → 09-build-plan.sql   선택 · ⚠️ 실행하면 완전 제거가 불가능해집니다
 ```
+
+**`00b-retire-legacy-usage.sql` — 5회차 더미 사용 이력 정리(되돌릴 수 있습니다).**
+`raw.usage_history` 의 출처 없는 행 7,038건을 `core.retired_usage_history` 보관소로 옮깁니다.
+지우지 않으며, 실습 묶음을 제거하면 `core.remove_practice_dataset` 이 자동으로 되돌립니다.
+출처가 있는 행은 한 줄도 건드리지 않습니다. **실행 전에 백업을 받으세요.**
+
+이 정리를 하면 학습 기간이 실제 달력에 맞춰집니다 — **기준월 = 실행 시점의 다음 달**
+(학습 = 이번달−11개월 ~ 이번달−3개월, 검증 = 이번달−2개월 ~ 이번달). 이번 달로 잡지 않는 이유는
+제출 마감일(대상월 1일 − 2일)이 이미 지나 미제출 반복 알림이 즉시 쌓이기 때문입니다.
+`00b` 를 건너뛰면 기간이 더미 뒤로 밀리며, `04` 가 그 사실을 `notice` 로 알려 줍니다.
+
+**★ 라벨은 재사용할 수 없습니다.** 제거한 라벨(`PRACTICE-2026-09`)은 다시 열 수 없습니다.
+다음 기수 실습을 준비할 때는 `sed -i '' 's/PRACTICE-2026-09/<새 라벨>/g' supabase/practice-data/*.sql`
+로 한 번에 바꾸세요(자세한 내용은 `supabase/practice-data/README.md`).
 
 ⚠️ **`09-build-plan.sql`은 되돌릴 수 없습니다.** `core.procurement_plan`은 Task 9b 트리거가
 **DRAFT 를 포함한 모든 상태에서** DELETE 를 막습니다(승인본만이 아닙니다). 계획을 만들면

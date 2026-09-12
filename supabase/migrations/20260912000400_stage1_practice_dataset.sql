@@ -241,6 +241,10 @@ comment on function core.register_practice_object(text, text, text, text) is
 --   RETAINED_FOR_BLOCKED_ITEM 위 품목의 행이 남아 있어 적재 배치도 함께 남긴다.
 --   FK_IN_USE                그 밖에 다른 행이 참조하고 있다.
 
+-- ★ 주의 — 이 함수는 20260912000600에서 한 번 더 재정의된다(fix round 2: 남는 Backtest 등기 보존 ·
+--   정리한 5회차 더미 사용 이력 복구). 파일명 순서상 **그쪽이 최종본**이므로, 이 본문을 고치면
+--   20260912000600의 정의도 반드시 같이 고쳐야 한다. 그러지 않으면 여기 수정이 뒤 파일 정의에
+--   덮여 사라진다(core.commit_import_batch가 STEP 4 · 0500 · 1150 세 곳에 있는 것과 같은 관례).
 create or replace function core.remove_practice_dataset(p_label text, p_confirm boolean default false)
 returns jsonb
 language plpgsql security definer set search_path = core, public, pg_temp

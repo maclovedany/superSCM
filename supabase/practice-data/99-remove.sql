@@ -8,10 +8,18 @@
 --   그래야 살아남은 실습 발주계획이 화면에서 계속 "실습용"으로 표시됩니다 — 제거했다는 이유로
 --   실습 숫자가 실적처럼 보이면 안 됩니다.
 --
---   PLAN_IMMUTABLE_HISTORY    승인 기록은 설계상 불변입니다(Task 9b 트리거가 DELETE를 막습니다)
---   ACTED_ON_BY_USER          학생이 그 품목으로 주문·배정·긴급발주·수급회의·이벤트 수요를 만들었습니다
---   SCHEDULE_ACTUAL_RECORDED  실제 입고일이 입력된 발주 일정이 그 공급처를 참조합니다
---   FK_IN_USE                 그 밖에 다른 행이 참조하고 있습니다
+--   PLAN_IMMUTABLE_HISTORY     발주계획·라인·이력. Task 9b 트리거가 **DRAFT를 포함한 모든 상태**에서
+--                              DELETE를 막습니다(승인본만이 아닙니다). 그 계획이 참조하는 Forecast
+--                              실행 · Backtest · Champion도 함께 남습니다.
+--   PLAN_REFERENCES_ITEM       지울 수 없는 계획 라인이 그 품목을 참조합니다 — 품목·정책만 지우면
+--                              "없는 품목을 가리키는 계획 라인"이 남습니다.
+--   ACTED_ON_BY_USER           학생이 그 품목으로 주문·배정·긴급발주·수급회의·이벤트 수요를 만들었습니다
+--   SCHEDULE_ACTUAL_RECORDED   실제 입고일이 입력된 발주 일정이 그 공급처를 참조합니다
+--   RETAINED_FOR_BLOCKED_ITEM  위 품목의 행이 남아 있어 적재 배치도 함께 남깁니다(출처 보존)
+--   FK_IN_USE                  그 밖에 다른 행이 참조하고 있습니다
+--
+-- ★ 정리해 둔 5회차 더미 사용 이력(00b-retire-legacy-usage.sql)이 있으면 이 명령이 **자동으로
+--   되돌립니다.** 아래 3번에서 행 수가 정리 전과 같은지 확인하세요.
 
 \set ON_ERROR_STOP on
 
@@ -60,8 +68,11 @@ select
   (select count(*) from raw.item_master where batch_id is null)         as item_master_legacy,
   (select count(*) from raw.inventory where batch_id is null)           as inventory_legacy,
   (select count(*) from core.item_policy)                               as item_policy_total,
-  (select count(*) from core.supplier)                                  as supplier_total;
+  (select count(*) from core.supplier)                                  as supplier_total,
+  (select count(*) from core.retired_usage_history)                     as still_retired;
 -- ★ 기대: dim_item · *_legacy 는 1번과 **완전히 같아야** 합니다.
+--   정리해 둔 더미 사용 이력이 있었다면 usage_legacy가 정리 전 값으로 돌아오고
+--   still_retired = 0 이어야 합니다(보관소가 비워집니다).
 --   item_policy_total · supplier_total은 실습분만큼 줄어듭니다(실습 전 값으로 돌아갑니다).
 
 select label, active, removed_at,

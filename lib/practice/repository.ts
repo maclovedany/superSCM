@@ -11,9 +11,11 @@ import {
   normalizePracticeDataStatus,
   normalizePracticeDataset,
   normalizePracticeObject,
+  normalizePracticeRetiredUsage,
   type PracticeDataStatus,
   type PracticeDataset,
   type PracticeObject,
+  type PracticeRetiredUsage,
 } from './model';
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -99,6 +101,18 @@ export async function getPracticeItemIds(): Promise<Set<string>> {
     return new Set((data ?? []).map((row) => String((row as Record<string, unknown>).item_id)));
   } catch {
     return new Set();
+  }
+}
+
+/** 정리해 보관 중인 5회차 더미 사용 이력 — analytics.v_practice_retired_usage(없으면 0행) */
+export async function getPracticeRetiredUsage(): Promise<{ rows: PracticeRetiredUsage[]; error: string | null }> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase.schema('analytics').from('v_practice_retired_usage').select('*');
+    if (error) return { rows: [], error: error.message };
+    return { rows: (data ?? []).map((row) => normalizePracticeRetiredUsage(row as Record<string, unknown>)), error: null };
+  } catch (error) {
+    return { rows: [], error: errorMessage(error, '정리된 사용 이력 현황을 조회하지 못했습니다.') };
   }
 }
 

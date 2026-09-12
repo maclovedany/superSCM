@@ -11,7 +11,12 @@ import DataTable, { type Column } from '@/components/ui/data-table';
 import KpiCard from '@/components/ui/kpi-card';
 import { requireAdmin } from '@/lib/auth';
 import { practiceObjectKindLabel, type PracticeDataset, type PracticeObject } from '@/lib/practice/model';
-import { getPracticeDataStatus, getPracticeDatasets, getPracticeObjects } from '@/lib/practice/repository';
+import {
+  getPracticeDataStatus,
+  getPracticeDatasets,
+  getPracticeObjects,
+  getPracticeRetiredUsage,
+} from '@/lib/practice/repository';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,12 +41,13 @@ const objectColumns: Column<PracticeObject>[] = [
 
 export default async function PracticeDataPage() {
   await requireAdmin();
-  const [{ status, error: statusError }, datasets, objects] = await Promise.all([
+  const [{ status, error: statusError }, datasets, objects, retired] = await Promise.all([
     getPracticeDataStatus(),
     getPracticeDatasets(),
     getPracticeObjects(),
+    getPracticeRetiredUsage(),
   ]);
-  const error = statusError ?? datasets.error ?? objects.error;
+  const error = statusError ?? datasets.error ?? objects.error ?? retired.error;
 
   return (
     <section className="analysis-page">
@@ -80,6 +86,27 @@ export default async function PracticeDataPage() {
                 <li>월말 재고 성과 — {status.affectsMonthEndKpi ? '영향 있음' : '영향 없음'}</li>
               </ul>
             </Panel>
+
+            {retired.rows.length > 0 ? (
+              <Panel
+                title="정리해 보관 중인 5회차 더미 사용 이력"
+                description="지우지 않고 옮겨 둔 것입니다. 실습 묶음을 제거하면 raw.usage_history로 자동 복구됩니다."
+              >
+                <ul className="notice-list">
+                  {retired.rows.map((row) => (
+                    <li key={row.label}>
+                      <b>{row.retiredRows.toLocaleString('ko-KR')}행</b> 보관 중 · 기간{' '}
+                      {row.minUseDate ?? '—'} ~ {row.maxUseDate ?? '—'} · 묶음 {row.label}
+                      {row.retiredAt ? <span className="muted"> · {row.retiredAt}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+                <p className="muted">
+                  이 정리 덕분에 실습 학습 기간이 실제 달력 월에 놓입니다. 복구는 제거 명령이 함께 처리하므로
+                  별도 작업이 필요 없습니다(<code>supabase/practice-data/00b-retire-legacy-usage.sql</code>).
+                </p>
+              </Panel>
+            ) : null}
 
             <Panel title="실습 묶음">
               <DataTable columns={datasetColumns} rows={datasets.rows} rowKey={(row) => row.datasetId} empty="실습 묶음이 없습니다." />

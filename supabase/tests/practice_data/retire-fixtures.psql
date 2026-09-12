@@ -1,0 +1,81 @@
+-- 5회차 더미 사용 이력 정리·복구(fix round 2) 검증 fixture — 로컬 임시 DB(scm_test_*) 전용.
+--
+-- ★ 1부 · 2부와 **또 다른 임시 DB**에서 돈다(run-all.sh). 이 스위트는 raw.usage_history 전체를
+--   대상으로 정리·복구하므로, 다른 부가 남긴 사용 이력이 섞이면 건수 비교가 무의미해진다.
+--
+-- 두 종류의 행을 나란히 둔다.
+--   출처 없는 행(정리 대상)   batch_id가 없거나 · 배치가 IMPORTED usage_history가 아니거나 ·
+--                            source_type이 FILE_UPLOAD가 아닌 행. 5회차 더미와 같은 모양이다.
+--   출처 있는 행(건드리면 안 됨)  IMPORTED usage_history 배치 + FILE_UPLOAD
+--
+-- ★ "batch_id가 존재하지 않는 배치를 가리키는 행"도 일부러 넣는다. 보관과 삭제가 서로 다른 술어를
+--   쓰면 이 행이 보관만 되고 삭제되지 않아 복구 시 중복이 된다(정리 함수의 건수 비교가 막는다).
+
+\set ON_ERROR_STOP 1
+\ir guard.psql
+\ir helpers.psql
+
+do $$
+declare
+  v_admin uuid := '00000000-0000-4000-8000-000000000501';
+  v_label text := 'TEST-RETIRE';
+  v_good_batch uuid := '00000000-0000-4000-8000-0000000006b1';
+  v_stale_batch uuid := '00000000-0000-4000-8000-0000000006b2';
+begin
+  perform practice_test.as_user(v_admin);
+  perform core.open_practice_dataset(v_label, '더미 사용 이력 정리·복구 검증용', '{}'::jsonb);
+
+  -- 품목 마스터(사용 이력의 품목코드가 실재하도록)
+  insert into raw.item_master ("품목코드", "품목명", "품목구분") values
+    ('RET001', '정리 검증 품목 1', '소모품'),
+    ('RET002', '정리 검증 품목 2', '소모품')
+  on conflict do nothing;
+
+  -- ── 출처 있는 배치와 행 (정리 대상이 아니다) ─────────────────────
+  insert into core.upload_batch (batch_id, file_name, import_type, import_mode, total_rows, success_rows,
+                                 warning_rows, error_rows, status, uploaded_by, imported_at)
+  values (v_good_batch, 'verified-usage.csv', 'usage_history', 'append', 2, 2, 0, 0, 'IMPORTED', v_admin, now());
+
+  insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse, batch_id, source_type, source_record_id) values
+    ('VERIFIED-1', 'RET001', '2026-01-15', 100, 'MAIN', v_good_batch, 'FILE_UPLOAD', 'V1'),
+    ('VERIFIED-2', 'RET001', '2026-02-15', 110, 'MAIN', v_good_batch, 'FILE_UPLOAD', 'V2');
+
+  -- ── 출처 없는 행 네 가지 모양 (전부 정리 대상) ───────────────────
+  -- (1) batch_id 자체가 없음 — 5회차 더미와 같은 모양
+  insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse) values
+    ('LEGACY-1', 'RET001', '2025-03-15', 50, 'MAIN'),
+    ('LEGACY-2', 'RET002', '2025-04-15', 60, 'MAIN'),
+    ('LEGACY-3', 'RET002', '2025-05-15', 70, 'MAIN');
+
+  -- (2) 배치는 있지만 IMPORTED가 아님
+  insert into core.upload_batch (batch_id, file_name, import_type, import_mode, total_rows, success_rows,
+                                 warning_rows, error_rows, status, uploaded_by)
+  values (v_stale_batch, 'not-imported.csv', 'usage_history', 'append', 1, 1, 0, 0, 'VALIDATED', v_admin);
+  insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse, batch_id, source_type, source_record_id)
+  values ('LEGACY-4', 'RET001', '2025-06-15', 80, 'MAIN', v_stale_batch, 'FILE_UPLOAD', 'L4');
+
+  -- (3) 배치는 IMPORTED인데 source_type이 비어 있음 — 3값 논리 함정
+  insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse, batch_id, source_record_id)
+  values ('LEGACY-5', 'RET002', '2025-07-15', 90, 'MAIN', v_good_batch, 'L5');
+
+  -- (4) 존재하지 않는 배치를 가리키는 행 — 보관/삭제 술어가 어긋나면 복구 시 중복이 된다
+  insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse, batch_id, source_type, source_record_id)
+  values ('LEGACY-6', 'RET001', '2025-08-15', 95, 'MAIN', '00000000-0000-4000-8000-0000000006ff', 'FILE_UPLOAD', 'L6');
+end $$;
+
+-- 기준선 — 복구 후 이 값들이 그대로 돌아와야 한다.
+insert into practice_test.baseline (name, n) values
+  ('retire_unverified', (select count(*) from raw.usage_history u
+                          where not (exists (select 1 from core.upload_batch b
+                                              where b.batch_id = u.batch_id and b.status = 'IMPORTED'
+                                                and b.import_type = 'usage_history')
+                                     and u.source_type is not distinct from 'FILE_UPLOAD'))),
+  ('retire_verified',   (select count(*) from raw.usage_history u
+                          where exists (select 1 from core.upload_batch b
+                                         where b.batch_id = u.batch_id and b.status = 'IMPORTED'
+                                           and b.import_type = 'usage_history')
+                            and u.source_type is not distinct from 'FILE_UPLOAD')),
+  ('retire_total',      (select count(*) from raw.usage_history))
+on conflict (name) do update set n = excluded.n;
+
+select 'retire fixtures ok';

@@ -32,6 +32,7 @@ declare
   v_label text := 'PRACTICE-2026-09';
   v_batch uuid := gen_random_uuid();
   v_max_unverified date;
+  v_desired_m1 date;
   v_m1 date;
   v_train_start date;
   v_train_end date;
@@ -77,9 +78,17 @@ begin
       or b.import_type <> 'usage_history'
       or u.source_type is distinct from 'FILE_UPLOAD';
 
+  -- ★ fix round 2 — 기준월(M13)이 실제 달력의 **다음 달**에 놓이도록 M1을 잡습니다.
+  --   M13 = M1 + 12개월이므로 M1 = (이번 달 − 11개월)입니다.
+  --   왜 "다음 달"인가 — 이번 달로 잡으면 제출 마감일(대상월 1일 − 2일)이 이미 지나 버려서
+  --   수업을 시작하자마자 미제출 반복 알림이 쌓입니다. 다음 달이면 마감이 아직 남아 있어
+  --   제출 → 마감 → 알림 흐름을 그대로 시연할 수 있습니다.
+  -- ★ 다만 출처 없는 사용 이력이 남아 있으면 그 뒤로 밀립니다 — 원천 게이트를 우회하지 않기
+  --   위해서입니다. 00b-retire-legacy-usage.sql로 5회차 더미를 정리하면 밀리지 않습니다.
+  v_desired_m1 := (date_trunc('month', (clock_timestamp() at time zone 'Asia/Seoul')) - interval '11 months')::date;
   v_m1 := greatest(
-    (date_trunc('month', coalesce(v_max_unverified, date '2025-12-01')) + interval '1 month')::date,
-    date '2026-01-01'
+    v_desired_m1,
+    (date_trunc('month', coalesce(v_max_unverified, date '1900-01-01')) + interval '1 month')::date
   );
   v_train_start := v_m1;
   v_train_end   := (date_trunc('month', v_m1 + interval '8 months') + interval '1 month - 1 day')::date;
@@ -89,6 +98,10 @@ begin
   raise notice '미검증 사용 이력 마지막 날짜 = % → 실습 기간 학습 % ~ % · 검증 % ~ % · 기준월 %',
     coalesce(v_max_unverified::text, '(없음)'), v_train_start, v_train_end, v_test_start, v_test_end,
     to_char((date_trunc('month', v_m1 + interval '12 months'))::date, 'YYYY-MM');
+  if v_m1 > v_desired_m1 then
+    raise notice '★ 출처 없는 사용 이력(5회차 더미)이 남아 있어 기간이 % 까지 밀렸습니다 — 00b-retire-legacy-usage.sql로 정리하면 실제 달력 월에 놓입니다',
+      v_m1;
+  end if;
   if extract(year from v_test_end) > 2026 then
     raise notice '★ 실습 기간이 2026년을 벗어납니다 — % 년 공휴일을 /admin/master 에서 넣고 달을 준비됨으로 표시해야 발주 일정이 계산됩니다',
       extract(year from v_test_end);

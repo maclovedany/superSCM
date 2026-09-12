@@ -42,6 +42,21 @@ bash supabase/tests/practice_data/run-all.sh
 | **S18** | **★ 계획이 생긴 뒤의 제거** — `PLAN_IMMUTABLE_HISTORY`·`PLAN_REFERENCES_ITEM`·`SCHEDULE_ACTUAL_RECORDED`·`RETAINED_FOR_BLOCKED_ITEM`을 보고하고, 계획이 참조하는 품목의 마스터·정책·사용 이력이 **함께** 남아 고아 기록이 생기지 않는다 |
 | S19 | 달력 문자열 키(`KR:2027-01-01`·`KR:2027-01`)가 정확히 지워지고, 남은 등기가 없으면 현황 뷰가 다시 `NO_PRACTICE_DATA`가 된다 |
 
+### 3부 — 5회차 더미 사용 이력 정리·복구 (fix round 2)
+
+`retire-fixtures.psql` · `retire-scenarios.psql`. 세 번째 임시 DB(`<이름>_retire`)에서 돕니다 —
+이 부는 `raw.usage_history` 전체를 대상으로 정리·복구하므로 다른 부의 사용 이력이 섞이면 건수
+비교가 무의미해집니다.
+
+| # | 시나리오 |
+|---|---|
+| S20 | 비관리자·`p_confirm` 없는 호출은 거절되고 아무것도 옮기지 않는다. 출처 없는 행 네 가지 모양(배치 없음 · 배치가 IMPORTED 아님 · `source_type` null · **존재하지 않는 배치를 가리킴**)이 모두 보관되고, **출처 있는 행은 한 줄도 건드려지지 않는다.** 그 결과 기준월이 실제 달력의 다음 달이 된다 |
+| **S21** | **★ 복구** — 제거하면 전체 행 수·출처 없는 행 수·기간(min·max)이 정리 전과 **완전히 같고**, 보관소가 비워진다(중복도 누락도 없음) |
+
+`source_type`이 null인 행과 존재하지 않는 배치를 가리키는 행을 일부러 넣은 이유는, 보관과 삭제가
+서로 다른 술어를 쓰면 그 행들이 보관만 되고 삭제되지 않아 **복구 시 중복**이 되기 때문입니다.
+정리 함수는 보관 건수와 삭제 건수가 다르면 소리 내어 중단합니다.
+
 ## 설계상 이 스위트가 증명하지 못하는 것
 
 - **화면(Next.js)이 배너를 실제로 그리는지** — 그것은 `lib/practice/model.test.ts`의 순수 모델

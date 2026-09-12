@@ -76,6 +76,32 @@ export type PracticeObject = {
   registeredAt: string | null;
 };
 
+/**
+ * 정리해 보관 중인 5회차 더미 사용 이력 — analytics.v_practice_retired_usage.
+ *
+ * ★ 사용자가 만들지 않은 기존 데이터를 옮겨 둔 상태다. 관리자 화면이 "몇 행을 언제 옮겼고 언제
+ *   돌아오는지"를 분명히 보여 줘야 한다 — 보이지 않으면 사라진 것처럼 읽힌다.
+ */
+export type PracticeRetiredUsage = {
+  label: string;
+  active: boolean;
+  retiredRows: number;
+  minUseDate: string | null;
+  maxUseDate: string | null;
+  retiredAt: string | null;
+};
+
+export function normalizePracticeRetiredUsage(row: Record<string, unknown>): PracticeRetiredUsage {
+  return {
+    label: String(row.label ?? ''),
+    active: row.active === true,
+    retiredRows: toNumber(row.retired_rows),
+    minUseDate: toText(row.min_use_date),
+    maxUseDate: toText(row.max_use_date),
+    retiredAt: toText(row.retired_at),
+  };
+}
+
 function toNumber(value: unknown): number {
   // count(*)는 bigint라 PostgREST가 문자열로 돌려줄 수 있다.
   const parsed = typeof value === 'number' ? value : Number(value);

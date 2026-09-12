@@ -122,6 +122,31 @@ select practice_test.check(
      from practice_test.remove_result order by ctid desc limit 1),
   'S18 남은 품목의 적재 배치도 함께 남는다');
 
+-- ★ fix round 2 (N1) — 계획 때문에 Backtest · Champion · 모델 성능 행도 남는다. 행만 남고 등기가
+--   지워지면 그 행들이 화면에서 실습용으로 식별되지 않는다(표식이 벗겨진다).
+select practice_test.check(
+  (select result -> 'blocked' @> '[{"kind": "BACKTEST_RUN", "reason": "PLAN_IMMUTABLE_HISTORY"}]'::jsonb
+     from practice_test.remove_result order by ctid desc limit 1),
+  'S18 Backtest 실행도 PLAN_IMMUTABLE_HISTORY로 보고된다');
+select practice_test.check(
+  (select count(*) = 1 from core.backtest_run) and (select count(*) = 4 from core.champion_model_selection)
+  and (select count(*) > 0 from core.model_performance),
+  'S18 Backtest · Champion · 모델 성능 행이 남는다');
+select practice_test.check(
+  (select count(*) = 1 from analytics.v_practice_object where object_kind = 'BACKTEST_RUN'),
+  'S18 ★ 남은 Backtest의 등기도 남는다(표식이 벗겨지지 않는다)');
+select practice_test.check(
+  (select count(*) = 1 from analytics.v_practice_object where object_kind = 'FORECAST_RUN'),
+  'S18 남은 Forecast 실행의 등기도 남는다');
+select practice_test.check(
+  (select count(*) = 4 from core.item_policy_revision where item_id like 'PIPE00%')
+  and (select count(*) = 4 from analytics.v_practice_object where object_kind = 'ITEM_POLICY_REVISION'),
+  'S18 ★ 남은 품목 정책 변경안과 그 등기가 함께 남는다');
+select practice_test.check(
+  (select core.is_practice_forecast_run(o.object_key::uuid) from core.practice_object o
+    where o.object_kind = 'FORECAST_RUN' limit 1),
+  'S18 남은 Forecast 실행은 계속 실습으로 판정된다');
+
 -- ★ 고아 기록이 생기지 않았는지 — 계획 라인이 가리키는 품목의 마스터 · 정책이 실제로 살아 있어야 한다.
 select practice_test.check(
   (select count(*) = 4 from raw.item_master where "품목코드" like 'PIPE00%'),

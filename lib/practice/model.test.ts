@@ -7,6 +7,7 @@ import {
   normalizePracticeDataStatus,
   normalizePracticeDataset,
   normalizePracticeObject,
+  normalizePracticeRetiredUsage,
   practiceBannerMessage,
   practiceObjectKindLabel,
   showsPracticeBanner,
@@ -108,6 +109,24 @@ test('practiceObjectKindLabel — 등기 종류는 모두 한국어 라벨이 �
   }
   // 모르는 종류는 코드를 그대로 보여준다(빈 칸으로 만들지 않는다).
   assert.equal(practiceObjectKindLabel('SOMETHING_NEW'), 'SOMETHING_NEW');
+});
+
+test('normalizePracticeRetiredUsage — 보관 건수는 숫자로, 빈 기간은 null로', () => {
+  // 사용자가 만들지 않은 데이터를 옮겨 둔 상태다. 건수가 문자열로 남으면 화면에서 더하기가 깨진다.
+  const parsed = normalizePracticeRetiredUsage({
+    label: 'PRACTICE-2026-09', active: true, retired_rows: '7038',
+    min_use_date: '2025-01-02', max_use_date: '2026-08-31', retired_at: '2026-09-12T00:00:00Z',
+  });
+  assert.equal(parsed.retiredRows, 7038);
+  assert.equal(parsed.minUseDate, '2025-01-02');
+  assert.equal(parsed.active, true);
+
+  const empty = normalizePracticeRetiredUsage({
+    label: 'X', active: false, retired_rows: 0, min_use_date: null, max_use_date: null, retired_at: null,
+  });
+  assert.equal(empty.retiredRows, 0);
+  assert.equal(empty.minUseDate, null);
+  assert.equal(empty.retiredAt, null);
 });
 
 test('normalizePracticeDataset · normalizePracticeObject — 빈 문자열은 null로 떨어진다', () => {

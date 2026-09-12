@@ -218,6 +218,9 @@ WAPE 분모가 0이거나 비교 행이 없으면 null과 reason code를 저장�
 | `core.remove_practice_dataset(label, p_confirm)` | ADMIN 전용 제거. 지울 수 없는 것은 사유와 함께 보고 |
 | `analytics.v_practice_data_status` | 실습 현황 한 줄(**항상 1행**). 화면 배너가 이 값을 씁니다 |
 | `analytics.v_practice_item` · `v_practice_plan` | 행 단위로 실습 여부를 가릴 때 쓰는 목록 |
+| `core.retired_usage_history` | 정리한 5회차 더미 사용 이력 보관소(원본 jsonb). 제거 시 자동 복구 |
+| `core.retire_unverified_usage_history(label, p_confirm)` | ADMIN — 출처 없는 `raw.usage_history` 행을 보관소로 옮김 |
+| `analytics.v_practice_retired_usage` | 보관 현황(행 수 · 기간) |
 
 실데이터는 등기부에 없으므로 제거 절차가 **구조적으로** 건드릴 수 없습니다. 적재 원본은
 `batch_id`로만 지우므로 `batch_id`가 null인 행(5회차 더미 · 실데이터)은 어떤 경우에도 걸리지

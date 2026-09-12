@@ -41,8 +41,10 @@ select batch_id, file_name, import_type, status from core.upload_batch
 -- ══ 2. 마스터 · 정책 준비 상태 ═══════════════════════════════════════
 
 select * from analytics.v_master_readiness;
--- 기대: n_prep_days_unset 0 · n_suppliers 5 · n_departure_rules 5 · n_calendar_months_ready 12
---       (2026년만 공휴일을 넣었으므로 12입니다 — 01-master.sql 주석 참고)
+-- 기대: n_prep_days_unset 0 · n_suppliers **5 이상** · n_departure_rules **5 이상** ·
+--       n_calendar_months_ready **12 이상**
+-- ★ 이 뷰는 전역 집계입니다. 운영 DB에 이미 등록된 공급처·달력이 있으면 실습분보다 큽니다 —
+--   "정확히 5"가 아니라 "실습분이 더해졌는가"를 봅니다.
 
 select count(*) filter (where order_blocked) as blocked_items,
        count(*) filter (where not order_blocked) as ready_items
@@ -52,6 +54,12 @@ select count(*) filter (where order_blocked) as blocked_items,
 --   blocked_items가 10이면 03-item-policies.sql이 중간에 롤백된 것입니다(승인 이력이 없다는 뜻).
 
 select count(*) as approved_revisions from core.item_policy_revision where status = 'APPROVED';
+-- 기대: **10 이상** (전역 집계입니다 — 운영에서 이미 승인된 정책이 있으면 더 큽니다).
+--   실습분만 보려면 아래를 씁니다.
+select count(*) as approved_practice_revisions
+  from core.item_policy_revision r
+  join core.practice_object o on o.object_kind = 'ITEM' and o.object_key = r.item_id
+ where r.status = 'APPROVED';
 -- 기대: 10 (요청 → SCM팀장 승인이 실제로 일어났는지 확인)
 
 
