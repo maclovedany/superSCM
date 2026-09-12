@@ -39,7 +39,6 @@ export const ADMIN_MENU: MenuItem[] = [
   { href: '/admin/master', label: '마스터', description: '해외법인 · 공급처 · 출항일 · 품목 정책', icon: Boxes },
   { href: '/admin/permissions', label: '권한', description: '부서 · 직책 · 업무 권한', icon: Users },
   { href: '/admin/users', label: '사용자 관리', description: '계정 권한과 활성 상태 관리', icon: Users },
-  { href: '/admin/workflow', label: '발주계획 관리', description: '레거시 업무 플로우', icon: Workflow },
   { href: '/admin/demand', label: '수요 관리', description: '수요 데이터 관리', icon: BarChart3 },
   { href: '/admin/data-management', label: '데이터 관리', description: '파일 적재와 이력 관리', icon: Database },
   { href: '/admin/forecast-models', label: 'Forecast Models', description: '예측 모델 설정 관리', icon: Bot },

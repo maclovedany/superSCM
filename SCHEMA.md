@@ -230,6 +230,30 @@ order_date → supplier_ship_date → port_departure_date → port_arrival_date
 
 ---
 
+## 레거시 (Stage 1 이후 deprecated, drop 안 함)
+
+5회차 수업용 `public` 스키마 발주계획 프로토타입 테이블입니다. `20260813000100_create_procurement_demand_core.sql`
+에서 만들었고, `20260911001200_stage1_legacy_cutover.sql`(Task 13)이 `authenticated`·`anon` 권한을
+회수하고 `comment on table`로 폐기 표시만 남겼습니다. **데이터는 지우지 않았습니다.**
+
+```
+public.planning_runs
+public.ol_demand
+public.sfdc_pipeline
+public.bulk_deals
+public.historical_actuals
+public.demand_confirmations
+```
+
+앱 코드(`app/`·`components/`·`lib/`) 어디에서도 이 6개 테이블을 조회하지 않습니다 — 레거시
+`/workflow` 프로토타입(`components/procurement-app.tsx`)조차 브라우저 로컬 state로만 동작하고
+이 테이블을 읽거나 쓰지 않습니다. 새 기능에서 이 테이블을 다시 연결하지 마세요.
+
+`raw.item_substitute`(STEP 3)도 데이터는 유지하지만 신규 `analytics` 뷰·계산·메뉴 어디에도
+연결하지 않습니다 — 대체품 자동 추천은 `향후논의사항.md`에서만 다시 논의합니다.
+
+---
+
 ## 접속 방법
 
 ```ts

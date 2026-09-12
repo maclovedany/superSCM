@@ -18,6 +18,25 @@
 5곳으로 확정되었습니다. 과거 공급처 이력은 지우지 않고 공급처 마스터에서 활성 여부와
 적용 기간으로 관리합니다 — 지난 발주 이력이 그 공급처를 참조하기 때문입니다.
 
+### Stage 1 운영 전환 (Task 13)
+
+신규 운영 흐름(수요 제출 → 승인 → 재고 배정 → 발주계획 → 팀장 승인 → 일정 생성)이 갖춰진
+뒤 레거시 진입점을 격리했습니다.
+
+- `/procurement-plans` 가 신규 발주계획 화면입니다. `/admin/workflow` 는 이 경로로 리다이렉트만
+  합니다(옛 북마크 대비). 관리자 메뉴의 "레거시 업무 플로우" 링크는 제거했습니다.
+- `/workflow`(레거시 브라우저 프로토타입, `components/procurement-app.tsx` ·
+  `components/workflow/*`)는 **참고용으로만** 남겨 뒀습니다. 화면 상단에 안내 배너가 있고,
+  버튼을 눌러도 브라우저 로컬 state만 바뀔 뿐 DB에 저장·승인되지 않습니다. 새 기능을 이
+  파일들에 붙이지 마세요 — 새 화면은 `/procurement-plans` 계열에 만듭니다.
+- 과거 5회차 수업용 `public.planning_runs` 등 6개 테이블은 drop하지 않고 `authenticated`/`anon`
+  권한만 회수했습니다(`supabase/migrations/20260911001200_stage1_legacy_cutover.sql`). 새 코드에서
+  다시 연결하지 마세요.
+- `raw.item_substitute` 는 데이터는 유지하되 신규 뷰·계산·메뉴 어디에도 연결하지 않습니다
+  (대체품 자동 추천은 `향후논의사항.md` 범위입니다).
+- 운영 검수표는 `docs/stage1-운영검수.md`, Supabase 수동 적용 순서·환경변수는
+  `docs/stage1-supabase-수동적용.md` 에 있습니다. 두 문서 모두 저장소에 커밋됩니다.
+
 ## 기술 스택
 
 - Next.js 15 (App Router) · React 19 · TypeScript
