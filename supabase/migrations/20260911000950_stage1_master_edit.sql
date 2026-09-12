@@ -495,6 +495,12 @@ select d.departure_id, d.supplier_id, s.supplier_name, s.entity_id,
   from core.supplier_departure d
   join core.supplier s on s.supplier_id = d.supplier_id;
 
+-- ★ security_invoker를 쓰지 않고(뷰 소유자 권한) WHERE에서 core.is_admin()으로 조회 범위를
+--   가른다 — analytics.v_urgent_order_history(Task 11, 20260911001100)와 같은 방식이다.
+--   이 뷰는 core.app_user.name(선언한 관리자 이름)을 함께 보여 주므로 로그인한 모든 사용자에게
+--   열어 두지 않는다. 화면은 관리자 전용(app/(admin)/admin/master)이라 동작은 그대로다.
+--   달력 준비 상태 자체가 필요한 업무 경로(Task 10b 일정 생성)는 이 뷰가 아니라
+--   core.business_calendar_readiness를 소유자 권한 함수 · 뷰 안에서 직접 읽는다.
 create or replace view analytics.v_calendar_readiness as
 select r.country_code, r.cal_year, r.cal_month, r.ready, r.note,
        r.marked_by, u.name as marked_by_name, r.marked_at,
@@ -503,24 +509,33 @@ select r.country_code, r.cal_year, r.cal_month, r.ready, r.note,
             and extract(year from c.calendar_date)::int = r.cal_year
             and extract(month from c.calendar_date)::int = r.cal_month) as n_holidays
   from core.business_calendar_readiness r
-  left join core.app_user u on u.user_id = r.marked_by;
+  left join core.app_user u on u.user_id = r.marked_by
+ where core.is_admin();
 
 comment on view analytics.v_calendar_readiness is
   'Task 10a — 국가·연·월별 "공휴일을 다 입력했다" 선언과 등록된 공휴일 수. 행이 없으면 아직 '
-  '선언하지 않은 달이다(준비 안 됨으로 취급)';
+  '선언하지 않은 달이다(준비 안 됨으로 취급). 관리자(core.is_admin())만 조회한다';
 
 -- Task 10a — 마스터(법인·공급처·출항일 규칙·달력·달력 준비 상태) 변경 이력. audit_log를
 -- 대상 유형으로 좁혀서 보여 준다. before/after는 core.audit_log 그대로이며 after에는 reason이
 -- 함께 들어 있다(위 4~6번 함수가 그렇게 남긴다).
+-- ★ 이 뷰는 security_invoker가 아니라 뷰 소유자 권한으로 core.audit_log를 읽는다. core.audit_log의
+--   RLS(audit_log_admin_select, STEP 2)는 관리자에게만 SELECT를 허용하므로, WHERE에 core.is_admin()을
+--   두지 않으면 로그인한 모든 사용자가 PostgREST로 이 뷰를 읽어 RLS를 우회하게 된다(마스터 변경
+--   before/after 전문과 행위자까지 노출). 조회 범위는 반드시 여기서 가른다 —
+--   analytics.v_urgent_order_history(Task 11)와 같은 방식이고, 이 파일의 화면은 관리자 전용이라
+--   동작은 그대로다.
 create or replace view analytics.v_master_change_history as
 select a.id, a.at, a.actor, u.name as actor_name, a.action, a.target_type, a.target_id, a.before, a.after
   from core.audit_log a
   left join core.app_user u on u.user_id = a.actor
  where a.target_type in ('supply_entity', 'supplier', 'supplier_departure', 'business_calendar', 'business_calendar_readiness')
+   and core.is_admin()
  order by a.at desc;
 
 comment on view analytics.v_master_change_history is
-  'Task 10a — 마스터 화면이 조회하는 변경 이력. core.audit_log를 마스터 대상 유형으로만 좁힌다';
+  'Task 10a — 마스터 화면이 조회하는 변경 이력. core.audit_log를 마스터 대상 유형으로만 좁힌다. '
+  'core.audit_log RLS가 관리자 전용이므로 이 뷰도 core.is_admin()일 때만 행을 낸다';
 
 -- n_calendar_months_ready를 끝에 덧붙인다 — 기존 8열의 이름·순서는 그대로다(error.md #16).
 create or replace view analytics.v_master_readiness as

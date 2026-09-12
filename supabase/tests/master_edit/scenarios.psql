@@ -81,6 +81,10 @@ select masteredit_test.check(
   (select reason_code is null from analytics.v_supply_entity where entity_id = 'JP'),
   'S3 준비기간을 채우면 PREP_DAYS_UNSET 사유가 사라진다'
 );
+-- analytics.v_master_change_history는 관리자만 행을 낸다(core.audit_log RLS 우회 차단, S18) —
+-- 이력 조회는 실제 화면과 같은 관리자 컨텍스트에서 확인한다.
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
 select masteredit_test.check(
   exists (select 1 from analytics.v_master_change_history
            where target_type = 'supply_entity' and target_id = 'JP' and action = 'SUPPLY_ENTITY_UPDATED'
@@ -88,6 +92,7 @@ select masteredit_test.check(
              and (before ->> 'prep_days')::int = 0),
   'S3 변경 이력에 before(0, STEP 18 시드값)/after(7)/reason이 함께 남는다'
 );
+reset role;
 select masteredit_test.check(
   (select actor from core.audit_log where target_type = 'supply_entity' and target_id = 'JP' order by at desc limit 1) = :'admin1'::uuid,
   'S3 변경 이력의 actor가 실제 처리자다'
@@ -102,10 +107,13 @@ reset role;
 select masteredit_test.check(:'s4_id' = 'TH', 'S4 새 법인 코드로 등록된다');
 select count(*) as s4_count from analytics.v_supply_entity where entity_id = 'TH' \gset
 select masteredit_test.check(:s4_count = 1, 'S4 새 법인이 화면 조회에 나타난다');
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
 select masteredit_test.check(
   (select action from analytics.v_master_change_history where target_type = 'supply_entity' and target_id = 'TH' order by at desc limit 1) = 'SUPPLY_ENTITY_CREATED',
   'S4 신규 법인은 CREATED로 기록된다'
 );
+reset role;
 
 
 \echo '== S5 공급처 편집 — 소속 법인 변경과 퇴출(종료일 없는 비활성화는 거절) =='
@@ -168,10 +176,13 @@ select weekday as s7_new_weekday from analytics.v_supplier_departure where depar
 select masteredit_test.check(:s7_new_weekday = 5, 'S7 규칙 내용이 바뀐다(수요일→금요일)');
 select active as s7_month_active from analytics.v_supplier_departure where departure_id = :s6_month_id \gset
 select masteredit_test.check(:'s7_month_active' = 'f', 'S7 비활성화된 규칙도 행은 남는다(삭제하지 않는다)');
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
 select masteredit_test.check(
   (select count(*) from analytics.v_master_change_history where target_type = 'supplier_departure' and target_id = :'s6_weekday_id') >= 2,
   'S7 생성과 교체가 모두 이력에 남는다'
 );
+reset role;
 
 
 \echo '== S8 previous_business_day — 주말이면 이전 금요일(달력 행 없이) =='
@@ -227,21 +238,22 @@ select masteredit_test.check(:'s13' = '2026-09-11', 'S13 공휴일을 지우면 
 
 
 \echo '== S14 달력 월 준비 상태 — 표시·해제와 준비 안 된 달의 기본값 =='
+-- analytics.v_calendar_readiness도 관리자만 조회한다(S18) — 화면과 같은 관리자 컨텍스트에서 읽는다.
+set role authenticated;
+select masteredit_test.as_user(:'admin1') \g /dev/null
 select masteredit_test.check(
   not exists (select 1 from analytics.v_calendar_readiness where country_code = 'C9' and cal_year = 2026 and cal_month = 9),
   'S14 선언 전에는 행 자체가 없다(준비 안 됨으로 취급)'
 );
-set role authenticated;
-select masteredit_test.as_user(:'admin1') \g /dev/null
 select core.set_calendar_month_ready('C9',2026,9,true,'2026년 9월 공휴일 입력 완료') \g /dev/null
-reset role;
 select ready as s14_after, n_holidays as s14_holidays from analytics.v_calendar_readiness where country_code = 'C9' and cal_year = 2026 and cal_month = 9 \gset
+reset role;
 select masteredit_test.check(:'s14_after' = 't', 'S14 준비 완료로 표시된다');
 set role authenticated;
 select masteredit_test.as_user(:'admin1') \g /dev/null
 select core.set_calendar_month_ready('C9',2026,9,false,'착오 표시 취소') \g /dev/null
-reset role;
 select ready as s14_toggled from analytics.v_calendar_readiness where country_code = 'C9' and cal_year = 2026 and cal_month = 9 \gset
+reset role;
 select masteredit_test.check(:'s14_toggled' = 'f', 'S14 다시 미완료로 되돌릴 수 있다');
 
 
@@ -271,5 +283,32 @@ select masteredit_test.expect_error(
 select masteredit_test.expect_error(
   $f$delete from core.supplier where supplier_id = 'SUP-T10-1'$f$,
   'permission denied for table supplier', 'S17 ADMIN도 core.supplier를 직접 DELETE할 수 없다'
+);
+reset role;
+
+
+\echo '== S18 마스터 이력·달력 준비 상태 뷰는 관리자만 조회한다(최종 리뷰 Critical 1) =='
+-- 두 뷰는 security_invoker가 아니라 소유자 권한으로 core.audit_log · core.app_user를 읽는다.
+-- core.audit_log의 RLS(audit_log_admin_select, STEP 2)가 관리자 전용이므로, 뷰 WHERE의
+-- core.is_admin()이 없으면 로그인한 모든 사용자가 PostgREST로 RLS를 우회해 마스터 변경
+-- before/after 전문과 행위자, 달력을 선언한 관리자 이름까지 읽을 수 있었다.
+set role authenticated;
+select masteredit_test.as_user(:'user1') \g /dev/null
+select masteredit_test.check(
+  (select count(*) = 0 from analytics.v_master_change_history),
+  'S18 관리자가 아닌 로그인 사용자는 마스터 변경 이력을 한 줄도 볼 수 없다'
+);
+select masteredit_test.check(
+  (select count(*) = 0 from analytics.v_calendar_readiness),
+  'S18 관리자가 아닌 로그인 사용자는 달력 준비 상태(선언한 관리자 이름 포함)를 볼 수 없다'
+);
+select masteredit_test.as_user(:'admin1') \g /dev/null
+select masteredit_test.check(
+  (select count(*) > 0 from analytics.v_master_change_history where target_type = 'supply_entity'),
+  'S18 관리자는 마스터 변경 이력을 그대로 조회한다(화면 동작 유지)'
+);
+select masteredit_test.check(
+  (select count(*) > 0 from analytics.v_calendar_readiness),
+  'S18 관리자는 달력 준비 상태를 그대로 조회한다(화면 동작 유지)'
 );
 reset role;

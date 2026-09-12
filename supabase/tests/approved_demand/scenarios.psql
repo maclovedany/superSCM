@@ -357,3 +357,48 @@ select approved_test.check(
       and definition ~* 'sales_probability|partner_pre_order|usage_history|purchase_order'),
   'S14 확정 수요 뷰 정의 어디에도 sales_probability · 파트너 선주문 · 레거시 더미 테이블이 없다'
 );
+
+
+\echo '== S15 이벤트 결과 알림 — 공통 알림과 도메인 상세 알림이 둘 다 남는다(error.md #23) =='
+-- core.apply_event_demand_decision의 dedupe_key가 Task 3 공통 결과 알림과 같으면(approval:<id>:decision:<status>),
+-- AFTER UPDATE 트리거가 이름 알파벳 순서로 실행되면서 approval_notification_sync가 먼저 같은 키를 차지하고
+-- 이벤트 상세 알림(품목 · 수량 · 반영 여부)은 on conflict do nothing으로 조용히 사라졌다. 도메인 접두어를
+-- 붙여 둘 다 남는지 승인(S7의 s5)과 반려(S8의 s8) 양쪽에서 확인한다.
+select approved_test.check(
+  (select count(*) = 2 from core.notification_outbox
+    where dedupe_key = 'event_demand:' || :'s5_approval_id' || ':decision:APPROVED'
+      and template_code = 'EVENT_DEMAND_DECIDED' and status = 'PENDING'
+      and recipient_user_id = :'planner1'::uuid),
+  'S15 승인 — 이벤트 상세 알림이 요청자에게 앱 · 이메일 2건 남는다'
+);
+select approved_test.check(
+  (select count(*) = 2 from core.notification_outbox
+    where dedupe_key = 'approval:' || :'s5_approval_id' || ':decision:APPROVED'
+      and template_code = 'APPROVAL_DECIDED'),
+  'S15 승인 — Task 3 공통 결과 알림도 그대로 남는다(둘이 서로를 밀어내지 않는다)'
+);
+select approved_test.check(
+  (select bool_and(payload ->> 'message' like '%품목 ITEMT801%' and payload ->> 'message' like '%수량 200%'
+                   and payload ->> 'message' like '%승인(발주 수요 반영)%')
+     from core.notification_outbox
+    where dedupe_key = 'event_demand:' || :'s5_approval_id' || ':decision:APPROVED'),
+  'S15 승인 — 이벤트 알림 본문에 품목 · 수량 · 반영 여부가 들어 있다'
+);
+select approved_test.check(
+  (select count(*) = 2 from core.notification_outbox
+    where dedupe_key = 'event_demand:' || :'s8_approval_id' || ':decision:REJECTED'
+      and template_code = 'EVENT_DEMAND_DECIDED' and status = 'PENDING'),
+  'S15 반려 — 이벤트 상세 알림이 그대로 남는다'
+);
+select approved_test.check(
+  (select bool_and(payload ->> 'message' like '%반려(미반영)%' and payload ->> 'message' like '%이번 달 재고 부족으로 반려%')
+     from core.notification_outbox
+    where dedupe_key = 'event_demand:' || :'s8_approval_id' || ':decision:REJECTED'),
+  'S15 반려 — 이벤트 알림 본문에 반려 사실과 팀장 의견이 들어 있다'
+);
+select approved_test.check(
+  (select count(*) = 0 from core.notification_outbox
+    where template_code = 'EVENT_DEMAND_DECIDED'
+      and dedupe_key like 'approval:%'),
+  'S15 이벤트 상세 알림은 공통 알림 키(approval:…)를 쓰지 않는다'
+);

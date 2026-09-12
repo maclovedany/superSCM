@@ -459,9 +459,15 @@ begin
     raise exception '이벤트 추가 수요 승인과 연결된 요청을 찾을 수 없습니다.' using errcode = 'P0002';
   end if;
 
-  -- 요청자와 승인자에게 결과를 알린다(Task 3 결과 알림과 같은 dedupe 키 규칙 — ALLOC_PRIORITY 후처리와 같다).
+  -- 요청자에게 결과를 알린다.
+  -- ★ dedupe_key는 Task 3 공통 결과 알림(approval:<id>:decision:<status>)과 반드시 달라야 한다
+  --   (error.md #23). 같은 키를 쓰면 같은 수신자 · 같은 채널에서 먼저 들어간 쪽이 이기고 나중 쪽은
+  --   on conflict do nothing으로 조용히 버려진다. AFTER UPDATE 트리거는 이름 알파벳 순서로 실행되는데
+  --   approval_notification_sync가 event_demand_decision_apply보다 앞서므로, 같은 키를 쓰면 품목 · 수량 ·
+  --   반영 여부가 담긴 이 알림이 항상 사라졌다. Task 9a(item_policy_revision:) · 9b(procurement_plan:)와
+  --   같은 방식으로 도메인 접두어를 붙인다.
   perform core.enqueue_order_notice(
-    'approval:' || new.approval_id || ':decision:' || new.status,
+    'event_demand:' || new.approval_id || ':decision:' || new.status,
     'EVENT_DEMAND_DECIDED',
     array[new.requested_by],
     jsonb_build_object(
