@@ -273,16 +273,34 @@ create or replace view analytics.v_model_config as
 select model_id, model_name, family, engine, version, enabled, is_default, applicable_demand_type, parameters, description, updated_at, updated_by
 from core.model_config;
 
-create or replace view analytics.v_forecast_run as
-select r.*,
-  coalesce(r.stale_at is not null or exists (
-    select 1 from core.upload_batch b
-    where b.status = 'IMPORTED'
-      and b.import_type in ('usage_history', 'sales_order', 'business_event')
-      and r.data_snapshot_at is not null
-      and b.imported_at > r.data_snapshot_at
-  ), false) as is_stale
-from core.forecast_run r;
+-- ★ 재실행 안전(2026-09-12 최종 fix) — 이 뷰는 core.forecast_run을 `r.*`로 펼치고 그 뒤에
+--   is_stale을 붙인다. 0900(Task 9b)이 core.forecast_run에 입력 지문 열 5개를 추가했으므로,
+--   0900까지 적용된 DB에서 이 파일을 다시 실행하면 새 열이 is_stale 앞에 끼어들어
+--   "cannot change name of view column is_stale to train_input_row_count"로 멈춘다(error.md #16).
+--   0900이 이미 적용된 DB에서는 이 뷰를 다시 만들지 않는다(기존 정의를 그대로 둔다).
+do $migration$
+begin
+  if to_regclass('analytics.v_forecast_run') is not null
+     and exists (select 1 from pg_attribute a
+                  where a.attrelid = 'core.forecast_run'::regclass
+                    and a.attname = 'train_input_md5' and a.attnum > 0 and not a.attisdropped) then
+    raise notice 'analytics.v_forecast_run — 20260911000900이 core.forecast_run에 열을 추가한 뒤이므로 재정의를 건너뜁니다';
+  else
+    execute $v$
+      create or replace view analytics.v_forecast_run as
+      select r.*,
+        coalesce(r.stale_at is not null or exists (
+          select 1 from core.upload_batch b
+          where b.status = 'IMPORTED'
+            and b.import_type in ('usage_history', 'sales_order', 'business_event')
+            and r.data_snapshot_at is not null
+            and b.imported_at > r.data_snapshot_at
+        ), false) as is_stale
+      from core.forecast_run r
+    $v$;
+  end if;
+end
+$migration$;
 
 create or replace view analytics.v_forecast_result as
 select f.run_id, f.model_id, f.item_id, i.item_name, f.period, f.model_version,

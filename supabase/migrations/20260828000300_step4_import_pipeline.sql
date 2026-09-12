@@ -57,7 +57,10 @@ begin
   update core.upload_batch set status='ROLLED_BACK',rolled_back_at=now() where batch_id=p_batch_id;
 end; $$;
 
-do $rls$ declare t text; begin foreach t in array array['upload_batch','import_staging','validation_error','column_mapping','import_row_backup'] loop execute format('alter table core.%I enable row level security',t); execute format('create policy %I on core.%I for select to authenticated using (core.is_active_user())',t||'_active_select',t); execute format('create policy %I on core.%I for all to authenticated using (core.is_admin()) with check (core.is_admin())',t||'_admin_mutation',t); end loop; end $rls$;
+-- ★ 재실행 안전(2026-09-12 최종 fix) — drop policy if exists를 먼저 부른다. 없으면 이 파일을
+--   다시 실행할 때 `policy "upload_batch_active_select" ... already exists`로 멈춘다(error.md #21).
+--   정책 내용은 그대로이고, 다시 만들기만 한다.
+do $rls$ declare t text; begin foreach t in array array['upload_batch','import_staging','validation_error','column_mapping','import_row_backup'] loop execute format('alter table core.%I enable row level security',t); execute format('drop policy if exists %I on core.%I',t||'_active_select',t); execute format('drop policy if exists %I on core.%I',t||'_admin_mutation',t); execute format('create policy %I on core.%I for select to authenticated using (core.is_active_user())',t||'_active_select',t); execute format('create policy %I on core.%I for all to authenticated using (core.is_admin()) with check (core.is_admin())',t||'_admin_mutation',t); end loop; end $rls$;
 grant select,insert,update,delete on core.upload_batch,core.import_staging,core.validation_error,core.column_mapping,core.import_row_backup to authenticated;
 grant select on core.v_import_supplier_reference to authenticated;
 grant usage,select on all sequences in schema core to authenticated;

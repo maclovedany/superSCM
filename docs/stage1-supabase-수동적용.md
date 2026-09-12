@@ -11,10 +11,15 @@
 2. 한 파일을 실행한 뒤 그 파일의 "확인 쿼리"를 돌려 기대값과 맞는지 보고 다음 파일로 넘어갑니다.
 3. 이미 적용한 파일은 절대 다시 고치지 않습니다. 문제가 있으면 다음 번호의 새 보정 마이그레이션을
    만듭니다(refactor.md §5-6).
-4. **주의(error.md #24)** — 뒤 마이그레이션이 뷰에 열을 덧붙인 뒤에는(예: `0900`이
-   `analytics.v_item_policy`에 8열을 더함) 그 앞 마이그레이션(`0850`)만 단독으로 다시 실행하면
-   `cannot drop columns from view`로 실패합니다. `0850`을 다시 실행해야 한다면 `0900`도 곧바로
-   다시 실행하세요.
+4. **전체를 순서대로 다시 적용해도 안전합니다(2026-09-12 최종 fix, error.md #29).** 뒤
+   마이그레이션이 뷰에 열을 덧붙인 경우(예: `0900`이 `analytics.v_item_policy`에 8열을 더함),
+   앞 마이그레이션(`0100`·`0850`·STEP 6)은 **이미 넓혀진 뷰를 다시 만들지 않고 건너뜁니다**
+   (`raise notice`만 남깁니다). STEP 4·STEP 7의 RLS 정책도 `drop policy if exists` 뒤에 다시
+   만듭니다. 그래서 문제가 생기면 **전체를 파일명 순서로 다시 적용**하는 것이 표준 복구
+   절차입니다. `bash supabase/tests/migration_rerun/run-all.sh`가 이 경로를 검증합니다.
+   - 단, `0850`처럼 뒤 파일이 넓힌 뷰를 가진 파일을 **단독으로** 다시 실행하면 그 뷰는 건너뛴
+     상태 그대로입니다(넓은 정의가 유지되므로 화면에는 문제가 없습니다).
+   - 이 재실행 안전 보강을 위해 **이미 적용된 5개 파일도 수정**되었습니다(아래 §5 참고).
 
 ## 1. 서버 환경변수 (Vercel 프로젝트 설정)
 
@@ -98,9 +103,21 @@ Project Settings → API → Data API → Exposed schemas
 
 ## 5. 알아둬야 할 운영상 주의 (이미 문서화된 것들)
 
-- **`0850` 단독 재실행 실패** — `0900`이 `analytics.v_item_policy`를 넓힌 뒤에는 `0850`만 다시
-  실행하면 `cannot drop columns from view`로 실패합니다. `0850`을 다시 실행했다면 `0900`도 바로
-  이어서 다시 실행하세요(error.md #24).
+- **이미 적용된 파일 5개가 재실행 안전성 때문에 수정되었습니다(2026-09-12 최종 fix).** 내용상
+  동작은 그대로이고, "다시 실행했을 때 멈추지 않게" 하는 보강만 들어갔습니다(error.md #29).
+  이미 적용한 DB에 **다시 적용할 필요는 없지만**, 다시 적용해도 안전합니다.
+
+  | 파일 | 보강 내용 |
+  |---|---|
+  | `20260828000300_step4_import_pipeline.sql` | RLS 정책 생성 앞에 `drop policy if exists` |
+  | `20260828000500_step6_baseline_forecast.sql` | `0900`이 `core.forecast_run`에 열을 추가한 뒤면 `analytics.v_forecast_run` 재정의를 건너뜀 |
+  | `20260828000600_step7_backtest_champion.sql` | RLS 정책 생성 앞에 `drop policy if exists` |
+  | `20260911000100_step18_master.sql` | 뒤 파일이 넓힌 뷰 3개(`v_supplier_departure`·`v_item_policy`·`v_master_readiness`) 재정의를 건너뜀 |
+  | `20260911000850_stage1_item_policy_revision.sql` | `0900`이 넓힌 `analytics.v_item_policy` 재정의를 건너뜀 |
+
+- **`0850` 단독 재실행** — `0900`이 `analytics.v_item_policy`를 넓힌 뒤에 `0850`만 다시 실행하면,
+  이제 오류 없이 그 뷰만 건너뜁니다(`raise notice`). 예전에는 `cannot drop columns from view`로
+  실패했습니다(error.md #24 → #29).
 - **10분 반복 알림은 Vercel Pro 필요** — Hobby 플랜은 10분 주기 Cron을 지원하지 않습니다. 동등한
   외부 스케줄러로 대체하세요(docs/notification-operations.md).
 - **`raw.usage_history`를 수동으로 바꾼 뒤에는 Forecast·Backtest를 다시 실행해야 합니다** —

@@ -136,7 +136,11 @@ select f.run_id,f.model_id,f.item_id,f.period,f.p50,f.p80,f.p90,f.predicted_qty,
 from core.forecast_result f left join actual a on a.item_id=f.item_id and a.period=f.period;
 
 alter table core.backtest_run enable row level security; alter table core.model_performance enable row level security; alter table core.champion_model_selection enable row level security;
+-- ★ 재실행 안전(2026-09-12 최종 fix) — drop policy if exists를 먼저 부른다(STEP 4와 같은 이유,
+--   error.md #21). 정책 내용은 그대로다.
 do $backtest_rls$ declare t text; begin foreach t in array array['backtest_run','model_performance','champion_model_selection'] loop
+  execute format('drop policy if exists %I on core.%I',t||'_active_select',t);
+  execute format('drop policy if exists %I on core.%I',t||'_admin_mutation',t);
   execute format('create policy %I on core.%I for select to authenticated using(core.is_active_user())',t||'_active_select',t);
   execute format('create policy %I on core.%I for all to authenticated using(core.is_admin()) with check(core.is_admin())',t||'_admin_mutation',t);
 end loop; end $backtest_rls$;

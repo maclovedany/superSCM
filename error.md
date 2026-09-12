@@ -34,6 +34,46 @@
 | psql 스크립트에서 `syntax error at or near ":"` 또는 `column "f" does not exist` (`\gset` 뒤) | `\gset`은 NULL·빈 결과 컬럼의 변수를 **설정하지 않고**, bare(따옴표 없는) boolean 변수는 `f`/`t`로 치환돼 컬럼명처럼 파싱됨 | [#26](#26-gset-뒤-syntax-error-또는-column-f-does-not-exist) |
 | `column reference "schedule_id" is ambiguous` (`ON CONFLICT (열이름)`에서) | `RETURNS TABLE`의 출력 열 이름과 `ON CONFLICT (열이름)`의 대상 열 이름이 같음 | [#27](#27-on-conflict-열이름에서-column-reference-is-ambiguous) |
 | `Type 'MapIterator<...>' can only be iterated through when using the '--downlevelIteration' flag or with a '--target' of 'es2015' or higher` | `tsconfig.json`의 `target`이 `es5`라 `Map.entries()`를 바로 스프레드(`[...map.entries()]`)할 수 없음 | [#28](#28-mapiterator를-바로-스프레드할-수-없다) |
+| `policy "upload_batch_active_select" for table "upload_batch" already exists` | 마이그레이션의 `create policy` 앞에 `drop policy if exists`가 없어 재적용이 멈춤 | [#29](#29-마이그레이션-전체를-두-번-적용하면-중간에서-멈춘다) |
+| 마이그레이션 전체를 파일명 순서로 다시 적용하면 중간에서 멈춤(`cannot drop columns from view` · `cannot change name of view column` · `policy ... already exists`) | 뒤 파일이 앞 파일의 뷰를 넓혔거나, 정책을 drop 없이 다시 만듦 | [#29](#29-마이그레이션-전체를-두-번-적용하면-중간에서-멈춘다) |
+
+## #29 마이그레이션 전체를 두 번 적용하면 중간에서 멈춘다
+
+**증상.** `supabase/migrations/*.sql`를 파일명 순서로 한 번 적용한 뒤 **그대로 한 번 더** 적용하면
+두 번째 회차에서 5개 파일이 멈췄습니다(2026-09-12 최종 리뷰).
+
+```text
+20260828000300_step4_import_pipeline.sql:60:  ERROR:  policy "upload_batch_active_select" for table "upload_batch" already exists
+20260828000500_step6_baseline_forecast.sql:285: ERROR:  cannot change name of view column "is_stale" to "train_input_row_count"
+20260828000600_step7_backtest_champion.sql:142: ERROR:  policy "backtest_run_active_select" for table "backtest_run" already exists
+20260911000100_step18_master.sql:276:          ERROR:  cannot drop columns from view
+20260911000850_stage1_item_policy_revision.sql:489: ERROR:  cannot drop columns from view
+```
+
+**원인.** 세 가지입니다.
+
+1. **뒤 파일이 앞 파일의 뷰를 넓혔다.** `create or replace view`는 기존 열 뒤에 열을 덧붙일 수는
+   있어도 뺄 수 없습니다(#16 · #24). `0850`·`0900`이 `analytics.v_item_policy`를, `0950`이
+   `analytics.v_supplier_departure`·`v_master_readiness`를 넓힌 뒤에는 `0100`·`0850`의 좁은
+   정의를 다시 실행할 수 없습니다.
+2. **뒤 파일이 앞 파일의 테이블에 열을 추가했다.** `analytics.v_forecast_run`은
+   `select r.*, … as is_stale` 모양이라, `0900`이 `core.forecast_run`에 지문 열 5개를 추가하자
+   `r.*`가 넓어지면서 새 열이 `is_stale` **앞에** 끼어들었습니다(#16과 같은 원인).
+3. **정책을 drop 없이 다시 만들었다.** STEP 4 · STEP 7의 `create policy`에는
+   `drop policy if exists`가 없었습니다(#21에서 스위트 bootstrap이 우회하던 것과 같은 문제).
+
+**해결.**
+
+- 1·2번은 **뒤 파일이 이미 넓혀 둔 경우 앞 파일이 그 뷰를 건너뛰게** 했습니다. 앞 파일에
+  `do $migration$ … if (뒤 파일이 추가한 열이 이미 있으면) raise notice … else execute $v$create or
+  replace view …$v$ … end if; end $migration$;` 를 둡니다. 처음 적용(뷰가 없거나 아직 좁을 때)에는
+  원래 정의가 그대로 만들어지므로 최종 상태는 달라지지 않습니다.
+- `drop view … cascade`로 지우지 **않습니다.** 그 뷰에 의존하는 뒤 파일의 뷰
+  (`analytics.v_inventory_performance` 등)까지 함께 사라지기 때문입니다.
+- 3번은 `create policy` 앞에 `drop policy if exists` 두 줄을 넣었습니다(정책 내용은 그대로).
+
+**예방.** `bash supabase/tests/migration_rerun/run-all.sh`가 전체를 두 번 적용해 이 경로를
+검증합니다. 뷰에 열을 덧붙이는 마이그레이션을 새로 쓸 때는 이 스위트를 함께 돌리세요.
 
 ## #24 `cannot drop columns from view`
 

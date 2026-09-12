@@ -269,33 +269,74 @@ select s.supplier_id, s.supplier_name, s.entity_id, e.entity_name, e.country_cod
   from core.supplier s
   left join core.supply_entity e on e.entity_id = s.entity_id;
 
-create or replace view analytics.v_supplier_departure as
-select d.departure_id, d.supplier_id, s.supplier_name, s.entity_id,
-       d.weekday, d.day_of_month, d.valid_from, d.valid_to, d.note
-  from core.supplier_departure d
-  join core.supplier s on s.supplier_id = d.supplier_id;
+-- ★ 재실행 안전(2026-09-12 최종 fix) — 아래 세 뷰는 뒤 마이그레이션이 열을 덧붙였다.
+--     analytics.v_supplier_departure  ← 0950이 week_of_month · active 추가
+--     analytics.v_item_policy         ← 0850이 target_dos_approved, 0900이 approved_* 8열 추가
+--     analytics.v_master_readiness    ← 0950이 n_calendar_months_ready 추가
+--   create or replace view는 열을 덧붙일 수는 있어도 뺄 수 없다(error.md #16 · #24). 그래서 뒤
+--   파일까지 적용된 DB에서 이 파일을 다시 실행하면 "cannot drop columns from view"로 멈췄고,
+--   "마이그레이션 전체를 파일명 순서로 다시 적용한다"는 이 프로젝트의 표준 복구 절차가 깨졌다.
+--   뒤 파일이 이미 넓혀 둔 뷰는 다시 만들지 않고 건너뛴다 — drop cascade로 지우지 않는 이유는
+--   이 뷰들에 의존하는 뒤 파일의 뷰(analytics.v_inventory_performance 등)까지 함께 사라지기
+--   때문이다. 처음 적용(뷰가 없거나 아직 좁은 상태)에서는 아래 정의가 그대로 만들어진다.
+do $migration$
+begin
+  if to_regclass('analytics.v_supplier_departure') is not null
+     and exists (select 1 from pg_attribute a
+                  where a.attrelid = 'analytics.v_supplier_departure'::regclass
+                    and a.attname = 'week_of_month' and a.attnum > 0 and not a.attisdropped) then
+    raise notice 'analytics.v_supplier_departure — 20260911000950이 넓힌 정의가 이미 있어 건너뜁니다';
+  else
+    execute $v$
+      create or replace view analytics.v_supplier_departure as
+      select d.departure_id, d.supplier_id, s.supplier_name, s.entity_id,
+             d.weekday, d.day_of_month, d.valid_from, d.valid_to, d.note
+        from core.supplier_departure d
+        join core.supplier s on s.supplier_id = d.supplier_id
+    $v$;
+  end if;
 
-create or replace view analytics.v_item_policy as
-select p.item_id,
-       p.target_dos_days, p.allocation_mode, p.target_stock_qty,
-       p.unit_price, p.unit_price_basis,
-       p.moq, p.pack_size, p.min_order_amount, p.item_grade, p.service_level,
-       p.updated_at,
-       -- ★ 이 두 줄이 stage1 §6·§7 의 서로 다른 기본값 규칙입니다
-       coalesce(p.moq, 1)                                    as effective_moq,
-       (p.target_dos_days is null)                           as order_blocked,
-       case when p.target_dos_days is null then 'TARGET_DOS_UNSET' end as reason_code
-  from core.item_policy p;
+  if to_regclass('analytics.v_item_policy') is not null
+     and exists (select 1 from pg_attribute a
+                  where a.attrelid = 'analytics.v_item_policy'::regclass
+                    and a.attname = 'target_dos_approved' and a.attnum > 0 and not a.attisdropped) then
+    raise notice 'analytics.v_item_policy — 20260911000850/000900이 넓힌 정의가 이미 있어 건너뜁니다';
+  else
+    execute $v$
+      create or replace view analytics.v_item_policy as
+      select p.item_id,
+             p.target_dos_days, p.allocation_mode, p.target_stock_qty,
+             p.unit_price, p.unit_price_basis,
+             p.moq, p.pack_size, p.min_order_amount, p.item_grade, p.service_level,
+             p.updated_at,
+             -- ★ 이 두 줄이 stage1 §6·§7 의 서로 다른 기본값 규칙입니다
+             coalesce(p.moq, 1)                                    as effective_moq,
+             (p.target_dos_days is null)                           as order_blocked,
+             case when p.target_dos_days is null then 'TARGET_DOS_UNSET' end as reason_code
+        from core.item_policy p
+    $v$;
+  end if;
 
-create or replace view analytics.v_master_readiness as
-select (select count(*) from core.supply_entity where active)                    as n_entities,
-       (select count(*) from core.supply_entity where active and prep_days = 0)  as n_prep_days_unset,
-       (select count(*) from core.supplier where active)                         as n_suppliers,
-       (select count(*) from core.supplier where active and lead_time_days is null) as n_leadtime_unset,
-       (select count(*) from core.supplier_departure)                            as n_departure_rules,
-       (select count(*) from core.business_calendar)                             as n_calendar_days,
-       (select count(*) from core.item_policy)                                   as n_item_policies,
-       (select count(*) from core.item_policy where target_dos_days is null)     as n_target_dos_unset;
+  if to_regclass('analytics.v_master_readiness') is not null
+     and exists (select 1 from pg_attribute a
+                  where a.attrelid = 'analytics.v_master_readiness'::regclass
+                    and a.attname = 'n_calendar_months_ready' and a.attnum > 0 and not a.attisdropped) then
+    raise notice 'analytics.v_master_readiness — 20260911000950이 넓힌 정의가 이미 있어 건너뜁니다';
+  else
+    execute $v$
+      create or replace view analytics.v_master_readiness as
+      select (select count(*) from core.supply_entity where active)                    as n_entities,
+             (select count(*) from core.supply_entity where active and prep_days = 0)  as n_prep_days_unset,
+             (select count(*) from core.supplier where active)                         as n_suppliers,
+             (select count(*) from core.supplier where active and lead_time_days is null) as n_leadtime_unset,
+             (select count(*) from core.supplier_departure)                            as n_departure_rules,
+             (select count(*) from core.business_calendar)                             as n_calendar_days,
+             (select count(*) from core.item_policy)                                   as n_item_policies,
+             (select count(*) from core.item_policy where target_dos_days is null)     as n_target_dos_unset
+    $v$;
+  end if;
+end
+$migration$;
 
 comment on view analytics.v_master_readiness is
   'Phase 1 준비 상태. 아직 못 받은 값이 몇 건인지 한 줄로 보여 줍니다';
