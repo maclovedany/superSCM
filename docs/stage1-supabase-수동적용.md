@@ -29,6 +29,7 @@
 | `CRON_SECRET` | `/api/cron/*` 3개 라우트 인증 | `Authorization: Bearer <값>` 또는 `x-cron-secret` 헤더로 외부 스케줄러가 전달 |
 | `RESEND_API_KEY` | 이메일 발송 | `NEXT_PUBLIC_` 접두어 금지 |
 | `RESEND_FROM_EMAIL` | 발신 주소 | |
+| `RESEND_REPLY_TO` | 답장 수신 주소(선택) | 발신 주소가 수신함 없는 발송 전용 하위 도메인일 때만 필요 |
 
 `NEXT_PUBLIC_SUPABASE_URL` · `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`는 기존 그대로입니다
 (AGENTS.md).
@@ -225,9 +226,12 @@ Supabase Auth JWT가 아니라 이 CRON_SECRET로 채웁니다).
 
 ```bash
 supabase secrets set CRON_SECRET='<임의의 긴 무작위 값>' --project-ref <project-ref>
-# 이메일을 아직 안 쓰면 이 둘은 생략해도 됩니다(IN_APP 알림은 그대로 동작).
+# 이메일을 아직 안 쓰면 이 셋은 생략해도 됩니다(IN_APP 알림은 그대로 동작).
 supabase secrets set RESEND_API_KEY='<Resend API 키>' --project-ref <project-ref>
 supabase secrets set RESEND_FROM_EMAIL='<발신 주소>' --project-ref <project-ref>
+# 발신 주소가 alert@send.example.com처럼 수신함 없는 발송 전용 하위 도메인이면, 답장이
+# 반송되지 않도록 실제 수신 가능한 주소를 설정합니다(비우면 이전과 동일하게 동작).
+supabase secrets set RESEND_REPLY_TO='<실제 수신 가능한 주소, 예: contact@example.com>' --project-ref <project-ref>
 ```
 
 `SUPABASE_URL`·`SUPABASE_SERVICE_ROLE_KEY`는 플랫폼이 자동으로 주입하므로 직접 설정하지

@@ -14,6 +14,11 @@
 // 규칙상 재시도 대신 매 10분 새 알림으로 이어지므로, 이 회차의 실패는 1회 시도로 끝나고 다음
 // 회차가 다시 시도합니다. 그 외 단발 템플릿은 core.notification_outbox.max_attempts(기본 5회)까지
 // 10분→20분→40분→80분 간격으로 재시도한 뒤 최종 실패로 남습니다(cron-edge-report.md 참고).
+//
+// RESEND_REPLY_TO(선택): 발신 주소(RESEND_FROM_EMAIL)가 수신함 없는 발송 전용 하위 도메인
+// (예: alert@send.upflash.co.kr)이면 받는 사람이 답장해도 반송됩니다. 이 값을 설정하면
+// Resend 요청에 reply_to를 실어 실제 수신 가능한 주소(예: contact@upflash.co.kr)로 답장이
+// 가게 합니다. 비어 있으면 필드 자체를 보내지 않아 기존 동작과 동일합니다.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
@@ -118,7 +123,7 @@ function isRetryableResponse(status: number, body: Record<string, unknown>): boo
 // EMAIL_SENDER_NOT_CONFIGURED로 재시도 대상 실패를 반환합니다(Resend 없이도 배포 가능해야 함).
 export async function sendEmail(
   message: { to: string; subject: string; text: string },
-  options: { apiKey: string; from: string; idempotencyKey: string; fetchImpl?: typeof fetch },
+  options: { apiKey: string; from: string; replyTo?: string; idempotencyKey: string; fetchImpl?: typeof fetch },
 ): Promise<EmailResult> {
   if (message.to.trim() === '') return { ok: false, error: '이메일 수신자가 없습니다.', retryable: false };
   if (options.apiKey.trim() === '' || options.from.trim() === '') {
@@ -138,6 +143,7 @@ export async function sendEmail(
         to: [message.to],
         subject: message.subject,
         text: message.text,
+        ...(options.replyTo?.trim() ? { reply_to: options.replyTo.trim() } : {}),
       }),
     });
     const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
@@ -189,6 +195,7 @@ Deno.serve(async (req: Request) => {
   }
   const resendApiKey = Deno.env.get('RESEND_API_KEY') ?? '';
   const resendFrom = Deno.env.get('RESEND_FROM_EMAIL') ?? '';
+  const resendReplyTo = Deno.env.get('RESEND_REPLY_TO') ?? '';
 
   const supabase = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
@@ -231,6 +238,7 @@ Deno.serve(async (req: Request) => {
           {
             apiKey: resendApiKey,
             from: resendFrom,
+            replyTo: resendReplyTo,
             idempotencyKey: `notification/${notice.notificationId}`,
           },
         )

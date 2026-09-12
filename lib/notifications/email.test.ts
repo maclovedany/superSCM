@@ -119,6 +119,76 @@ test('Resend 409는 일시 잠금만 재시도하고 잘못된 중복 키 요청
   });
 });
 
+test('reply_to를 설정하면 Resend 요청 본문에 포함된다(하위 도메인 발신 주소의 답장 반송 방지)', async () => {
+  const requests: Array<{ url: string; init: RequestInit }> = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    requests.push({ url: String(url), init: init ?? {} });
+    return new Response(JSON.stringify({ id: 'email-reply-to' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  const result = await sendEmail(
+    { to: 'planner@example.com', subject: '승인 알림', text: '확인해 주세요.' },
+    {
+      apiKey: 'server-secret',
+      from: 'alert@send.upflash.co.kr',
+      replyTo: 'contact@upflash.co.kr',
+      fetchImpl,
+    },
+  );
+
+  assert.deepEqual(result, { ok: true, externalMessageId: 'email-reply-to' });
+  assert.deepEqual(JSON.parse(String(requests[0].init.body)), {
+    from: 'alert@send.upflash.co.kr',
+    to: ['planner@example.com'],
+    subject: '승인 알림',
+    text: '확인해 주세요.',
+    reply_to: 'contact@upflash.co.kr',
+  });
+});
+
+test('reply_to를 설정하지 않으면 요청 본문이 이전과 동일하다(필드 자체가 없음)', async () => {
+  const requests: Array<{ url: string; init: RequestInit }> = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    requests.push({ url: String(url), init: init ?? {} });
+    return new Response(JSON.stringify({ id: 'email-no-reply-to' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  await sendEmail(
+    { to: 'planner@example.com', subject: '승인 알림', text: '확인해 주세요.' },
+    { apiKey: 'server-secret', from: 'SCM <scm@example.com>', fetchImpl },
+  );
+
+  const body = JSON.parse(String(requests[0].init.body));
+  assert.deepEqual(body, {
+    from: 'SCM <scm@example.com>',
+    to: ['planner@example.com'],
+    subject: '승인 알림',
+    text: '확인해 주세요.',
+  });
+  assert.equal('reply_to' in body, false);
+});
+
+test('공백만 있는 reply_to는 설정하지 않은 것과 같다', async () => {
+  const requests: Array<{ url: string; init: RequestInit }> = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    requests.push({ url: String(url), init: init ?? {} });
+    return new Response(JSON.stringify({ id: 'email-blank-reply-to' }), { status: 200 });
+  };
+
+  await sendEmail(
+    { to: 'planner@example.com', subject: '승인 알림', text: '확인해 주세요.' },
+    { apiKey: 'server-secret', from: 'SCM <scm@example.com>', replyTo: '   ', fetchImpl },
+  );
+
+  assert.equal('reply_to' in JSON.parse(String(requests[0].init.body)), false);
+});
+
 test('서버 이메일 설정이나 수신자가 없으면 외부 요청 없이 실패한다', async () => {
   let called = false;
   const fetchImpl: typeof fetch = async () => {

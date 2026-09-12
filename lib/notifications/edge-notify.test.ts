@@ -64,6 +64,16 @@ test('Resend 키 미설정은 EMAIL 채널만 재시도 대상 실패로 남기�
   assert.match(source, /notice\.channel\s*===\s*'EMAIL'[\s\S]{0,600}:\s*\{\s*ok:\s*true,\s*externalMessageId:\s*null\s*\}/);
 });
 
+test('RESEND_REPLY_TO가 설정되면 Resend 요청 본문에 reply_to를 싣고, 없으면 필드 자체를 넣지 않는다', () => {
+  const source = readEdgeFunctionSource();
+  assert.match(source, /Deno\.env\.get\('RESEND_REPLY_TO'\)/);
+  assert.match(source, /replyTo:\s*resendReplyTo/);
+  assert.match(
+    source,
+    /options\.replyTo\?\.trim\(\)\s*\?\s*\{\s*reply_to:\s*options\.replyTo\.trim\(\)\s*\}\s*:\s*\{\}/,
+  );
+});
+
 test('이메일 재시도 판정은 email.ts와 동일하게 409는 일시 잠금만, 그 외 408/425/429/5xx를 재시도 대상으로 본다', () => {
   const source = readEdgeFunctionSource();
   assert.match(source, /concurrent_idempotent_requests/);

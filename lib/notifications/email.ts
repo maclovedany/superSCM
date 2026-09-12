@@ -8,6 +8,7 @@ export type EmailResult =
 export type EmailOptions = {
   apiKey: string;
   from: string;
+  replyTo?: string;
   idempotencyKey?: string;
   fetchImpl?: typeof fetch;
 };
@@ -58,6 +59,7 @@ export async function sendEmail(message: EmailMessage, options: EmailOptions): P
         to: [message.to],
         subject: message.subject,
         text: message.text,
+        ...(options.replyTo?.trim() ? { reply_to: options.replyTo.trim() } : {}),
       }),
     });
     const body = await response.json().catch(() => ({})) as Record<string, unknown>;

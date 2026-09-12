@@ -42,6 +42,7 @@ export async function GET(request: NextRequest) {
           {
             apiKey: process.env.RESEND_API_KEY ?? '',
             from: process.env.RESEND_FROM_EMAIL ?? '',
+            replyTo: process.env.RESEND_REPLY_TO,
             idempotencyKey: `notification/${notice.notificationId}`,
           },
         )

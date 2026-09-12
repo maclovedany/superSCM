@@ -124,6 +124,9 @@ Resend 키를 그 뒤에 설정해도 그 알림 자체는 재발송되지 않�
 - `CRON_SECRET`
 - `RESEND_API_KEY`
 - `RESEND_FROM_EMAIL`
+- `RESEND_REPLY_TO` (선택) — 발신 주소가 수신함 없는 발송 전용 하위 도메인
+  (예: `alert@send.example.com`)이면, 받는 사람이 답장했을 때 반송되지 않도록 실제
+  수신 가능한 주소를 넣습니다. 비워 두면 이전과 동일하게 동작합니다.
 
 이 값에는 `NEXT_PUBLIC_` 접두어를 붙이지 않습니다.
 
@@ -137,6 +140,9 @@ Edge Function 시크릿(Vercel 환경변수와 별도로 관리합니다):
   `stage1_notify_secret`과 같은 값이어야 합니다.
 - `RESEND_API_KEY`·`RESEND_FROM_EMAIL` — 선택. 없으면 "Resend 키를 아직 설정하지 않았을 때"
   절의 규칙을 따릅니다.
+- `RESEND_REPLY_TO` — 선택. 발신 주소가 수신함 없는 발송 전용 하위 도메인이면 실제 수신
+  가능한 주소(예: 회사 대표 메일)를 넣어 답장이 반송되지 않게 합니다. Vercel 라우트도
+  같은 이름의 환경변수로 동일하게 동작합니다.
 
 그리고 pg_cron이 참조하는 Vault 시크릿 두 개(`stage1_notify_url`·`stage1_notify_secret`,
 평문으로 저장소에 커밋하지 않음)는 `docs/stage1-supabase-수동적용.md`의 절차대로 만듭니다.
