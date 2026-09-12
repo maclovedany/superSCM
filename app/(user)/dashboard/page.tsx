@@ -2,7 +2,7 @@ import PageHeader from '@/components/shell/page-header';
 import InsightBanner from '@/components/ui/insight-banner';
 import KpiCard from '@/components/ui/kpi-card';
 import Panel from '@/components/ui/panel';
-import EmptyValue from '@/components/ui/empty-value';
+import BaseMonthValue from '@/components/ui/base-month-value';
 import { formatBaseMonthDotted } from '@/lib/kpi/model';
 import { getDashboardSummary } from '@/lib/kpi/repository';
 
@@ -13,6 +13,11 @@ export const dynamic = 'force-dynamic';
 //   수요 제출 · 승인 대기 · 배정 부족 · 발주계획 상태는 저장된 뷰 값을 그대로 보여줄 뿐 이 화면은
 //   집계하지 않는다(컨트롤러 판정 4). Forecast WAPE·Bias는 별도 분석 화면(OL 예측 정확도)의 몫이라
 //   여기 KPI 카드에 합치지 않는다(컨트롤러 판정 6).
+// ★ fix round 1(리뷰 반영) — summary.planningCycleReasonCode는 getDashboardSummary가
+//   resolveBaseMonthDisplay로 이미 "조회 실패"(PLANNING_CYCLE_LOOKUP_FAILED)와 "취합 주기 없음"
+//   (PLANNING_CYCLE_NOT_OPEN)을 구분해 둔 값이다. BaseMonthValue가 그 구분을 그대로 반영한다 —
+//   이전에는 baseMonth가 null이면 항상 PLANNING_CYCLE_NOT_OPEN으로 표시해, 조회가 실제로
+//   실패했을 때도 "SCM이 아직 안 열었나 보다"로 보였다.
 export default async function DashboardPage() {
   const summary = await getDashboardSummary();
   const baseMonth = formatBaseMonthDotted(summary.baseMonth);
@@ -24,7 +29,7 @@ export default async function DashboardPage() {
         <KpiCard label="분석 화면" value="2" foot="수요 패턴 · OL 예측 정확도" />
         <KpiCard
           label="운영 기준월"
-          value={baseMonth ?? <EmptyValue reasonCode={summary.planningCycleReasonCode ?? 'PLANNING_CYCLE_NOT_OPEN'} />}
+          value={<BaseMonthValue formatted={baseMonth} reasonCode={summary.planningCycleReasonCode} />}
           foot={summary.planningCycleStatus ? `취합 주기 ${summary.planningCycleStatus}` : '진행 중인 취합 주기 없음'}
         />
         <KpiCard label="데이터 상태" value="LIVE" foot="Supabase analytics" status="SAFE" />
@@ -32,7 +37,7 @@ export default async function DashboardPage() {
       <div className="grid grid-4">
         <KpiCard
           label="수요 제출"
-          value={baseMonth === null ? <EmptyValue reasonCode="PLANNING_CYCLE_NOT_OPEN" /> : `${summary.demandSubmittedCount} / ${summary.demandTotalCount}`}
+          value={baseMonth === null ? <BaseMonthValue formatted={null} reasonCode={summary.planningCycleReasonCode} /> : `${summary.demandSubmittedCount} / ${summary.demandTotalCount}`}
           foot="제출 완료(부서) / 전체 부서"
         />
         <KpiCard label="승인 대기" value={summary.pendingApprovalCount} foot="내가 처리할 수 있는 PENDING 승인" />

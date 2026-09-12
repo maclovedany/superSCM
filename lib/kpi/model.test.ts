@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  BASE_MONTH_LOOKUP_FAILED,
   diffQty,
   formatBaseMonthDotted,
   formatBaseMonthKorean,
@@ -11,6 +12,7 @@ import {
   normalizeCurrentPlanningCycle,
   normalizeInventoryPerformanceKpiRow,
   normalizeInventoryPerformanceRow,
+  resolveBaseMonthDisplay,
 } from './model.ts';
 
 // ★ 기준월 표시 — supabase/migrations/20260911001150_stage1_inventory_kpi.sql의
@@ -131,6 +133,40 @@ test('normalizeCurrentPlanningCycle — 활성 주기가 없으면 null + PLANNI
   });
   assert.equal(result.planMonth, null);
   assert.equal(result.reasonCode, 'PLANNING_CYCLE_NOT_OPEN');
+});
+
+// ★ fix round 1(리뷰 반영) — Topbar · Sidebar · 대시보드가 공유하는 판정. 조회 실패(RLS 오설정 ·
+// 일시 장애 등)와 "취합 주기가 열려 있지 않다"는 업무 상태를 반드시 다른 사유 코드로 구분한다 —
+// 섞이면 사용자가 시스템 오류를 "SCM이 아직 안 열었나 보다"로 오해한다.
+test('resolveBaseMonthDisplay — 정상 조회 · 활성 주기 있음 → 기준월 그대로', () => {
+  const cycle = normalizeCurrentPlanningCycle({
+    cycle_id: 'c1', plan_month: '2026-09-01', status: 'OPEN', submission_deadline: '2026-08-30',
+    is_active: true, opened_at: '2026-08-01T00:00:00Z', reason_code: null,
+  });
+  const display = resolveBaseMonthDisplay(cycle, null);
+  assert.deepEqual(display, { planMonth: '2026-09-01', reasonCode: null });
+});
+
+test('resolveBaseMonthDisplay — 정상 조회 · 활성 주기 없음 → PLANNING_CYCLE_NOT_OPEN(업무 상태)', () => {
+  const cycle = normalizeCurrentPlanningCycle({
+    cycle_id: null, plan_month: null, status: null, submission_deadline: null,
+    is_active: null, opened_at: null, reason_code: 'PLANNING_CYCLE_NOT_OPEN',
+  });
+  const display = resolveBaseMonthDisplay(cycle, null);
+  assert.deepEqual(display, { planMonth: null, reasonCode: 'PLANNING_CYCLE_NOT_OPEN' });
+});
+
+test('resolveBaseMonthDisplay — 조회 오류가 있으면 PLANNING_CYCLE_NOT_OPEN이 아니라 LOOKUP_FAILED', () => {
+  const display = resolveBaseMonthDisplay(null, 'permission denied for view v_current_planning_cycle');
+  assert.deepEqual(display, { planMonth: null, reasonCode: BASE_MONTH_LOOKUP_FAILED });
+  assert.notEqual(display.reasonCode, 'PLANNING_CYCLE_NOT_OPEN');
+});
+
+test('resolveBaseMonthDisplay — 오류는 없지만 행 자체가 없으면(뷰가 비정상적으로 0행) 역시 LOOKUP_FAILED', () => {
+  // analytics.v_current_planning_cycle은 항상 정확히 1행을 돌려주도록 만들었으므로, error 없이
+  // cycle이 null인 것 자체가 스키마 미노출 같은 비정상 상태다(업무 상태가 아니다).
+  const display = resolveBaseMonthDisplay(null, null);
+  assert.deepEqual(display, { planMonth: null, reasonCode: BASE_MONTH_LOOKUP_FAILED });
 });
 
 test('normalizeInventoryPerformanceRow — analytics.v_inventory_performance 한 행', () => {

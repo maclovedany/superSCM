@@ -18,6 +18,7 @@ import {
   normalizeCurrentPlanningCycle,
   normalizeInventoryPerformanceKpiRow,
   normalizeInventoryPerformanceRow,
+  resolveBaseMonthDisplay,
   type CurrentPlanningCycle,
   type InventoryPerformanceKpi,
   type InventoryPerformanceRow,
@@ -99,10 +100,16 @@ export type DashboardSummary = {
  *
  * ★ 각 값은 그 도메인의 analytics 뷰가 이미 계산해 둔 상태(status · shortage_qty 등)를 세거나
  *   고르기만 한다 — 여기서 새로 평균 내거나 비율을 만들지 않는다(컨트롤러 판정 4).
+ * ★ fix round 1(리뷰 반영) — planningCycleReasonCode는 resolveBaseMonthDisplay로 판정한다.
+ *   cycleError를 그냥 버리면(예전 코드처럼 cycle?.reasonCode만 보면) 조회 실패가
+ *   PLANNING_CYCLE_NOT_OPEN(업무 상태)으로 둔갑한다 — error 자체는 summary.error에도 그대로
+ *   남아 InsightBanner가 보여주지만, 기준월 KPI 카드도 같은 시스템 오류임을 스스로 알 수 있어야
+ *   한다(카드 하나만 보고도 "조회 실패"와 "취합 주기 없음"을 구분할 수 있어야 한다).
  */
 export async function getDashboardSummary(): Promise<DashboardSummary> {
   const { cycle, error: cycleError } = await getCurrentPlanningCycle();
-  const baseMonth = cycle?.planMonth ?? null;
+  const baseMonthDisplay = resolveBaseMonthDisplay(cycle, cycleError);
+  const baseMonth = baseMonthDisplay.planMonth;
 
   const [demand, approvals, allocations, plans] = await Promise.all([
     getDemandSubmissions(),
@@ -123,7 +130,7 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
   return {
     baseMonth,
     planningCycleStatus: cycle?.status ?? null,
-    planningCycleReasonCode: cycle?.reasonCode ?? null,
+    planningCycleReasonCode: baseMonthDisplay.reasonCode,
     demandTotalCount: demandForMonth.length,
     demandSubmittedCount: demandForMonth.filter((row) => row.status === 'SUBMITTED' || row.status === 'AGREED').length,
     demandAgreedCount: demandForMonth.filter((row) => row.status === 'AGREED').length,

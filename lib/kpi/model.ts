@@ -14,6 +14,7 @@ export const INVENTORY_KPI_REASON_CODES = [
   'UNIT_PRICE_UNSET',
   'TARGET_STOCK_UNSET',
   'PLANNING_CYCLE_NOT_OPEN',
+  'PLANNING_CYCLE_LOOKUP_FAILED',
 ] as const;
 export type InventoryKpiReasonCode = (typeof INVENTORY_KPI_REASON_CODES)[number];
 
@@ -23,7 +24,14 @@ export const INVENTORY_KPI_REASON_LABELS: Record<InventoryKpiReasonCode, string>
   UNIT_PRICE_UNSET: '승인된 단가가 없습니다',
   TARGET_STOCK_UNSET: '승인된 목표재고가 없습니다',
   PLANNING_CYCLE_NOT_OPEN: '진행 중인 취합 주기가 없습니다',
+  // fix round 1(리뷰 반영) — "진행 중인 취합 주기가 없다"(업무 상태)와 "조회 자체가 실패했다"
+  // (시스템 오류)는 서로 다른 사실이다. 조회 실패를 업무 상태로 착각하면 사용자가 "SCM이 아직
+  // 안 열었나 보다"로 오해한다 — 반드시 다른 사유 코드로 구분한다.
+  PLANNING_CYCLE_LOOKUP_FAILED: '운영 기준월 조회에 실패했습니다(시스템 오류)',
 };
+
+/** 조회 자체가 실패했을 때 쓰는 사유 코드 — 취합 주기가 "없다"는 업무 사실과 구분한다(fix round 1) */
+export const BASE_MONTH_LOOKUP_FAILED = 'PLANNING_CYCLE_LOOKUP_FAILED';
 
 export function inventoryKpiReasonLabel(code: string | null): string | null {
   if (code === null) return null;
@@ -127,6 +135,27 @@ export function normalizeCurrentPlanningCycle(row: Record<string, unknown>): Cur
     openedAt: text(value(row, ['opened_at'])),
     reasonCode: text(value(row, ['reason_code'])),
   };
+}
+
+/**
+ * 기준월을 보여주는 화면 3곳(Topbar · Sidebar · 대시보드 KPI 카드)이 공유하는 표시 상태.
+ * ★ fix round 1(리뷰 반영) — lib/kpi/repository.ts의 getCurrentPlanningCycle()이 돌려주는
+ *   `{ cycle, error }`를 이 함수 하나로 판정한다. cycle이 null인 두 경우를 반드시 구분한다.
+ *     1) error가 있다 — DB 조회 자체가 실패했다(RLS 오설정 · 일시 장애 · 뷰 삭제 등).
+ *     2) error는 없지만 cycle도 null이다 — analytics.v_current_planning_cycle은 항상 정확히
+ *        1행을 돌려주도록 만들었으므로(마이그레이션 3절), 0행이 왔다는 것 자체가 비정상이다
+ *        (SCHEMA.md의 "스키마 미노출 → 에러 없이 빈 배열" 실패 모드와 같은 클래스).
+ *   두 경우 모두 "취합 주기가 열려 있지 않다"는 업무 사실(PLANNING_CYCLE_NOT_OPEN)이 아니라
+ *   시스템 오류이므로 BASE_MONTH_LOOKUP_FAILED로 구분한다 — 화면이 이 둘을 섞으면 사용자가
+ *   실제 장애를 "SCM이 아직 기준월을 안 열었나 보다"로 오해한다.
+ */
+export type BaseMonthDisplay = { planMonth: string | null; reasonCode: string | null };
+
+export function resolveBaseMonthDisplay(cycle: CurrentPlanningCycle | null, error: string | null): BaseMonthDisplay {
+  if (error !== null || cycle === null) {
+    return { planMonth: null, reasonCode: BASE_MONTH_LOOKUP_FAILED };
+  }
+  return { planMonth: cycle.planMonth, reasonCode: cycle.reasonCode };
 }
 
 export type InventoryPerformanceRow = {
