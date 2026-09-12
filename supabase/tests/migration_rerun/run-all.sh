@@ -107,13 +107,22 @@ select case when body like '%apply_month_end_inventory_snapshot_from_batch%' the
        || 'core.commit_import_batch에 Task 12 월말 스냅샷 훅이 남아 있다'
   from (select pg_get_functiondef(p.oid) as body from pg_proc p
           join pg_namespace n on n.oid = p.pronamespace
-         where n.nspname = 'core' and p.proname = 'commit_import_batch') f;
+         where n.nspname = 'core' and p.proname = 'commit_import_batch') f
+union all
+-- error.md #32 — STEP 7(20260828000600)의 RMSE 식은 FILTER를 sqrt()에 붙여 Backtest가 항상 실패했다.
+-- 보정(20260912000500)이 파일명 순서상 뒤에 와야 최종 정의가 고쳐진 쪽이 된다. 번호를 바꾸거나
+-- 보정을 지우면 조용히 옛 정의로 되돌아가므로(예외를 삼키고 FAILED로만 적는다) 여기서 고정한다.
+select case when body like '%,2)) filter%' then 'PASS: ' else 'FAIL: ' end
+       || 'core.run_backtest의 RMSE FILTER가 sqrt가 아니라 avg에 붙어 있다'
+  from (select pg_get_functiondef(p.oid) as body from pg_proc p
+          join pg_namespace n on n.oid = p.pronamespace
+         where n.nspname = 'core' and p.proname = 'run_backtest') f;
 SQL
 POST_PASS=$(grep -c '^PASS: ' "$LOG_DIR/postconditions.log" || true)
 POST_FAIL=$(grep -c '^FAIL: ' "$LOG_DIR/postconditions.log" || true)
 echo "사후 조건: PASS $POST_PASS · FAIL/ERROR $POST_FAIL"
 sed 's/^/  /' "$LOG_DIR/postconditions.log"
-if [ "$POST_PASS" -ne 8 ] || [ "$POST_FAIL" -ne 0 ]; then
+if [ "$POST_PASS" -ne 9 ] || [ "$POST_FAIL" -ne 0 ]; then
   STATUS=1
 fi
 

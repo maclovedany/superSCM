@@ -38,6 +38,61 @@
 | 마이그레이션 전체를 파일명 순서로 다시 적용하면 중간에서 멈춤(`cannot drop columns from view` · `cannot change name of view column` · `policy ... already exists`) | 뒤 파일이 앞 파일의 뷰를 넓혔거나, 정책을 drop 없이 다시 만듦 | [#29](#29-마이그레이션-전체를-두-번-적용하면-중간에서-멈춘다) |
 | `npm run build`에서 `Cannot find module 'jsr:@supabase/supabase-js@2'`(Deno Edge Function 파일에서) | Next.js `tsconfig.json`이 `supabase/functions/**`도 타입체크 대상에 포함시킴 | [#30](#30-npm-run-build가-supabasefunctions의-deno-edge-function을-타입체크하려다-실패한다) |
 | `ERROR: extension "pg_cron" is not available` (로컬 DB 검증 스위트 bootstrap) | 일반 로컬 PostgreSQL(Homebrew)에는 Supabase 전용 확장 `pg_cron`·`pg_net`이 없음 | [#31](#31-로컬-db-검증-스위트가-pg_cron-확장-없음으로-멈춘다) |
+| Backtest 를 돌리면 항상 `status='FAILED'`, message `FILTER specified, but sqrt is not an aggregate function` | `FILTER` 절이 집계(`avg`)가 아니라 그것을 감싼 `sqrt()` 에 붙어 있음 | [#32](#32-backtest-가-항상-실패한다-filter-specified-but-sqrt-is-not-an-aggregate-function) |
+
+## #32 Backtest 가 항상 실패한다 (`FILTER specified, but sqrt is not an aggregate function`)
+
+**증상.** `core.run_backtest(<forecast run_id>)` 를 부르면 예외는 나지 않는데(uuid 를 정상 반환)
+결과 행이 언제나 실패로 남습니다.
+
+```sql
+select backtest_run_id, status, message from core.backtest_run order by started_at desc limit 1;
+-- status  = FAILED
+-- message = FILTER specified, but sqrt is not an aggregate function
+```
+
+Champion 이 한 품목도 선정되지 않고, 그 결과 발주계획(Task 9b)의 모든 라인이
+`CHAMPION_UNAVAILABLE` 로 계산 불가가 됩니다.
+
+**원인.** `supabase/migrations/20260828000600_step7_backtest_champion.sql:75` 의 RMSE 식에서
+`FILTER` 절이 집계 함수가 아니라 그것을 감싼 `sqrt()` 에 붙어 있었습니다.
+
+```sql
+sqrt(avg(power(...))) filter (where ...)   -- ✗ sqrt 는 집계가 아니다 → 파싱 단계에서 실패
+sqrt(avg(power(...)) filter (where ...))   -- ✓ FILTER 는 avg 에 붙는다
+```
+
+PostgreSQL 에서 `FILTER` 는 집계 함수에만 붙일 수 있습니다. 같은 블록의 다른 `FILTER`
+(`sum(abs(...)) filter` · `avg(abs(...)) filter`)는 집계가 바깥에 있어 정상입니다 — 틀린 곳은
+RMSE 한 줄뿐이었습니다. 다른 마이그레이션의 `coalesce(sum(...) filter (...), 0)` 형태도
+`FILTER` 가 `sum` 에 붙어 있어 정상입니다.
+
+**왜 오래 드러나지 않았는가.** 두 가지가 겹쳤습니다.
+
+1. `run_backtest` 는 본문 전체를 `begin … exception when others then … end` 로 감싸고, 실패를
+   `backtest_run` 행에 `FAILED` 로 적은 뒤 **정상적으로 uuid 를 반환합니다.** 호출한 쪽은 예외를
+   보지 못하므로, 반환값만 확인하면 성공한 것처럼 보입니다.
+2. 기존 검증 스위트는 Backtest 결과 행을 fixture 로 **직접 넣었습니다**
+   (`supabase/tests/procurement_plan/fixtures.psql` — 계산 규칙 검증에 필요한 값을 정확히 고정하려는
+   의도였습니다). 그래서 이 함수를 실제로 실행한 테스트가 하나도 없었습니다.
+
+`supabase/tests/practice_data/pipeline-fixtures.psql`(Task 15)이 실제 경로 —
+`run_baseline_forecast` → `run_backtest` → Champion — 를 그대로 밟으면서 처음 잡혔습니다.
+
+**해결.** 이미 적용된 STEP 7 파일은 고치지 않고(refactor.md §5-6) 보정 마이그레이션을 만들었습니다.
+
+```
+supabase/migrations/20260912000500_fix_backtest_rmse_filter.sql
+```
+
+`core.run_backtest` 를 `create or replace` 로 다시 정의하며 RMSE 한 줄만 바꿉니다. 이미 `FAILED`
+로 남은 과거 행은 지우지 않습니다 — 그때 실제로 실패한 것이 사실이기 때문입니다. 보정 적용 뒤
+다시 실행하면 새 행이 `SUCCESS` 로 생깁니다.
+
+**예방.** 결과 행을 fixture 로 직접 넣는 검증은 "저장된 값을 읽는 쪽"만 증명합니다. 그 값을
+**만드는 함수**를 한 번은 실제로 불러 보는 시나리오를 함께 두세요. 예외를 삼키고 상태 컬럼에만
+적는 함수(`run_baseline_forecast` · `run_backtest`)는 반환값이 아니라 **상태 컬럼을 확인**해야
+합니다.
 
 ## #29 마이그레이션 전체를 두 번 적용하면 중간에서 멈춘다
 
