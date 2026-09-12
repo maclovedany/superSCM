@@ -21,7 +21,10 @@ end $$;
 
 grant execute on all functions in schema chart_test to anon, authenticated;
 
--- ══ 사용자 — STOCK_VIEW_ALL 있는 SCM 품목담당자 · 없는 마케팅 ═══════════════
+-- ══ 사용자 — SCM 품목담당자(STOCK_VIEW_ALL 있음) · 마케팅(없음) ═══════════════
+-- fix round 1(팀장 판정) — 세 뷰 모두 권한 게이트를 뺐다(기존 v_shipment_trend·v_forecast_result·
+-- v_champion_model과 같은 자세). 그래서 이 두 사용자는 더는 "권한 있음 vs 없음"을 가르지
+-- 않는다 — 오히려 "권한과 무관하게 둘 다 본다"를 증명하는 데 쓴다(S1·S1b).
 insert into auth.users (id, email) values
   ('00000000-0000-4000-8000-000000000901', 'chart-planner1@example.test'),
   ('00000000-0000-4000-8000-000000000902', 'chart-marketing1@example.test')
@@ -44,14 +47,18 @@ on conflict (user_id) do update
 --            없다(NO_ACTUAL_USAGE)
 --   CHDEM04  Backtest는 됐지만 유효 후보가 없다(core.run_backtest의 NO_VALID_CANDIDATE) →
 --            champion_model_id가 null → NO_CHAMPION_MODEL
---   CHDEM05  예측은 있는데(Champion 모델) p80·p90이 없다 → BAND_UNAVAILABLE(밴드만 결측,
+--   CHDEM05  예측은 있는데(Champion 모델) p80·p90이 둘 다 없다 → BAND_UNAVAILABLE(밴드만 결측,
 --            predicted_qty는 채워져 있다 — 실측 450행 중 180행과 같은 모양)
+--   CHDEM06  fix round 1(리뷰 B-4) — p80만 있고 p90은 없는 **부분 밴드**. CHDEM05(둘 다 null)만
+--            있으면 `p90 := coalesce(p90, p80)` 같은 날조가 검증을 그대로 통과한다(리뷰 M5) —
+--            이 품목이 그 틈을 막는다.
 insert into raw.item_master ("품목코드", "품목명", "품목구분", batch_id) values
   ('CHDEM01', '차트 테스트 실적예측 정상', '완제품', gen_random_uuid()),
   ('CHDEM02', '차트 테스트 Champion 미선정', '완제품', gen_random_uuid()),
   ('CHDEM03', '차트 테스트 기간 갭', '완제품', gen_random_uuid()),
   ('CHDEM04', '차트 테스트 유효후보없음', '완제품', gen_random_uuid()),
-  ('CHDEM05', '차트 테스트 밴드결측', '완제품', gen_random_uuid())
+  ('CHDEM05', '차트 테스트 밴드결측', '완제품', gen_random_uuid()),
+  ('CHDEM06', '차트 테스트 부분밴드', '완제품', gen_random_uuid())
 on conflict do nothing;
 
 -- 출처 확인된 실적(batch_id not null)만 actual_qty에 잡혀야 한다 — CHDEM01에 출처 없는(batch_id
@@ -80,7 +87,8 @@ insert into core.forecast_result (run_id, model_id, item_id, period, model_versi
   ('00000000-0000-4000-8000-000000000910', 'MA_3M', 'CHDEM01', '2026-07-01', '00000000-0000-4000-8000-000000000911', 100, 110, 120),
   ('00000000-0000-4000-8000-000000000910', 'MA_6M', 'CHDEM01', '2026-07-01', '00000000-0000-4000-8000-000000000913', 999, 999, 999),
   ('00000000-0000-4000-8000-000000000910', 'MA_3M', 'CHDEM03', '2026-08-01', '00000000-0000-4000-8000-000000000911', 50,  55,  60),
-  ('00000000-0000-4000-8000-000000000910', 'MA_3M', 'CHDEM05', '2026-07-01', '00000000-0000-4000-8000-000000000911', 70,  null, null)
+  ('00000000-0000-4000-8000-000000000910', 'MA_3M', 'CHDEM05', '2026-07-01', '00000000-0000-4000-8000-000000000911', 70,  null, null),
+  ('00000000-0000-4000-8000-000000000910', 'MA_3M', 'CHDEM06', '2026-07-01', '00000000-0000-4000-8000-000000000911', 90,  95,   null)
 on conflict (run_id, model_id, item_id, period) do nothing;
 
 insert into core.backtest_run (backtest_run_id, forecast_run_id, status, metric, started_at, finished_at)
@@ -94,7 +102,8 @@ insert into core.champion_model_selection
   ('00000000-0000-4000-8000-000000000912', 'CHDEM01', 'MA_3M', '00000000-0000-4000-8000-000000000911', 'WAPE', 'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO'),
   ('00000000-0000-4000-8000-000000000912', 'CHDEM03', 'MA_3M', '00000000-0000-4000-8000-000000000911', 'WAPE', 'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO'),
   ('00000000-0000-4000-8000-000000000912', 'CHDEM04', null,    null,                                  'WAPE', 'NO_VALID_CANDIDATE', 'AUTO'),
-  ('00000000-0000-4000-8000-000000000912', 'CHDEM05', 'MA_3M', '00000000-0000-4000-8000-000000000911', 'WAPE', 'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO')
+  ('00000000-0000-4000-8000-000000000912', 'CHDEM05', 'MA_3M', '00000000-0000-4000-8000-000000000911', 'WAPE', 'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO'),
+  ('00000000-0000-4000-8000-000000000912', 'CHDEM06', 'MA_3M', '00000000-0000-4000-8000-000000000911', 'WAPE', 'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO')
 on conflict do nothing;
 
 
@@ -105,6 +114,13 @@ on conflict do nothing;
 -- INSUFFICIENT_TRAILING_HISTORY로 null 처리되는지 확인한다.
 -- CHSHIP02(OPTION) 3개월(2026-06~2026-08) — TOTAL·ITEM_TYPE 레벨이 서로 다른 item_type을
 -- 올바로 합산하는지 확인한다.
+-- CHSHIP03(SUPPLY) fix round 1(리뷰 B-1) — 6개월 연속 qty=0(반품 상계 등으로 실제 있을 수 있는
+-- 값, raw.fact_shipment.qty는 not null이라 0 자체는 정상 저장값이다) 뒤 2026-07에 양수. 관측치가
+-- 3개월 이상인데 평균이 정확히 0인 구간이 TRAILING_AVG_ZERO를 내는지 확인한다.
+-- CHSHIP04(GAP_TYPE) fix round 1(리뷰 B-3) — 2020-01~03에만 있고 다음 행이 2026-12로 6년
+-- 뒤(달력상 공백). `rows between 6 preceding`(행 기준)이면 이 3개 행을 "직전 6개월"로 잘못 세어
+-- 터무니없는 배수를 낸다(리뷰어 실측 4.00배 재현과 같은 모양) — RANGE(달력 기준) 프레임으로
+-- 고친 뒤에는 2026-12의 trailing_6m_n이 0이어야 한다(그 6개월 안에는 행이 없다).
 insert into raw.fact_shipment (item_code, ym, qty, item_type, source_file) values
   ('CHSHIP01', '2026-01', 100, 'PART', 'chart_test_fixture'),
   ('CHSHIP01', '2026-02', 100, 'PART', 'chart_test_fixture'),
@@ -116,7 +132,18 @@ insert into raw.fact_shipment (item_code, ym, qty, item_type, source_file) value
   ('CHSHIP01', '2026-08', 100, 'PART', 'chart_test_fixture'),
   ('CHSHIP02', '2026-06', 40, 'OPTION', 'chart_test_fixture'),
   ('CHSHIP02', '2026-07', 40, 'OPTION', 'chart_test_fixture'),
-  ('CHSHIP02', '2026-08', 40, 'OPTION', 'chart_test_fixture')
+  ('CHSHIP02', '2026-08', 40, 'OPTION', 'chart_test_fixture'),
+  ('CHSHIP03', '2026-01', 0, 'SUPPLY', 'chart_test_fixture'),
+  ('CHSHIP03', '2026-02', 0, 'SUPPLY', 'chart_test_fixture'),
+  ('CHSHIP03', '2026-03', 0, 'SUPPLY', 'chart_test_fixture'),
+  ('CHSHIP03', '2026-04', 0, 'SUPPLY', 'chart_test_fixture'),
+  ('CHSHIP03', '2026-05', 0, 'SUPPLY', 'chart_test_fixture'),
+  ('CHSHIP03', '2026-06', 0, 'SUPPLY', 'chart_test_fixture'),
+  ('CHSHIP03', '2026-07', 50, 'SUPPLY', 'chart_test_fixture'),
+  ('CHSHIP04', '2020-01', 10, 'GAP_TYPE', 'chart_test_fixture'),
+  ('CHSHIP04', '2020-02', 10, 'GAP_TYPE', 'chart_test_fixture'),
+  ('CHSHIP04', '2020-03', 10, 'GAP_TYPE', 'chart_test_fixture'),
+  ('CHSHIP04', '2026-12', 999, 'GAP_TYPE', 'chart_test_fixture')
 on conflict do nothing;
 
 select 'fixtures ok';

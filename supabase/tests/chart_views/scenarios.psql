@@ -10,22 +10,25 @@
 \set marketing1 '00000000-0000-4000-8000-000000000902'
 
 
-\echo '== S1 RLS(v_demand_series) — STOCK_VIEW_ALL 없는 마케팅은 0행이다(오류가 아니다) =='
+-- fix round 1(팀장 판정, 리뷰 §3-b/B-5) — 세 뷰 전부 권한 게이트를 뺐다(기존
+-- v_shipment_trend·v_forecast_result·v_champion_model과 같은 자세). S1·S1b는 이제 "권한 없는
+-- 사용자도 막히지 않는다"를 확인한다 — 예전처럼 0행이면 오히려 회귀다.
+\echo '== S1 무게이트(v_demand_series) — STOCK_VIEW_ALL 없는 마케팅도 막히지 않는다 =='
 set role authenticated;
 select chart_test.as_user(:'marketing1') \g /dev/null
 select count(*) as s1_count from analytics.v_demand_series \gset
 reset role;
-select chart_test.check(:'s1_count' = '0', 'S1 마케팅은 v_demand_series에서 0행(권한 없음)');
+select chart_test.check(:'s1_count' > '0', 'S1 마케팅도 v_demand_series를 본다(권한 게이트 없음, 기존 v_forecast_result와 같은 자세)');
 
 
-\echo '== S1b RLS(출고 뷰) — 같은 마케팅 사용자는 출고 뷰도 0행이다 =='
+\echo '== S1b 무게이트(출고 뷰) — 같은 마케팅 사용자도 출고 뷰를 막힘 없이 본다 =='
 set role authenticated;
 select chart_test.as_user(:'marketing1') \g /dev/null
 select count(*) as s1b_rollup from analytics.v_shipment_monthly_rollup \gset
 select count(*) as s1b_item from analytics.v_shipment_monthly_item where item_code = 'CHSHIP01' \gset
 reset role;
-select chart_test.check(:'s1b_rollup' = '0', 'S1b 마케팅은 v_shipment_monthly_rollup에서 0행');
-select chart_test.check(:'s1b_item' = '0', 'S1b 마케팅은 v_shipment_monthly_item에서도 0행');
+select chart_test.check(:'s1b_rollup' > '0', 'S1b 마케팅도 v_shipment_monthly_rollup을 본다(기존 v_shipment_trend와 같은 자세)');
+select chart_test.check(:'s1b_item' = '8', 'S1b 마케팅도 v_shipment_monthly_item에서 CHSHIP01 8개월을 그대로 본다');
 
 
 -- error.md #26 — null일 수 있는 열은 \gset으로 담지 않는다(null이면 변수가 설정되지 않아 뒤에서
@@ -98,6 +101,8 @@ reset role;
 select chart_test.check(:'s6_ok', 'S6 predicted_qty는 있고 밴드만 BAND_UNAVAILABLE — predicted_reason_code는 null(예측 자체는 문제 없다)');
 
 
+-- fix round 1 — CHSHIP03(SUPPLY, 2026-01~07) · CHSHIP04(GAP_TYPE, 2020-01~03 + 2026-12)를
+-- fixture에 더해(B-1·B-3 시나리오용) TOTAL·ITEM_TYPE 행 수와 2026-07 합계가 늘었다.
 \echo '== S7 출고 월별 롤업 — TOTAL·ITEM_TYPE 행 수와 합계가 맞는다 =='
 set role authenticated;
 select chart_test.as_user(:'planner1') \g /dev/null
@@ -106,13 +111,13 @@ select count(*) as s7_type_rows from analytics.v_shipment_monthly_rollup where l
 -- qty는 numeric(18,4)라 텍스트로 \gset해 비교하면 '1040' vs '1040.0000'로 어긋난다 — 숫자 비교는
 -- 서브쿼리 안에서 끝낸다.
 select
-  (select qty = 1040 from analytics.v_shipment_monthly_rollup where level = 'TOTAL' and ym = '2026-07') as s7_total_jul_ok \gset
+  (select qty = 1090 from analytics.v_shipment_monthly_rollup where level = 'TOTAL' and ym = '2026-07') as s7_total_jul_ok \gset
 select
   (select qty = 1000 from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'PART' and ym = '2026-07') as s7_part_jul_ok \gset
 reset role;
-select chart_test.check(:'s7_total_rows' = '8', 'S7 TOTAL 레벨은 fixture가 보유한 8개월(2026-01~08)');
-select chart_test.check(:'s7_type_rows' = '11', 'S7 ITEM_TYPE 레벨은 PART 8개월 + OPTION 3개월 = 11행');
-select chart_test.check(:'s7_total_jul_ok', 'S7 2026-07 TOTAL = PART 1000 + OPTION 40');
+select chart_test.check(:'s7_total_rows' = '12', 'S7 TOTAL 레벨 = {2020-01,02,03} + {2026-01..08} + {2026-12} = 12개월');
+select chart_test.check(:'s7_type_rows' = '22', 'S7 ITEM_TYPE 레벨 = PART 8 + OPTION 3 + SUPPLY 7 + GAP_TYPE 4 = 22행');
+select chart_test.check(:'s7_total_jul_ok', 'S7 2026-07 TOTAL = PART 1000 + OPTION 40 + SUPPLY 50');
 select chart_test.check(:'s7_part_jul_ok', 'S7 2026-07 PART = 1000(스파이크)');
 
 
@@ -143,3 +148,52 @@ select
 reset role;
 select chart_test.check(:'s9_rows' = '8', 'S9 CHSHIP01은 8개월(2026-01~08) 전부 나온다');
 select chart_test.check(:'s9_jul_ok', 'S9 2026-07 수량은 스파이크 값 1000 그대로(스무딩하지 않는다)');
+
+
+-- fix round 1(리뷰 B-4) — CHDEM05(p80·p90 둘 다 null)만으로는 `p90 := coalesce(p90, p80)` 같은
+-- 날조가 검증을 통과한다(리뷰 M5, 22/22로 안 잡힘). 부분 밴드(p80만 있음) 픽스처로 그 틈을 막는다.
+\echo '== S10 부분 밴드 — p80만 있고 p90이 없어도 p90을 다른 값으로 채우지 않는다 =='
+set role authenticated;
+select chart_test.as_user(:'planner1') \g /dev/null
+select
+  (select predicted_qty = 90 and predicted_reason_code is null
+     and p80 = 95 and p90 is null and band_reason_code = 'BAND_UNAVAILABLE'
+     from analytics.v_demand_series where item_id = 'CHDEM06' and period = '2026-07-01') as s10_ok \gset
+reset role;
+select chart_test.check(:'s10_ok', 'S10 p80=95는 그대로, p90은 null 그대로(p80 값으로 채워지지 않는다) + BAND_UNAVAILABLE');
+
+
+-- fix round 1(리뷰 B-1) — 재현 가능한 null(직전 6개월 평균이 정확히 0)에 사유 코드가 없던 것을
+-- TRAILING_AVG_ZERO로 고쳤다. CHSHIP03(SUPPLY)은 2026-01~06이 전부 0이다.
+\echo '== S11 직전 평균이 정확히 0이면 배수는 null이지만 사유 코드는 반드시 있다(TRAILING_AVG_ZERO) =='
+set role authenticated;
+select chart_test.as_user(:'planner1') \g /dev/null
+select
+  (select qty_vs_trailing_6m_avg is null and trend_reason_code = 'TRAILING_AVG_ZERO'
+     from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'SUPPLY' and ym = '2026-04') as s11_first3_ok \gset
+select
+  (select qty_vs_trailing_6m_avg is null and trend_reason_code = 'TRAILING_AVG_ZERO'
+     from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'SUPPLY' and ym = '2026-07') as s11_spike_ok \gset
+select
+  (select qty = 50 from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'SUPPLY' and ym = '2026-07') as s11_qty_ok \gset
+reset role;
+select chart_test.check(:'s11_first3_ok', 'S11 2026-04(관측치 3개, 전부 0)는 배수 null + TRAILING_AVG_ZERO(INSUFFICIENT 아님)');
+select chart_test.check(:'s11_spike_ok', 'S11 2026-07(관측치 6개, 전부 0)도 마찬가지 — 실제 값(50)이 있어도 기준선이 0이면 배수를 낼 수 없다');
+select chart_test.check(:'s11_qty_ok', 'S11 qty 자체는 스무딩 없이 50 그대로');
+
+
+-- fix round 1(리뷰 B-3) — "직전 6개월"이 행이 아니라 달력 기준임을 확인한다. CHSHIP04(GAP_TYPE)는
+-- 2020-01~03에만 있고 다음 행이 2026-12(6년 공백)다. 고치기 전에는 `rows between 6 preceding`이
+-- 이 3개 행을 "직전 6개월"로 잘못 세어(리뷰어 실측 4.00배 재현과 같은 모양) 터무니없는 배수를
+-- 냈다 — RANGE(달력 구간)로 고친 뒤에는 그 3개 행이 프레임 밖이라 관측치 0개여야 한다.
+\echo '== S12 달력 기준 6개월 — 6년 전 행을 직전 6개월로 잘못 세지 않는다 =='
+set role authenticated;
+select chart_test.as_user(:'planner1') \g /dev/null
+select
+  (select qty_vs_trailing_6m_avg is null and trend_reason_code = 'INSUFFICIENT_TRAILING_HISTORY'
+     from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'GAP_TYPE' and ym = '2026-12') as s12_ok \gset
+select
+  (select qty = 999 from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'GAP_TYPE' and ym = '2026-12') as s12_qty_ok \gset
+reset role;
+select chart_test.check(:'s12_ok', 'S12 2026-12은 6년 전 3개 행을 트레일링으로 세지 않는다 — 관측치 0개, INSUFFICIENT_TRAILING_HISTORY(터무니없는 배수 아님)');
+select chart_test.check(:'s12_qty_ok', 'S12 qty 자체는 999 그대로');

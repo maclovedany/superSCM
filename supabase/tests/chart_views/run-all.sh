@@ -40,7 +40,7 @@ fi
 STATUS=0
 "${PSQL[@]}" -f "$HERE/scenarios.psql" > "$LOG_DIR/scenarios.log" 2>&1 || STATUS=1
 echo "scenarios: PASS $(count '^PASS' "$LOG_DIR/scenarios.log") · FAIL/ERROR $(count 'FAIL|ERROR' "$LOG_DIR/scenarios.log")"
-for scenario in "S1 " "S1b" "S2 " "S3 " "S4 " "S5 " "S6 " "S7 " "S8 " "S9 "; do
+for scenario in "S1 " "S1b" "S2 " "S3 " "S4 " "S5 " "S6 " "S7 " "S8 " "S9 " "S10" "S11" "S12"; do
   printf '  %s PASS %s\n' "$scenario" "$(count "^PASS: $scenario" "$LOG_DIR/scenarios.log")"
 done
 
@@ -51,7 +51,9 @@ else
   echo "결과: 전부 통과"
 fi
 
-echo "== 뷰별 실측 행 수(STOCK_VIEW_ALL 사용자 기준, 이 fixture 데이터 — 실 배포 데이터는 이 스위트에 없다) =="
+# fix round 1 — 세 뷰 모두 권한 게이트가 없어(팀장 판정, §3-b) 어느 역할로 세도 같은 행 수가
+# 나온다. 그래도 authenticated로 세션을 맞춰 실제 화면 조회 경로와 같은 조건으로 잰다.
+echo "== 뷰별 실측 행 수(무게이트 — 이 fixture 데이터. 실 배포 데이터는 이 스위트에 없다) =="
 "${PSQL[@]}" -At <<'SQL'
 set role authenticated;
 select set_config('request.jwt.claim.sub', '00000000-0000-4000-8000-000000000901', false);

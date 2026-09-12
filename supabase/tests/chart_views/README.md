@@ -36,8 +36,18 @@ bash supabase/tests/chart_views/run-all.sh
 | `lib.sh` | 로컬 대상 확인(`require_local_target`) — 다른 스위트와 동일 |
 | `guard.psql` | 모든 `.psql`이 먼저 포함하는 대상 DB 확인 — 동일 |
 | `auth-stub.psql` | 최소 `auth.users` · `auth.uid()` 스텁(JWT claim 대역) — 동일 |
-| `fixtures.psql` | 검증용 사용자 2명(SCM 품목담당자 · 마케팅) · 수요 시계열용 품목 5개(각각 다른 사유 코드 시나리오) · 출고용 품목 2개, 검증 헬퍼 스키마 `chart_test` |
-| `scenarios.psql` | S1·S1b RLS(STOCK_VIEW_ALL 없으면 세 뷰 모두 0행) · S2 실적+예측+밴드 정상(champion 모델만, decoy 제외, 출처 없는 실적 제외) · S3 Champion 선정 자체가 없음(NO_CHAMPION_SELECTION) · S4 기간 갭(실적·예측이 다른 달 — 합쳐지지 않고 둘 다 남는다) · S5 유효 후보 없음(NO_VALID_CANDIDATE → NO_CHAMPION_MODEL) · S6 밴드만 결측(BAND_UNAVAILABLE, predicted_qty는 정상) · S7·S8 출고 롤업 합계와 trailing 이상치 신호(관측치 부족 구간은 null, 스파이크 달은 계산된 배수) · S9 품목×월 필터 조회(스무딩 없음) |
+| `fixtures.psql` | 검증용 사용자 2명(SCM 품목담당자 · 마케팅 — 둘 다 세 뷰를 무게이트로 본다) · 수요 시계열용 품목 6개(각각 다른 사유 코드 시나리오, CHDEM06은 부분 밴드) · 출고용 품목 4개(CHSHIP03은 trailing 평균 0, CHSHIP04는 달력상 6년 공백), 검증 헬퍼 스키마 `chart_test` |
+| `scenarios.psql` | S1·S1b 무게이트 확인(STOCK_VIEW_ALL 없는 마케팅도 막히지 않는다 — fix round 1, §3-b) · S2 실적+예측+밴드 정상(champion 모델만, decoy 제외, 출처 없는 실적 제외) · S3 Champion 선정 자체가 없음(NO_CHAMPION_SELECTION) · S4 기간 갭(실적·예측이 다른 달 — 합쳐지지 않고 둘 다 남는다) · S5 유효 후보 없음(NO_VALID_CANDIDATE → NO_CHAMPION_MODEL) · S6 밴드 둘 다 결측(BAND_UNAVAILABLE, predicted_qty는 정상) · S7·S8 출고 롤업 합계와 trailing 이상치 신호(관측치 부족 구간은 null, 스파이크 달은 계산된 배수) · S9 품목×월 필터 조회(스무딩 없음) · S10 부분 밴드(p80만 있음 — fix round 1, B-4) · S11 trailing 평균이 정확히 0이면 TRAILING_AVG_ZERO(fix round 1, B-1) · S12 달력 기준 6개월(6년 전 행을 직전 6개월로 잘못 세지 않는다 — fix round 1, B-3) |
+
+### fix round 1(팀장 판정) 이후 바뀐 것
+
+- 세 뷰 모두 **권한 게이트를 뺐다**(원래 STOCK_VIEW_ALL → 게이트 없음, 기존
+  `v_forecast_result`·`v_champion_model`·`v_shipment_trend`와 같은 자세). S1·S1b는 이제
+  "막히지 않는다"를 확인한다.
+- `qty_vs_trailing_6m_avg`가 **달력 기준 RANGE 윈도우**로 바뀌었다(행 기준 `ROWS BETWEEN`이
+  아니다) — 희소한 item_type에서 몇 년 전 행을 "직전 6개월"로 잘못 세는 문제를 막는다(S12).
+- 관측치는 충분한데 trailing 평균이 정확히 0이면 `TRAILING_AVG_ZERO`(S11) — 재현 가능한 null에
+  사유 코드가 없던 문제를 고쳤다.
 
 ## 이 스위트가 확인하지 않는 것
 

@@ -75,28 +75,39 @@ export function isShipmentRollupLevel(input: unknown): input is ShipmentRollupLe
 /**
  * 출고 월별 총합(TOTAL) · 품목구분×월(ITEM_TYPE) 롤업 — analytics.v_shipment_monthly_rollup 한 행.
  *
- * ★ qtyVsTrailing6mAvg는 직전 6개월(최소 3개월 관측) 평균 대비 이번 달 배수다. 특정 달을
- *   하드코딩해 이상치로 표시하지 않는다 — 이 값이 크면(예: 2026-07) 화면이 그 사실을 스스로
- *   드러낸다. 관측치가 부족하면(시계열 시작 구간) null + INSUFFICIENT_TRAILING_HISTORY.
+ * ★ qtyVsTrailing6mAvg는 달력 기준 직전 6개월(최소 3개월 관측) 평균 대비 이번 달 배수다. 특정
+ *   달을 하드코딩해 이상치로 표시하지 않는다 — 이 값이 크면(예: 2026-07) 화면이 그 사실을 스스로
+ *   드러낸다. 관측치가 부족하면 INSUFFICIENT_TRAILING_HISTORY, 관측치는 충분한데 기준 평균이
+ *   정확히 0이면(반품 상계 등으로 그 구간 내내 0일 수 있다) TRAILING_AVG_ZERO — 재현 가능한
+ *   null에는 항상 사유 코드가 딸려 있다(fix round 1, 리뷰 B-1).
+ * ★ fix round 1(리뷰 B-2) — qty를 `?? 0`으로 지어내지 않는다. 값이 없다는 것과 실제로 0이었다는
+ *   것은 다른 사실이다(뷰의 원본 raw.fact_shipment.qty는 not null이라 정상 경로에서는 항상 값이
+ *   있지만, 조회 실패·조인 어긋남으로 null이 오는 경우까지 0으로 둔갑시키지 않는다).
+ * ★ fix round 1(리뷰 B-2) — level이 알려진 값('TOTAL'|'ITEM_TYPE')이 아니면 조용히 'TOTAL'로
+ *   떨어뜨리지 않는다. null + levelReasonCode로 드러낸다 — 여기서 침묵하면 ITEM_TYPE 행이
+ *   TOTAL 합계에 섞여 보이는 것보다 나쁜 결과가 된다.
  */
 export type ShipmentMonthlyRollupRow = {
-  level: ShipmentRollupLevel;
+  level: ShipmentRollupLevel | null;
+  levelReasonCode: string | null;
   /** level이 TOTAL이면 null */
   itemType: string | null;
   /** YYYY-MM */
   ym: string;
-  qty: number;
+  qty: number | null;
   qtyVsTrailing6mAvg: number | null;
   trendReasonCode: string | null;
 };
 
 export function normalizeShipmentMonthlyRollupRow(row: Record<string, unknown>): ShipmentMonthlyRollupRow {
   const rawLevel = value(row, ['level']);
+  const levelOk = isShipmentRollupLevel(rawLevel);
   return {
-    level: isShipmentRollupLevel(rawLevel) ? rawLevel : 'TOTAL',
+    level: levelOk ? rawLevel : null,
+    levelReasonCode: levelOk ? null : 'UNKNOWN_ROLLUP_LEVEL',
     itemType: text(row, ['item_type']),
     ym: String(value(row, ['ym']) ?? ''),
-    qty: numberValue(row, ['qty']) ?? 0,
+    qty: numberValue(row, ['qty']),
     qtyVsTrailing6mAvg: numberValue(row, ['qty_vs_trailing_6m_avg']),
     trendReasonCode: text(row, ['trend_reason_code']),
   };
@@ -107,14 +118,16 @@ export function normalizeShipmentMonthlyRollupRow(row: Record<string, unknown>):
  *
  * ★ 이 뷰는 10만 행대라 PostgREST 1000행 상한에 곧바로 걸린다 — getShipmentMonthlyByItem은
  *   itemCode를 선택 인자가 아니라 필수 인자로 받는다(뷰 머리 주석과 같은 이유).
+ * ★ fix round 1(리뷰 B-2) — qty·nSourceCodes를 `?? 0`으로 지어내지 않는다(ShipmentMonthlyRollupRow와
+ *   같은 이유).
  */
 export type ShipmentMonthlyItemRow = {
   itemCode: string;
   itemType: string | null;
   /** YYYY-MM */
   ym: string;
-  qty: number;
-  nSourceCodes: number;
+  qty: number | null;
+  nSourceCodes: number | null;
 };
 
 export function normalizeShipmentMonthlyItemRow(row: Record<string, unknown>): ShipmentMonthlyItemRow {
@@ -122,7 +135,7 @@ export function normalizeShipmentMonthlyItemRow(row: Record<string, unknown>): S
     itemCode: String(value(row, ['item_code']) ?? '미정'),
     itemType: text(row, ['item_type']),
     ym: String(value(row, ['ym']) ?? ''),
-    qty: numberValue(row, ['qty']) ?? 0,
-    nSourceCodes: numberValue(row, ['n_source_codes']) ?? 0,
+    qty: numberValue(row, ['qty']),
+    nSourceCodes: numberValue(row, ['n_source_codes']),
   };
 }
