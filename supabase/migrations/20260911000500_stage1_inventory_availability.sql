@@ -506,6 +506,10 @@ revoke all on core.v_open_po_qty from anon, public;
 -- core.commit_import_batch는 이미 함수 맨 위에서 core.is_admin()을 요구하므로 두 호출 모두
 -- 별도 권한 검사를 추가하지 않는다. 스냅샷과 입고 이중 계산은 core.recompute_stock_balance_totals가
 -- "그 스냅샷 시각 이후 완료 입고만" 더해서 막는다(core.stock_balance 코멘트 참고).
+--
+-- ★ 주의 — 이 함수는 Task 12(20260911001150)에서 한 번 더 재정의된다(월말 스냅샷 호출 추가).
+--   파일명 순서상 그쪽이 최종본이므로, 이 본문을 고치면 20260911001150의 정의도 반드시 같이
+--   고쳐야 한다. 그러지 않으면 여기 수정이 뒤 파일 정의에 덮여 사라진다(2026-09-12에 실제로 겪음).
 
 create or replace function core.commit_import_batch(p_batch_id uuid)
 returns void language plpgsql security definer set search_path = core, raw, pg_temp as $$
@@ -523,7 +527,20 @@ begin
     elsif b.import_type='supplier_master' then payload := jsonb_build_object('공급업체코드',payload->>'supplier_id','공급업체명',payload->>'supplier_name','국가',payload->>'country','batch_id',p_batch_id,'source_type','FILE_UPLOAD','loaded_at',now(),'source_record_id',payload->>'source_record_id');
     elsif b.import_type='purchase_order' then payload := jsonb_build_object('발주번호',payload->>'source_record_id','발주일',payload->>'order_date','공급업체',payload->>'supplier_id','품목코드',payload->>'item_id','발주수량',payload->>'qty','batch_id',p_batch_id,'source_type','FILE_UPLOAD','loaded_at',now(),'source_record_id',payload->>'source_record_id');
     elsif b.import_type='goods_receipt' then payload := jsonb_build_object('입고번호',payload->>'source_record_id','품목코드',payload->>'item_id','입고수량',payload->>'qty','입고일',payload->>'receipt_date','receipt_status',payload->>'receipt_status','batch_id',p_batch_id,'source_type','FILE_UPLOAD','loaded_at',now(),'source_record_id',payload->>'source_record_id'); end if;
-    if b.import_mode='upsert' then execute format('insert into core.import_row_backup(batch_id,target_table,row_data,backup_reason) select $1,$2,to_jsonb(t),''UPSERT'' from raw.%I t where t.source_type=''FILE_UPLOAD'' and t.source_record_id=$3',table_name) using p_batch_id,table_name,payload->>'source_record_id'; execute format('delete from raw.%I where source_type=''FILE_UPLOAD'' and source_record_id=$1',table_name) using payload->>'source_record_id'; end if;
+    if b.import_mode='upsert' then
+      -- ★ (Task 4 후속 수정) 입고 · 발주는 한 문서번호에 품목이 여러 줄이다. source_record_id
+      --   하나만 키로 삭제하면 같은 입고번호 · 발주번호의 앞 줄이 뒤 줄을 적재할 때마다 지워져
+      --   마지막 품목만 raw에 남는다(core.v_open_po_qty의 발주 · 입고 수량이 함께 과소 계상됐다).
+      --   이 두 유형은 (source_record_id, 품목코드)가 행의 실제 식별자다 — core.stock_receipt_ledger의
+      --   유니크 키와 같은 기준이다. 나머지 유형은 문서번호 하나가 곧 한 행이라 기존 동작 그대로 둔다.
+      if b.import_type in ('goods_receipt','purchase_order') then
+        execute format('insert into core.import_row_backup(batch_id,target_table,row_data,backup_reason) select $1,$2,to_jsonb(t),''UPSERT'' from raw.%I t where t.source_type=''FILE_UPLOAD'' and t.source_record_id=$3 and t."품목코드" is not distinct from $4',table_name) using p_batch_id,table_name,payload->>'source_record_id',payload->>'품목코드';
+        execute format('delete from raw.%I where source_type=''FILE_UPLOAD'' and source_record_id=$1 and "품목코드" is not distinct from $2',table_name) using payload->>'source_record_id',payload->>'품목코드';
+      else
+        execute format('insert into core.import_row_backup(batch_id,target_table,row_data,backup_reason) select $1,$2,to_jsonb(t),''UPSERT'' from raw.%I t where t.source_type=''FILE_UPLOAD'' and t.source_record_id=$3',table_name) using p_batch_id,table_name,payload->>'source_record_id';
+        execute format('delete from raw.%I where source_type=''FILE_UPLOAD'' and source_record_id=$1',table_name) using payload->>'source_record_id';
+      end if;
+    end if;
     execute format('insert into raw.%I select * from jsonb_populate_record(null::raw.%I,$1)',table_name,table_name) using payload;
   end loop;
   update core.upload_batch set status='IMPORTED', imported_at=now(), forecast_stale_marked=b.import_type in ('usage_history','sales_order','business_event') where batch_id=p_batch_id;

@@ -690,3 +690,67 @@ select order_test.check(:'cand_queue_rank' = '1' and :'cand_order_id' = :'j1' an
 select order_test.as_user(:'sales1') \g /dev/null
 select order_test.expect_error('select core.list_manual_allocation_candidates(''ITEMT25'')', 'ALLOC_MANUAL', 'S13 ALLOC_MANUAL 권한 없는 사용자는 조회 거절');
 reset role;
+
+
+\echo '== S14 다품목 문서번호 upsert 적재 — 한 입고번호의 품목이 모두 남는다(최종 리뷰 Important 5) =='
+-- STEP 4 core.commit_import_batch의 upsert 모드는 행마다 source_record_id 하나만 키로 delete→insert
+-- 했다. 같은 입고번호 · 발주번호에 품목이 여러 줄이면 앞 줄이 뒤 줄을 적재할 때 지워져 마지막 품목만
+-- raw에 남았고, core.v_open_po_qty의 발주 · 입고 수량과 입고 원장이 함께 과소 계상됐다.
+-- 화면 업로드와 같은 정식 경로(관리자 + core.commit_import_batch)로 두 줄짜리 문서를 적재해 확인한다.
+set role authenticated;
+select order_test.as_user('00000000-0000-4000-8000-000000000061') \g /dev/null
+select order_test.commit_import_lines('purchase_order', 'upsert', 'PO-MULTI-1', jsonb_build_array(
+  jsonb_build_object('item_id', 'ITEMT30', 'qty', '50', 'order_date', '2026-09-01'),
+  jsonb_build_object('item_id', 'ITEMT31', 'qty', '60', 'order_date', '2026-09-01')
+)) as s14_po \gset
+select order_test.commit_import_lines('goods_receipt', 'upsert', 'GR-MULTI-1', jsonb_build_array(
+  jsonb_build_object('item_id', 'ITEMT30', 'qty', '20', 'receipt_date', now()::text, 'receipt_status', 'COMPLETED'),
+  jsonb_build_object('item_id', 'ITEMT31', 'qty', '30', 'receipt_date', now()::text, 'receipt_status', 'COMPLETED')
+)) as s14_gr \gset
+reset role;
+
+select order_test.check((select count(*) = 2 from raw.purchase_order where source_record_id = 'PO-MULTI-1'),
+  'S14 한 발주번호의 두 품목이 모두 raw.purchase_order에 남는다');
+select order_test.check((select count(*) = 2 from raw.goods_receipt where source_record_id = 'GR-MULTI-1'),
+  'S14 한 입고번호의 두 품목이 모두 raw.goods_receipt에 남는다');
+select order_test.check((select open_po_qty = 30 from core.v_open_po_qty where item_id = 'ITEMT30'),
+  'S14 Open PO — ITEMT30 발주 50 − 입고 20 = 30 (두 줄을 모두 센다)');
+select order_test.check((select open_po_qty = 30 from core.v_open_po_qty where item_id = 'ITEMT31'),
+  'S14 Open PO — ITEMT31 발주 60 − 입고 30 = 30 (마지막 품목만 남지 않는다)');
+select order_test.check((select count(*) = 2 from core.stock_receipt_ledger where source_record_id = 'GR-MULTI-1'),
+  'S14 입고 원장에 품목별로 각각 1건씩 두 건이 기록된다');
+select order_test.check((select normal_qty = 20 from core.stock_balance where item_id = 'ITEMT30'),
+  'S14 정상 창고재고 — ITEMT30 20 반영');
+select order_test.check((select normal_qty = 30 from core.stock_balance where item_id = 'ITEMT31'),
+  'S14 정상 창고재고 — ITEMT31 30 반영(두 품목 모두)');
+
+-- 같은 입고번호를 같은 내용으로 다시 upsert 적재해도 결과가 달라지지 않아야 한다(멱등).
+set role authenticated;
+select order_test.as_user('00000000-0000-4000-8000-000000000061') \g /dev/null
+select order_test.commit_import_lines('goods_receipt', 'upsert', 'GR-MULTI-1', jsonb_build_array(
+  jsonb_build_object('item_id', 'ITEMT30', 'qty', '20', 'receipt_date', now()::text, 'receipt_status', 'COMPLETED'),
+  jsonb_build_object('item_id', 'ITEMT31', 'qty', '30', 'receipt_date', now()::text, 'receipt_status', 'COMPLETED')
+)) as s14_gr2 \gset
+reset role;
+
+select order_test.check((select count(*) = 2 from raw.goods_receipt where source_record_id = 'GR-MULTI-1'),
+  'S14 재적재 후에도 raw 행은 품목당 한 건씩 두 건이다(중복 누적 없음)');
+select order_test.check((select count(*) = 2 from core.stock_receipt_ledger where source_record_id = 'GR-MULTI-1'),
+  'S14 재적재해도 입고 원장은 (입고번호, 품목) 유니크로 두 건 그대로');
+select order_test.check((select normal_qty = 20 from core.stock_balance where item_id = 'ITEMT30'),
+  'S14 재적재해도 정상 창고재고가 이중 계상되지 않는다(ITEMT30 20 유지)');
+select order_test.check((select normal_qty = 30 from core.stock_balance where item_id = 'ITEMT31'),
+  'S14 재적재해도 정상 창고재고가 이중 계상되지 않는다(ITEMT31 30 유지)');
+select order_test.check((select count(*) = 2 from core.import_row_backup where batch_id = :'s14_gr2'::uuid and backup_reason = 'UPSERT'),
+  'S14 재적재 시 덮어쓰기 백업도 두 줄 모두 남는다(복구 가능)');
+
+-- 적재 권한 검사는 그대로다 — core.commit_import_batch가 관리자가 아닌 호출자를 거절한다.
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select order_test.expect_error(
+  $f$select order_test.commit_import_lines('goods_receipt', 'upsert', 'GR-MULTI-9', jsonb_build_array(jsonb_build_object('item_id', 'ITEMT30', 'qty', '5', 'receipt_date', now()::text, 'receipt_status', 'COMPLETED')))$f$,
+  '관리자 권한이 필요합니다', 'S14 관리자가 아니면 적재 자체가 거절된다(권한 검사 유지)'
+);
+reset role;
+select order_test.check((select count(*) = 0 from raw.goods_receipt where source_record_id = 'GR-MULTI-9'),
+  'S14 거절된 적재는 raw에 한 줄도 남기지 않는다');

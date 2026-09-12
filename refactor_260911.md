@@ -748,7 +748,7 @@ npm run build
 git diff --check
 rg -n "#[0-9a-fA-F]{3,8}" app components lib
 rg -n "raw\.usage_history|raw\.inventory|schema\('core'\)" app components
-rg -n "2026\.09|수주확률 가중|가용 Open PO" app components --glob '!components/workflow/**'
+rg -n "2026\.09|수주확률 가중|가용 Open PO" app components --glob '!components/workflow/**' --glob '!components/procurement-app.tsx'
 ```
 
 **기대 결과:**

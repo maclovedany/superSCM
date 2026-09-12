@@ -5,15 +5,20 @@
 -- (if not exists · create or replace · drop 후 재생성). 운영 테이블에 예시 데이터를 넣지 않는다.
 --
 -- ★ 잠금 순서 — 교착을 막기 위해 모든 경로가 같은 순서를 따른다 (Task 6도 반드시 따른다)
+--     0) core.approval_request 승인 행 — 승인 id 오름차순, core.lock_order_pending_approvals()
 --     1) core.stock_balance 품목 행 — 품목코드 오름차순, core.lock_stock_balance_items()
 --     2) core.sales_order 주문 행
 --     3) core.stock_allocation 배정 행
---     4) core.approval_request 승인 행
 --   "가용재고 = 정상 창고재고 − (TEMPORARY + APPROVAL_HOLD + FIRM)" 판정은 반드시 1)을 잡은 뒤
 --   같은 트랜잭션 안에서 한다. READ COMMITTED에서는 잠금을 기다린 뒤 실행되는 다음 문장이 먼저
 --   끝난 트랜잭션의 배정을 보므로, 두 요청이 같은 재고를 중복으로 가져갈 수 없다.
---   예외: core.decide_approval(Task 2)은 승인 행을 먼저 잠근다. 같은 주문의 승인과 확정배정 취소가
---   동시에 일어나는 드문 경우 PostgreSQL이 교착을 감지해 한쪽을 40P01로 되돌린다(데이터 손상 없음).
+--
+--   ★ 0)이 맨 앞인 이유(2026-09-12 최종 리뷰 Important 4) — core.decide_approval(Task 2)은 반드시
+--   core.approval_request를 먼저 잠근 뒤 후처리 훅에서 도메인 행(재고 · 주문 · 배정)을 잠근다.
+--   취소 경로가 도메인 행을 먼저 잡고 나중에 승인 행을 잡으면 순서가 뒤집혀, 같은 요청에 대한
+--   동시 승인 · 취소가 40P01(deadlock detected)로 끝나고 그 영문 오류가 화면에 그대로 나왔다.
+--   그래서 취소 경로(core.cancel_sales_order · core.cancel_firm_allocation)는 재고 행을 잡기 전에
+--   그 주문에 걸린 대기 중 승인 요청을 먼저 잠근다. 이제 모든 경로가 승인 행 → 도메인 행 순서다.
 --
 -- ★ 컨트롤러 판정 반영
 --   - 검토 요청 시점의 임시배정은 그 순간의 가용재고에서 선착순으로만 한다. 우선순위 → 최초 검토
@@ -908,8 +913,50 @@ begin
 end;
 $$;
 
+-- 주문에 걸린 대기 중(PENDING) 승인 요청을 승인 id 오름차순으로 먼저 잠근다 — 파일 머리말의 잠금 순서 0).
+-- core.decide_approval(Task 2)이 core.approval_request → 도메인 행 순서로 잠그므로, 취소 경로도 도메인 행을
+-- 잡기 전에 이 함수를 불러 같은 순서를 만든다. 그러지 않으면 같은 요청에 대한 동시 승인 · 취소가 40P01로 끝난다.
+-- 잠글 대상이 없으면 아무 일도 하지 않는다(대기 중 승인이 없는 보통의 주문).
+create or replace function core.lock_order_pending_approvals(p_order_id uuid)
+returns integer
+language plpgsql
+security definer
+set search_path = core, public, pg_temp
+as $$
+declare
+  v_approval_id uuid;
+  v_count integer := 0;
+begin
+  for v_approval_id in
+    select r.approval_id
+      from core.approval_request r
+     where r.status = 'PENDING'
+       and r.approval_id in (
+         select a.approval_id
+           from core.stock_allocation a
+          where a.order_id = p_order_id
+            and a.approval_id is not null
+            and a.status in ('TEMPORARY', 'APPROVAL_HOLD', 'FIRM')
+       )
+     order by r.approval_id
+       for update
+  loop
+    v_count := v_count + 1;
+  end loop;
+  return v_count;
+end;
+$$;
+
+comment on function core.lock_order_pending_approvals(uuid) is
+  'Task 5(2026-09-12 최종 fix) — 취소 경로가 재고 · 주문 행을 잡기 전에 그 주문의 대기 중 승인 요청을 '
+  '먼저 잠근다. core.decide_approval과 같은 잠금 순서를 만들어 동시 승인 · 취소 교착(40P01)을 없앤다';
+
+-- 내부 전용 — 취소 경로(같은 파일)만 부른다. security definer 함수의 기본 PUBLIC 실행 권한을 회수한다.
+revoke all on function core.lock_order_pending_approvals(uuid) from public, anon, authenticated;
+
 -- 주문의 활성 배정(임시 · 확정 · 승인대기 확보)을 모두 해제하고, 확보에 연결된 대기 중 우선 배정 승인 요청을
--- 취소한다. 호출자가 재고 행 → 주문 행을 이미 잠갔다는 전제다(core.cancel_firm_allocation · core.cancel_sales_order).
+-- 취소한다. 호출자가 승인 행 → 재고 행 → 주문 행을 이미 잠갔다는 전제다(core.cancel_firm_allocation ·
+-- core.cancel_sales_order — 둘 다 core.lock_order_pending_approvals를 먼저 부른다).
 create or replace function core.release_order_allocations(p_order_id uuid, p_actor uuid, p_reason text, p_cause text)
 returns jsonb
 language plpgsql
@@ -1739,6 +1786,9 @@ begin
     from core.sales_order_line l
    where l.order_id = v_target.order_id;
 
+  -- 잠금 순서 0) 승인 행 → 1) 재고 행 → 2) 주문 행 → 3) 배정 행 (파일 머리말). 승인 행을 먼저 잠가야
+  -- core.decide_approval과 순서가 같아져 동시 승인 · 취소가 교착(40P01)되지 않는다.
+  perform core.lock_order_pending_approvals(v_target.order_id);
   perform core.lock_stock_balance_items(v_item_ids, false);
 
   select * into v_order
@@ -1902,7 +1952,9 @@ begin
     from core.sales_order_line l
    where l.order_id = p_order_id;
 
-  -- 잠금 순서 1) 재고 행(품목코드 순) → 2) 주문 행. 다품목 주문도 같은 순서라 교착이 생기지 않는다.
+  -- 잠금 순서 0) 승인 행(승인 id 순) → 1) 재고 행(품목코드 순) → 2) 주문 행. 다품목 주문도 같은 순서라
+  -- 교착이 생기지 않는다. 승인 행이 맨 앞인 이유는 파일 머리말 참고(동시 승인 · 취소 40P01 방지).
+  perform core.lock_order_pending_approvals(p_order_id);
   perform core.lock_stock_balance_items(v_item_ids, false);
 
   select * into v_order

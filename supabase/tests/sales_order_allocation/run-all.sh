@@ -39,13 +39,13 @@ fi
 STATUS=0
 "${PSQL[@]}" -f "$HERE/scenarios.psql" > "$LOG_DIR/scenarios.log" 2>&1 || STATUS=1
 echo "scenarios:   PASS $(count '^PASS' "$LOG_DIR/scenarios.log") · FAIL/ERROR $(count 'FAIL|ERROR' "$LOG_DIR/scenarios.log")"
-for scenario in S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13; do
+for scenario in S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14; do
   printf '  %s PASS %s\n' "$scenario" "$(count "^PASS: $scenario " "$LOG_DIR/scenarios.log")"
 done
 
 bash "$HERE/concurrency.sh" "$DB" "$LOG_DIR" > "$LOG_DIR/concurrency.log" 2>&1 || STATUS=1
 echo "concurrency: PASS $(count '^PASS' "$LOG_DIR/concurrency.log") · FAIL/ERROR $(count '^FAIL|ERROR' "$LOG_DIR/concurrency.log")"
-grep -E '잠금을 기다리는|선착순|정확히 100' "$LOG_DIR/concurrency.log" | sed 's/^/  /'
+grep -E '잠금을 기다리는|선착순|정확히 100|C7 결과 요약' "$LOG_DIR/concurrency.log" | sed 's/^/  /'
 
 "${PSQL[@]}" -f "$HERE/invariants.psql" > "$LOG_DIR/invariants.log" 2>&1 || STATUS=1
 echo "invariants:  PASS $(count '^PASS' "$LOG_DIR/invariants.log") · FAIL/ERROR $(count 'FAIL|ERROR' "$LOG_DIR/invariants.log")"

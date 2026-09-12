@@ -60,6 +60,38 @@ begin
   return v_batch_id;
 end $$;
 
+-- 최종 fix 웨이브 — 정식 적재 경로(core.commit_import_batch)로 한 문서번호에 품목 여러 줄을
+-- 커밋한다. 화면 업로드 경로와 같은 표(core.upload_batch · core.import_staging) · 같은 함수를 쓴다.
+-- 관리자 컨텍스트(set role authenticated + ADMIN 사용자)에서 불러야 한다 — commit_import_batch가
+-- core.is_admin()을 요구한다.
+-- ★ security definer — staging 표(core.upload_batch · core.import_staging)에 넣는 부분은 화면이
+--   아니라 "파일이 파싱돼 이미 검증까지 끝난 상태"를 만드는 fixture 배선이라, 기존
+--   order_test.commit_goods_receipt와 같이 소유자 권한으로 넣는다(그 헬퍼도 reset role 상태에서만
+--   불린다). 검증 대상인 권한 검사는 그대로다 — 안에서 부르는 core.commit_import_batch가
+--   core.is_admin()을 호출자 기준(auth.uid()는 GUC라 security definer의 영향을 받지 않는다)으로
+--   다시 확인하고, 관리자가 아니면 거절한다(S14 마지막 검증).
+create or replace function order_test.commit_import_lines(
+  p_import_type text, p_import_mode text, p_source_record_id text, p_lines jsonb
+) returns uuid language plpgsql security definer as $$
+declare
+  v_batch_id uuid := gen_random_uuid();
+  v_line jsonb;
+  v_row integer := 0;
+begin
+  insert into core.upload_batch (batch_id, file_name, import_type, import_mode, status, total_rows, success_rows)
+  values (v_batch_id, 'order_test-import.csv', p_import_type, p_import_mode, 'VALIDATED',
+          jsonb_array_length(p_lines), jsonb_array_length(p_lines));
+
+  for v_line in select * from jsonb_array_elements(p_lines) loop
+    v_row := v_row + 1;
+    insert into core.import_staging (batch_id, row_number, original_data, mapped_data, validation_status)
+    values (v_batch_id, v_row, v_line, v_line || jsonb_build_object('source_record_id', p_source_record_id), 'SUCCESS');
+  end loop;
+
+  perform core.commit_import_batch(v_batch_id);
+  return v_batch_id;
+end $$;
+
 grant execute on all functions in schema order_test to anon, authenticated;
 
 insert into auth.users (id, email) values
@@ -69,7 +101,8 @@ insert into auth.users (id, email) values
   ('00000000-0000-4000-8000-000000000021', 't5-lead1@example.test'),
   ('00000000-0000-4000-8000-000000000031', 't5-bizdev@example.test'),
   ('00000000-0000-4000-8000-000000000041', 't5-marketing@example.test'),
-  ('00000000-0000-4000-8000-000000000051', 't5-dual@example.test')
+  ('00000000-0000-4000-8000-000000000051', 't5-dual@example.test'),
+  ('00000000-0000-4000-8000-000000000061', 't5-admin@example.test')
 on conflict (id) do nothing;
 
 insert into core.app_user (user_id, email, name, department, role, active, job_role) values
@@ -79,9 +112,15 @@ insert into core.app_user (user_id, email, name, department, role, active, job_r
   ('00000000-0000-4000-8000-000000000021', 't5-lead1@example.test', '팀장1', 'SCM', 'USER', true, 'SCM_LEAD'),
   ('00000000-0000-4000-8000-000000000031', 't5-bizdev@example.test', '사업강화1', 'BIZ_DEV', 'USER', true, 'BIZ_DEV'),
   ('00000000-0000-4000-8000-000000000041', 't5-marketing@example.test', '마케팅1', 'MARKETING', 'USER', true, 'MARKETING'),
-  ('00000000-0000-4000-8000-000000000051', 't5-dual@example.test', '겸직검증', 'SCM', 'USER', true, 'T5_DUAL')
+  ('00000000-0000-4000-8000-000000000051', 't5-dual@example.test', '겸직검증', 'SCM', 'USER', true, 'T5_DUAL'),
+  -- 적재(core.commit_import_batch)는 관리자 전용이다 — S14 다품목 입고 검증에서만 쓴다.
+  ('00000000-0000-4000-8000-000000000061', 't5-admin@example.test', '관리자1', null, 'ADMIN', true, null)
+-- ★ role도 반드시 덮어써야 한다. auth.users INSERT가 core.handle_new_auth_user() 트리거
+--   (on_auth_user_created)를 깨워 core.app_user 행을 role 기본값 'USER'로 먼저 만들기 때문에,
+--   여기서 role을 빼면 아래 VALUES의 'ADMIN'이 조용히 버려진다(S14 관리자 적재가 그렇게 막혔다).
+--   supabase/tests/item_policy · master_edit fixture와 같은 방식이다.
 on conflict (user_id) do update
-  set job_role = excluded.job_role, name = excluded.name, active = true;
+  set job_role = excluded.job_role, role = excluded.role, name = excluded.name, active = true;
 
 -- 자기 승인 차단을 검증하려면 요청 권한과 승인 권한을 함께 가진 계정이 필요하다(임시 DB 전용 직책).
 insert into core.role_permission (job_role, permission_code) values
@@ -145,5 +184,19 @@ insert into core.item_policy (item_id, allocation_mode) values
   ('ITEMT26', 'AUTO'),
   ('ITEMCJ01', 'AUTO')
 on conflict (item_id) do update set allocation_mode = excluded.allocation_mode;
+
+-- 최종 fix 웨이브 — 다품목 문서번호 upsert 적재(S14)와 승인 vs 취소 동시성(C7) 전용 품목.
+insert into raw.item_master ("품목코드", "품목명", "품목구분") values
+  ('ITEMT30', '다품목 입고번호 A', '소모품'),
+  ('ITEMT31', '다품목 입고번호 B', '소모품'),
+  ('ITEMCX01', '승인·취소 동시성', '소모품')
+on conflict do nothing;
+
+insert into core.stock_balance (item_id, snapshot_qty, normal_qty, snapshot_at) values
+  ('ITEMT30', 0, 0, now()),
+  ('ITEMT31', 0, 0, now()),
+  ('ITEMCX01', 200, 200, now())
+on conflict (item_id) do update
+  set snapshot_qty = excluded.snapshot_qty, normal_qty = excluded.normal_qty, snapshot_at = excluded.snapshot_at;
 
 select 'fixtures ok';

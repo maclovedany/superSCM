@@ -268,7 +268,13 @@ begin
     raise exception '취소 사유는 필수입니다.' using errcode = '22023';
   end if;
 
-  select * into v_revision from core.item_policy_revision where revision_id = p_revision_id for update;
+  -- ★ 잠금 순서(2026-09-12 최종 리뷰 Important 4) — core.decide_approval(Task 2)은 반드시
+  --   core.approval_request를 먼저 잠근 뒤 후처리 훅에서 도메인 행(core.item_policy_revision)을 잠근다.
+  --   이 취소 경로가 변경안 행을 먼저 잠그면 순서가 뒤집혀, 같은 요청을 팀장이 승인하는 동시에
+  --   요청자가 취소하면 40P01(deadlock detected) 영문 오류가 화면에 그대로 노출됐다.
+  --   그래서 1) 잠그지 않고 읽어 승인 id만 얻고 → 2) core.approval_request를 먼저 잠근 뒤 →
+  --   3) 변경안 행을 잠그고 상태를 다시 확인한다. 잠금 전 스냅샷으로 한 검사는 잠근 뒤 그대로 반복한다.
+  select * into v_revision from core.item_policy_revision where revision_id = p_revision_id;
   if not found then
     raise exception '품목 정책 변경안을 찾을 수 없습니다.' using errcode = 'P0002';
   end if;
@@ -281,6 +287,22 @@ begin
   if v_revision.approval_id is null then
     -- request_item_policy_change가 같은 트랜잭션에서 항상 채우므로 정상 흐름에서는 발생하지 않는다.
     raise exception '이 변경안에는 연결된 승인 요청이 없습니다.' using errcode = 'P0002';
+  end if;
+
+  -- 1) 승인 행을 먼저 잠근다. 팀장의 결정이 진행 중이면 여기서 기다렸다가, 그 결정이 끝난 뒤
+  --    아래 재확인에서 "대기 중인 변경안만 취소할 수 있습니다"로 정상 거절된다(교착 없음).
+  perform 1 from core.approval_request where approval_id = v_revision.approval_id for update;
+
+  -- 2) 그 다음에 변경안 행을 잠그고 상태를 다시 확인한다(잠금을 기다리는 동안 결정이 끝났을 수 있다).
+  select * into v_revision from core.item_policy_revision where revision_id = p_revision_id for update;
+  if not found then
+    raise exception '품목 정책 변경안을 찾을 수 없습니다.' using errcode = 'P0002';
+  end if;
+  if v_revision.requested_by <> v_actor then
+    raise exception '요청자 본인만 자신의 품목 정책 변경안을 취소할 수 있습니다.' using errcode = '42501';
+  end if;
+  if v_revision.status <> 'PENDING' then
+    raise exception '대기 중인 변경안만 취소할 수 있습니다.' using errcode = '22023';
   end if;
 
   -- approval_request.status를 CANCELLED로 바꾼다. 그 UPDATE가 다음을 같은 트랜잭션에서 연쇄시킨다:
@@ -467,26 +489,43 @@ comment on column core.item_policy.min_order_amount is
 
 -- ★ create or replace view는 기존 컬럼을 같은 이름·순서로 유지해야 한다(중간에 끼워 넣으면
 --   "rename column" 오류가 난다) — target_dos_approved는 기존 컬럼 뒤(맨 끝)에 추가한다.
-create or replace view analytics.v_item_policy as
-select p.item_id,
-       p.target_dos_days, p.allocation_mode, p.target_stock_qty,
-       p.unit_price, p.unit_price_basis,
-       p.moq, p.pack_size, p.min_order_amount, p.item_grade, p.service_level,
-       p.updated_at,
-       coalesce(p.moq, 1) as effective_moq,
-       not exists (
-         select 1 from core.item_policy_revision r
-          where r.item_id = p.item_id and r.status = 'APPROVED' and r.proposed_target_dos_days is not null
-       ) as order_blocked,
-       case when not exists (
-         select 1 from core.item_policy_revision r
-          where r.item_id = p.item_id and r.status = 'APPROVED' and r.proposed_target_dos_days is not null
-       ) then 'TARGET_DOS_UNSET' end as reason_code,
-       exists (
-         select 1 from core.item_policy_revision r
-          where r.item_id = p.item_id and r.status = 'APPROVED' and r.proposed_target_dos_days is not null
-       ) as target_dos_approved
-  from core.item_policy p;
+-- ★ 재실행 안전(2026-09-12 최종 fix) — 0900(Task 9b)이 이 뷰 끝에 approved_* 8열을 더 붙였다.
+--   create or replace view는 열을 뺄 수 없으므로, 0900까지 적용된 DB에서 이 파일을 다시 실행하면
+--   "cannot drop columns from view"로 멈췄다(error.md #24). 0900이 이미 넓혀 둔 뷰는 건너뛴다 —
+--   0900의 정의가 이 정의의 16열을 이름 · 순서 · 식 그대로 포함하므로 건너뛰어도 의미가 같다.
+do $migration$
+begin
+  if to_regclass('analytics.v_item_policy') is not null
+     and exists (select 1 from pg_attribute a
+                  where a.attrelid = 'analytics.v_item_policy'::regclass
+                    and a.attname = 'approved_target_dos_days' and a.attnum > 0 and not a.attisdropped) then
+    raise notice 'analytics.v_item_policy — 20260911000900이 넓힌 정의가 이미 있어 건너뜁니다';
+  else
+    execute $v$
+      create or replace view analytics.v_item_policy as
+      select p.item_id,
+             p.target_dos_days, p.allocation_mode, p.target_stock_qty,
+             p.unit_price, p.unit_price_basis,
+             p.moq, p.pack_size, p.min_order_amount, p.item_grade, p.service_level,
+             p.updated_at,
+             coalesce(p.moq, 1) as effective_moq,
+             not exists (
+               select 1 from core.item_policy_revision r
+                where r.item_id = p.item_id and r.status = 'APPROVED' and r.proposed_target_dos_days is not null
+             ) as order_blocked,
+             case when not exists (
+               select 1 from core.item_policy_revision r
+                where r.item_id = p.item_id and r.status = 'APPROVED' and r.proposed_target_dos_days is not null
+             ) then 'TARGET_DOS_UNSET' end as reason_code,
+             exists (
+               select 1 from core.item_policy_revision r
+                where r.item_id = p.item_id and r.status = 'APPROVED' and r.proposed_target_dos_days is not null
+             ) as target_dos_approved
+        from core.item_policy p
+    $v$;
+  end if;
+end
+$migration$;
 
 comment on view analytics.v_item_policy is
   'Task 9a — target_dos_approved · order_blocked는 target_dos_days의 존재가 아니라 승인된 '

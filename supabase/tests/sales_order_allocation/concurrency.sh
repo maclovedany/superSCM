@@ -179,6 +179,87 @@ check "(select status from core.sales_order where order_id = '$M2') = 'EXPIRED'"
 "${P[@]}" -c "select * from core.expire_temporary_allocations()" > "$LOG_DIR/c6-retry.log" 2>&1
 check "(select status from core.sales_order where order_id = '$M1') = 'EXPIRED'" 'C6 잠금 해제 뒤 재시도(다음 Cron 회차 대역)하면 M1도 정상 EXPIRED'
 
+echo "== C7 우선 배정 승인 vs 주문 취소 동시 실행 — 교착(40P01) 없이 한쪽만 이긴다 (ITEMCX01) =="
+# 최종 리뷰 Important 4 — core.decide_approval은 core.approval_request를 먼저 잠그고 후처리 훅에서
+# 도메인 행을 잠근다. 예전 취소 경로(core.cancel_sales_order → core.release_order_allocations)는
+# 재고 · 주문 · 배정 행을 먼저 잡고 나중에 승인 행을 잡아 순서가 뒤집혔고, 같은 요청에 승인과 취소가
+# 동시에 들어오면 40P01(deadlock detected) 영문 오류가 화면에 그대로 나왔다. 이제 취소 경로도
+# core.lock_order_pending_approvals로 승인 행을 먼저 잠근다 — 한쪽은 기다렸다가 업무 오류로 거절된다.
+PLANNER1=00000000-0000-4000-8000-000000000011
+LEAD1=00000000-0000-4000-8000-000000000021
+APPROVE_WINS=0
+CANCEL_WINS=0
+# 라운드 1~3은 승인을 먼저, 4~5는 취소를 먼저 띄운다 — 어느 쪽이 먼저 승인 행을 잡아도 교착 없이
+# 한쪽만 이기는지(그리고 진 쪽이 업무 오류로 거절되는지) 양방향으로 확인한다.
+for round in 1 2 3 4 5; do
+  # 앞선 대기 주문(부족 300)이 있어야 뒤 주문의 수동 배정이 "순서 건너뜀"으로 APPROVAL_HOLD가 된다.
+  W=$(create_order $SALES1 ITEMCX01 300)
+  review $SALES1 "$W" WAIT_FULL "$LOG_DIR/c7-wait-$round.log"
+  T=$(create_order $SALES2 ITEMCX01 250)
+  review $SALES2 "$T" WAIT_FULL "$LOG_DIR/c7-target-$round.log"
+  "${P[@]}" -c "begin" -c "set local role authenticated" -c "set local request.jwt.claim.sub = '$PLANNER1'" \
+    -c "select core.request_manual_allocation('$T', 'ITEMCX01', 20, '동시성 검증 $round')" -c "commit" \
+    > "$LOG_DIR/c7-hold-$round.log" 2>&1
+  AP=$("${P[@]}" -c "select r.approval_id from core.approval_request r join core.stock_allocation a on a.approval_id = r.approval_id where a.order_id = '$T' and r.status = 'PENDING' limit 1")
+  if [ -z "$AP" ]; then
+    echo "FAIL: C7 라운드 $round — 승인대기 확보를 만들지 못했다 ($(tail -2 "$LOG_DIR/c7-hold-$round.log" | tr '\n' ' '))"
+    FAILURES=$((FAILURES + 1))
+    continue
+  fi
+
+  if [ "$round" -le 3 ]; then
+    ( "${P[@]}" -c "begin" -c "set local role authenticated" -c "set local request.jwt.claim.sub = '$LEAD1'" \
+        -c "select core.decide_approval('$AP', 'APPROVED', '동시성 검증 승인 $round')" -c "commit" ) \
+      > "$LOG_DIR/c7-approve-$round.log" 2>&1 & PA=$!
+    ( "${P[@]}" -c "begin" -c "set local role authenticated" -c "set local request.jwt.claim.sub = '$SALES2'" \
+        -c "select core.cancel_sales_order('$T', '동시성 검증 취소 $round')" -c "commit" ) \
+      > "$LOG_DIR/c7-cancel-$round.log" 2>&1 & PC=$!
+  else
+    ( "${P[@]}" -c "begin" -c "set local role authenticated" -c "set local request.jwt.claim.sub = '$SALES2'" \
+        -c "select core.cancel_sales_order('$T', '동시성 검증 취소 $round')" -c "commit" ) \
+      > "$LOG_DIR/c7-cancel-$round.log" 2>&1 & PC=$!
+    ( "${P[@]}" -c "begin" -c "set local role authenticated" -c "set local request.jwt.claim.sub = '$LEAD1'" \
+        -c "select core.decide_approval('$AP', 'APPROVED', '동시성 검증 승인 $round')" -c "commit" ) \
+      > "$LOG_DIR/c7-approve-$round.log" 2>&1 & PA=$!
+  fi
+  wait $PA; EA=$?
+  wait $PC; EC=$?
+
+  DEADLOCKS=$(cat "$LOG_DIR/c7-approve-$round.log" "$LOG_DIR/c7-cancel-$round.log" | grep -cE '40P01|deadlock detected' || true)
+  expect_equal "$DEADLOCKS" 0 "C7 라운드 $round 교착(40P01) 발생 건수"
+  WINNERS=$(( (EA == 0 ? 1 : 0) + (EC == 0 ? 1 : 0) ))
+  expect_equal "$WINNERS" 1 "C7 라운드 $round 성공한 쪽 수(승인 exit=$EA · 취소 exit=$EC)"
+
+  if [ "$EA" -eq 0 ]; then
+    APPROVE_WINS=$((APPROVE_WINS + 1))
+    if grep -q 'FIRM_ALLOCATION_EXISTS' "$LOG_DIR/c7-cancel-$round.log"; then
+      echo "PASS: C7 라운드 $round 승인이 이김 — 취소는 확정배정 존재 업무 오류로 거절"
+    else
+      echo "FAIL: C7 라운드 $round 승인이 이겼는데 취소 오류가 업무 오류가 아니다 ($(tail -2 "$LOG_DIR/c7-cancel-$round.log" | tr '\n' ' '))"
+      FAILURES=$((FAILURES + 1))
+    fi
+    check "(select status = 'FIRM' from core.stock_allocation where approval_id = '$AP')" \
+      "C7 라운드 $round 승인이 이기면 확보가 FIRM으로 전환된다"
+    check "(select status <> 'CANCELLED' from core.sales_order where order_id = '$T')" \
+      "C7 라운드 $round 승인이 이기면 주문은 취소되지 않는다"
+  else
+    CANCEL_WINS=$((CANCEL_WINS + 1))
+    if grep -q '이미 처리되었거나 취소된 승인 요청입니다' "$LOG_DIR/c7-approve-$round.log"; then
+      echo "PASS: C7 라운드 $round 취소가 이김 — 승인은 업무 오류로 거절"
+    else
+      echo "FAIL: C7 라운드 $round 취소가 이겼는데 승인 오류가 업무 오류가 아니다 ($(tail -2 "$LOG_DIR/c7-approve-$round.log" | tr '\n' ' '))"
+      FAILURES=$((FAILURES + 1))
+    fi
+    check "(select status = 'CANCELLED' from core.approval_request where approval_id = '$AP')" \
+      "C7 라운드 $round 취소가 이기면 승인 요청도 취소된다"
+    check "(select status = 'RELEASED' from core.stock_allocation where approval_id = '$AP')" \
+      "C7 라운드 $round 취소가 이기면 확보수량이 해제된다"
+  fi
+  check "(select count(*) = 0 from core.notification_outbox where template_code = 'APPROVAL_PENDING' and payload ->> 'approval_id' = '$AP' and status not in ('CANCELLED', 'SENT'))" \
+    "C7 라운드 $round 결정·취소 뒤 팀장 대기 반복 알림이 남지 않는다"
+done
+echo "C7 결과 요약: 승인이 이김 ${APPROVE_WINS}회 · 취소가 이김 ${CANCEL_WINS}회 (교착 0회)"
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "동시성 검증 실패: ${FAILURES}건"
   exit 1

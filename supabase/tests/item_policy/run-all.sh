@@ -43,9 +43,13 @@ for scenario in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14 S15 S16 S17; do
   printf '  %s PASS %s\n' "$scenario" "$(count "^PASS: $scenario " "$LOG_DIR/scenarios.log")"
 done
 
+bash "$HERE/concurrency.sh" "$DB" "$LOG_DIR" > "$LOG_DIR/concurrency.log" 2>&1 || STATUS=1
+echo "concurrency: PASS $(count '^PASS' "$LOG_DIR/concurrency.log") · FAIL/ERROR $(count '^FAIL|^ERROR' "$LOG_DIR/concurrency.log")"
+grep -E '교착|승인이 이김|취소가 이김' "$LOG_DIR/concurrency.log" | sed 's/^/  /'
+
 if [ "$STATUS" -ne 0 ]; then
   echo "결과: 실패"
-  grep -hE 'FAIL|ERROR' "$LOG_DIR"/scenarios.log | head -30
+  grep -hE 'FAIL|ERROR' "$LOG_DIR"/scenarios.log "$LOG_DIR"/concurrency.log | head -30
 else
   echo "결과: 전부 통과"
 fi

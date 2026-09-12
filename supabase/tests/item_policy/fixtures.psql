@@ -66,7 +66,8 @@ on conflict (job_role, permission_code) do nothing;
 insert into raw.item_master ("품목코드", "품목명", "품목구분") values
   ('ITEMT901', 'T9 정상 품목', '소모품'),
   ('ITEMT902', 'T9 정상 품목 2', '소모품'),
-  ('ITEMT903', 'T9 정상 품목 3(셀프승인 검증 전용)', '소모품')
+  ('ITEMT903', 'T9 정상 품목 3(셀프승인 검증 전용)', '소모품'),
+  ('ITEMT904', 'T9 정상 품목 4(승인·취소 동시성 검증 전용)', '소모품')
 on conflict do nothing;
 
 -- core.item_policy는 Task 1(20260911000300)부터 authenticated의 직접 INSERT가 막혀 있다 — 운영에서도
@@ -74,7 +75,8 @@ on conflict do nothing;
 insert into core.item_policy (item_id, moq, pack_size, item_grade, service_level) values
   ('ITEMT901', null, null, 'A', 0.95),
   ('ITEMT902', 30, 6, 'B', 0.9),
-  ('ITEMT903', null, null, 'A', 0.95)
+  ('ITEMT903', null, null, 'A', 0.95),
+  ('ITEMT904', null, null, 'A', 0.95)
 on conflict (item_id) do update set moq = excluded.moq, pack_size = excluded.pack_size;
 
 select 'fixtures ok';
