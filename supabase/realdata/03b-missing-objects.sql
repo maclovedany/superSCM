@@ -17,6 +17,26 @@
 --
 -- ★ core.v_inbound_qty 는 IN_TRANSIT 선적을 더합니다. stage1 §6 은 창고 입고 완료분만
 --   반영하라고 합니다. 이 뷰를 발주 계산에 그대로 쓰면 규칙과 어긋납니다 (gap.md 6.3).
+--
+-- ★★ 이 파일에는 05-analytics-views.sql 앞머리와 같은 "재실행 안전 정리 블록"
+--   (`DROP VIEW IF EXISTS ... CASCADE`)이 **의도적으로 없습니다**(리뷰 라운드 3
+--   addendum 판단). 05는 자기가 만드는 뷰가 전부 잎사귀(다른 realdata·migrations
+--   객체가 그 위에 없다)라 CASCADE가 안전하지만, 이 파일의 core.v_fact_shipment ·
+--   core.v_inbound_qty · core.v_stock_on_hand는 supabase/migrations/
+--   20260912000800_fix_open_po_qty_cast.sql이 같은 이름으로 다시 정의하고, 그 위에
+--   analytics.v_available_stock(core.v_inbound_qty를 direct join)·
+--   analytics.v_stockout_risk·analytics.v_stockout_kpi(core.v_stock_on_hand 경유)가
+--   쌓인다. 실측(스크래치 DB, 전체 마이그레이션 적용 후): `drop view
+--   core.v_inbound_qty cascade`는 즉시 `analytics.v_available_stock`까지 함께
+--   지운다("drop cascades to view analytics.v_stockout_risk / v_stockout_kpi /
+--   v_available_stock"). 이 파일에 05식 CASCADE 정리 블록을 넣으면, 이미 배포되어
+--   있는(마이그레이션이 만든) 화면 재고 뷰를 03b 재실행 한 번으로 지워버릴 수 있다 —
+--   막으려는 42P16보다 훨씬 나쁘다. 이 파일은 애초에 00-README.md가 단독 재실행
+--   안전 목록(04·05만)에 넣지 않은 파일이라 05와 같은 취급을 하지 않는다.
+--   **이 파일 안의 뷰(특히 위 세 개)에서 열을 바꿀 때는 42P16을 직접 처리해야
+--   한다** — CASCADE 없이, 그 뷰 하나만 `drop view core.OOO;`(cascade 없이) 후
+--   재정의하거나, 열 구성이 같아지도록 두 정본(이 파일·해당 마이그레이션)을 같은
+--   내용으로 맞춰서 CREATE OR REPLACE가 아예 충돌하지 않게 한다.
 
 -- ── raw.usage_history ─────────────────────────
 CREATE TABLE raw.usage_history (
@@ -98,13 +118,17 @@ CREATE TABLE raw.shipment_log (
 -- ★ 2026-09-12 보정(Task 16, supabase/migrations/20260912000800_fix_open_po_qty_cast.sql) —
 --   이 뷰(그리고 아래 core.v_inbound_qty)는 이 파일이 정본이다. 적용 순서(realdata →
 --   migrations)상 그 마이그레이션의 create or replace가 나중에 이겨 배포 DB는 항상 게이트가
---   걸린 최종 정의를 쓰지만, 이 파일을 단독으로 재실행하는 것이 문서화된 복구 절차이므로
---   이 파일 자체의 정의도 같은 게이트를 가져야 한다 — 그러지 않으면 단독 재실행 때 게이트가
---   조용히 사라져 출처 없는 raw.shipment_log(2,864행 전부 batch_id null, IN_TRANSIT 117행·
---   수량 합 12,137)가 다시 실적처럼 보인다. **이 뷰를 고칠 때는 반드시 그 마이그레이션의
---   같은 정의도 함께 고친다.** batch_id 추가는 열 구성 확대가 아니라(그 마이그레이션이
---   이 뷰를 create or replace로 재정의하기 전까지 저장소 마이그레이션에 이 뷰가 아예 없었다)
---   출처 게이트를 위한 것이다.
+--   걸린 최종 정의를 쓴다. **이 파일 자체의 정의도 같은 게이트를 가져야 한다 — 두 계층의
+--   정본이 일치해야 하기 때문이다.** (근거 정정, 리뷰 라운드 3 addendum) "이 파일을 단독
+--   재실행하는 것이 문서화된 복구 절차"라는 앞선 전제는 틀렸다 — supabase/realdata/
+--   00-README.md는 "04·05만 다시 실행하는 것은 안전합니다"라고만 하고(25번 줄) 03b는
+--   언급하지 않는다. 진짜 이유는 이것이다: 저장소만으로 새 환경을 재구성할 때(또는 아직
+--   마이그레이션을 적용하지 않은 시점) realdata 계층이 적용되는 동안은 이 파일의 정의가
+--   그대로 유효한 상태로 남는다 — 그 창에서 게이트 없는 정의가 살아 있으면 출처 없는
+--   raw.shipment_log(2,864행 전부 batch_id null, IN_TRANSIT 117행·수량 합 12,137)가
+--   실적처럼 보인다. **이 뷰를 고칠 때는 반드시 그 마이그레이션의 같은 정의도 함께 고친다.**
+--   batch_id 추가는 열 구성 확대가 아니라(그 마이그레이션이 이 뷰를 create or replace로
+--   재정의하기 전까지 저장소 마이그레이션에 이 뷰가 아예 없었다) 출처 게이트를 위한 것이다.
 CREATE OR REPLACE VIEW core.v_fact_shipment AS
  SELECT shipment_id,
     upper(regexp_replace(COALESCE(po_no, ''::text), '[\s\-_]'::text, ''::text, 'g'::text)) AS po_no,
@@ -335,10 +359,12 @@ GRANT EXECUTE ON FUNCTION core.parse_lenient_numeric(text) TO authenticated;
 -- ★ 2026-09-12 보정(Task 16, supabase/migrations/20260912000800_fix_open_po_qty_cast.sql) —
 --   core.v_fact_shipment·core.v_inbound_qty와 같은 이유로 이 정의도 정본(이 파일)에서
 --   출처 게이트를 갖는다. **이 뷰를 고칠 때는 그 마이그레이션의 같은 정의도 함께 고친다.**
---   이 파일을 단독 재실행하는 것이 문서화된 복구 절차이므로, 정본에 게이트가 없으면
---   단독 재실행 시 그 결과(raw.inventory."현재고"에 콤마 등 파싱 불가 값이 생기면
---   analytics.v_stockout_risk 전체가 22P02로 막히는 잠재 결함 — 지금은 발현되지 않았다,
---   같은 마이그레이션 §4-3 참고)가 다시 무방비 상태로 돌아간다.
+--   (근거 정정, 리뷰 라운드 3 addendum — v_fact_shipment 머리 주석과 같은 정정) "단독
+--   재실행이 문서화된 복구 절차"라는 전제는 틀렸다(00-README.md는 04·05만 안전하다고
+--   한다). 진짜 이유는 두 계층 정본의 일치다 — realdata 계층이 적용되는 동안(마이그레이션
+--   적용 전) 정본에 게이트가 없으면 그 창에서 raw.inventory."현재고"에 콤마 등 파싱 불가
+--   값이 생겼을 때 analytics.v_stockout_risk 전체가 22P02로 막히는 잠재 결함(지금은
+--   발현되지 않았다, 같은 마이그레이션 §4-3 참고)이 무방비로 남는다.
 CREATE OR REPLACE VIEW core.v_stock_on_hand AS
  SELECT
     upper(regexp_replace("품목코드", '[\s\-_]'::text, ''::text, 'g'::text)) AS item_id,

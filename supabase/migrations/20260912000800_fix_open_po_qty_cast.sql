@@ -514,15 +514,21 @@ revoke all on function core.apply_stock_receipts_from_batch(uuid) from public, a
 --   supabase/realdata/03b-missing-objects.sql이다(저장소 안에 이미 있다 — 2026-09-11
 --   docs/db-저장소-대조가 진단·조치한 26건 중 24건이 그 파일로 편입됐다). 적용 순서가
 --   realdata → migrations이므로 이 마이그레이션의 create or replace가 나중에 이겨 배포
---   DB는 항상 게이트 걸린 정의를 쓰지만, **03b를 단독으로 재실행하는 것이 문서화된 복구
---   절차**이므로 03b 쪽 정의도 같은 게이트를 가져야 한다(그러지 않으면 단독 재실행 때
---   게이트가 조용히 사라진다). 그래서 03b의 두 뷰 정의도 이 마이그레이션과 같은 내용으로
---   함께 고쳤다(batch_id 노출 + 출처 게이트, CREATE VIEW → CREATE OR REPLACE VIEW로
---   바꿔 재실행 안전하게 만들었다) — **이 뷰를 다시 고칠 때는 두 파일을 항상 함께 고친다.**
+--   DB는 항상 게이트 걸린 정의를 쓴다. **03b 쪽 정의도 같은 게이트를 가져야 한다 — 두
+--   계층의 정본이 일치해야 하기 때문이다.** (근거 정정, 리뷰 라운드 3 addendum) "03b를
+--   단독으로 재실행하는 것이 문서화된 복구 절차"라는 위 전제는 틀렸다 —
+--   supabase/realdata/00-README.md는 "04·05만 다시 실행하는 것은 안전합니다"라고만
+--   하고(25번 줄) 03b는 언급하지 않으며, 실제로 03b 전체 재실행은 raw 테이블·plain
+--   CREATE VIEW가 이미 있어 22건 오류를 낸다. 진짜 이유: 저장소만으로 새 환경을
+--   재구성할 때(또는 마이그레이션을 아직 적용하지 않은 시점) realdata 계층이 적용되는
+--   동안은 03b의 정의가 그대로 유효하게 남는다 — 그 창에서 게이트가 없으면 무방비
+--   상태다. 그래서 03b의 두 뷰 정의도 이 마이그레이션과 같은 내용으로 함께 고쳤다
+--   (batch_id 노출 + 출처 게이트, CREATE VIEW → CREATE OR REPLACE VIEW로 바꿔 재실행
+--   안전하게 만들었다) — **이 뷰를 다시 고칠 때는 두 파일을 항상 함께 고친다.**
 --   core.v_fact_shipment는 03b의 정의에 batch_id 열만 끝에 추가한다 — 열 구성 확대가
 --   아니다(이 두 뷰 모두 저장소 **마이그레이션**에는 이 파일 전까지 없었으므로, 여기서는
---   "cannot drop columns" 위험이 없다 — 위험은 03b를 단독 재실행할 때뿐이고, 그건 03b
---   자체를 고쳐서 막았다).
+--   "cannot drop columns" 위험이 없다 — 남은 위험은 03b의 정의 자체가 게이트 없이
+--   유효한 창뿐이고, 그건 03b 자체를 고쳐서 막았다).
 create or replace view core.v_fact_shipment as
 select
   shipment_id,
@@ -618,12 +624,25 @@ revoke all on core.v_inbound_qty from anon, public;
 -- ★ authenticated는 raw 테이블에 직접 GRANT가 없으므로(SCHEMA.md), security_invoker 뷰가
 --   raw를 직접 참조하면 permission denied가 난다(error.md #22). core.v_open_po_qty와 같은
 --   자리에 소유자 권한 core 뷰를 먼저 두고, analytics 뷰는 그 결과만 읽는다.
--- ★★ core.import_target_table은 배포 DB에서 REVOKE ALL ... FROM PUBLIC 상태다(원래
---   호출자가 전부 SECURITY DEFINER 함수 내부뿐이라 문제가 없었다 — commit_import_batch가
---   자기 소유자 권한으로 부른다). 이 뷰는 SECURITY DEFINER가 아닌 평범한 뷰라 함수 호출의
---   EXECUTE 권한이 조회자 기준으로 검사된다 — 로컬 스크래치 DB에서 직접 겪었다
---   (`permission denied for function import_target_table`). authenticated에 명시적으로
---   내준다(순수 SQL 매핑 함수라 안전하다 — 부작용도 raw 접근도 없다).
+-- ★★ 권한 확대 판정(팀장 명시 승인, 리뷰 라운드 3 addendum) — 이유코드가 "적재 경로가
+--   있는가"라는 구조적 사실을 상수로 하드코딩하지 않고 실제 원천(core.import_target_table)
+--   에서 직접 판정하려면 조회자가 이 함수를 실행할 수 있어야 한다. 대안(상태 뷰를
+--   security definer로 바꾸기)은 RLS를 우회해 더 나쁘고, 구조적 사실을 뷰에 하드코딩하는
+--   것은 금지된 패턴이다(사유코드가 스스로 알 수 없는 것을 주장하게 된다).
+-- ★★ core.import_target_table을 처음 만든 20260828000300_step4_import_pipeline.sql은
+--   PUBLIC EXECUTE를 회수하지 않는다(Postgres 기본은 새 함수에 PUBLIC EXECUTE를 준다).
+--   배포 DB의 REVOKE ALL ... FROM PUBLIC(schema-dump/2026-09-12.sql:16323)은 저장소
+--   마이그레이션 어디에도 없는 배포 전용 수작업이었다 — 저장소만으로 새 환경을 재구성하면
+--   이 함수가 PUBLIC에 그대로 열린 채 남는다(gap.md §10과 같은 종류의 저장소-배포 괴리).
+--   여기서 그 회수를 저장소에 명시적으로 편입한다. 원래 호출자가 전부 SECURITY DEFINER
+--   함수 내부뿐이라 지금까지 문제가 없었다(commit_import_batch가 자기 소유자 권한으로
+--   부른다). 이 뷰는 SECURITY DEFINER가 아닌 평범한 뷰라 함수 호출의 EXECUTE 권한이
+--   조회자 기준으로 검사된다 — 로컬 스크래치 DB에서 직접 겪었다
+--   (`permission denied for function import_target_table`). authenticated에만 명시적으로
+--   내준다(순수 SQL 매핑 함수라 안전하다 — 부작용도 raw 접근도 없다). **PUBLIC 회수를
+--   여기서 걷어내지 않는다 — 나중에 권한 목록만 보고 이 REVOKE를 지우면 배너가 다시
+--   구조적 사실을 상수로 주장하게 된다.**
+revoke all on function core.import_target_table(text) from public, anon;
 grant execute on function core.import_target_table(text) to authenticated;
 
 create or replace view core.v_stock_reference_source_status as
@@ -670,6 +689,10 @@ ship_import_path as (
   --   core.import_target_table이 'shipment' 종류를 아는지는 데이터와 완전히 무관한
   --   구조적 사실이다 — core.commit_import_batch가 실제로 커밋할 수 있는 import_type
   --   목록과 같은 기준(STEP 4 원본)이다.
+  -- ★ 리뷰 라운드 3 addendum 실측 확인 — core.import_target_table('shipment')은 정의된
+  --   CASE에 'shipment' 분기가 없어 예외가 아니라 NULL을 돌려준다(20260828000300 §STEP 4
+  --   원본, else 없는 case의 기본 동작). `is not null`로 그 NULL을 "경로 없음"으로 읽는
+  --   것이 맞다 — 예외를 잡아야 하는 상황이 아니다.
   select core.import_target_table('shipment') is not null as has_import_path
 )
 select
