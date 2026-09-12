@@ -10,15 +10,25 @@
 
 import { createSupabaseServerClient } from './supabase';
 import {
+  normalizeBacktestRun,
   normalizeBomRequirement,
+  normalizeChampionModel,
+  normalizeForecastModelConfig,
+  normalizeForecastRun,
   normalizeItemDemandKpi,
   normalizeItemDemandProfile,
+  normalizeModelPerformanceRow,
   normalizeOlAccuracy,
   normalizeOlAccuracyFy,
   normalizeShipmentTrend,
+  type BacktestRun,
   type BomRequirement,
+  type ChampionModel,
+  type ForecastModelConfig,
+  type ForecastRun,
   type ItemDemandKpi,
   type ItemDemandProfile,
+  type ModelPerformanceRow,
   type OlAccuracy,
   type OlAccuracyFy,
   type ShipmentTrend,
@@ -116,5 +126,85 @@ export async function getBomRequirements(modelBase: string): Promise<{ rows: Bom
     return { rows: (data ?? []).map((row) => normalizeBomRequirement(row as Record<string, unknown>)), error: null };
   } catch (error) {
     return { rows: [], error: error instanceof Error ? error.message : 'BOM 소요를 조회하지 못했습니다.' };
+  }
+}
+
+// Task 15 fix round 2 — STEP 6·7 실행 이력 화면(admin/forecast-runs · backtest-runs · champion-models ·
+// forecast-models). 6회차 실데이터 전용 Forecast 엔진은 없지만, STEP 6 SQL Baseline · STEP 7 Backtest
+// 파이프라인이 실제로 만든 실행 이력은 있다 — 그 이력을 그대로 보여준다.
+
+/** Forecast 실행 이력 — analytics.v_forecast_run. 최신 실행이 먼저 온다 */
+export async function getForecastRuns(): Promise<{ rows: ForecastRun[]; error: string | null }> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase
+      .schema('analytics')
+      .from('v_forecast_run')
+      .select('*')
+      .order('started_at', { ascending: false });
+    if (error) return { rows: [], error: error.message };
+    return { rows: (data ?? []).map((row) => normalizeForecastRun(row as Record<string, unknown>)), error: null };
+  } catch (error) {
+    return { rows: [], error: error instanceof Error ? error.message : 'Forecast 실행 이력을 조회하지 못했습니다.' };
+  }
+}
+
+/** 예측 모델 registry — analytics.v_model_config. 실습 데이터와 무관하게 항상 채워진다 */
+export async function getForecastModelConfigs(): Promise<{ rows: ForecastModelConfig[]; error: string | null }> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase.schema('analytics').from('v_model_config').select('*').order('model_id');
+    if (error) return { rows: [], error: error.message };
+    return { rows: (data ?? []).map((row) => normalizeForecastModelConfig(row as Record<string, unknown>)), error: null };
+  } catch (error) {
+    return { rows: [], error: error instanceof Error ? error.message : '예측 모델 registry를 조회하지 못했습니다.' };
+  }
+}
+
+/** Backtest 실행 이력 — analytics.v_backtest_run. 최신 실행이 먼저 온다 */
+export async function getBacktestRuns(): Promise<{ rows: BacktestRun[]; error: string | null }> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase
+      .schema('analytics')
+      .from('v_backtest_run')
+      .select('*')
+      .order('started_at', { ascending: false });
+    if (error) return { rows: [], error: error.message };
+    return { rows: (data ?? []).map((row) => normalizeBacktestRun(row as Record<string, unknown>)), error: null };
+  } catch (error) {
+    return { rows: [], error: error instanceof Error ? error.message : 'Backtest 실행 이력을 조회하지 못했습니다.' };
+  }
+}
+
+/**
+ * 채점 원본 행 — analytics.v_model_performance. backtest-runs 화면이 채점 요약(개수 · WAPE 범위)을
+ * 만드는 재료로만 쓴다. 화면은 이 행을 직접 표로 그리지 않는다.
+ */
+export async function getModelPerformanceRows(backtestRunIds: string[]): Promise<{ rows: ModelPerformanceRow[]; error: string | null }> {
+  if (backtestRunIds.length === 0) return { rows: [], error: null };
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase
+      .schema('analytics')
+      .from('v_model_performance')
+      .select('backtest_run_id, model_id, item_id, wape, calculation_status')
+      .in('backtest_run_id', backtestRunIds);
+    if (error) return { rows: [], error: error.message };
+    return { rows: (data ?? []).map((row) => normalizeModelPerformanceRow(row as Record<string, unknown>)), error: null };
+  } catch (error) {
+    return { rows: [], error: error instanceof Error ? error.message : 'Backtest 채점 결과를 조회하지 못했습니다.' };
+  }
+}
+
+/** 품목별 현재 Champion 모델 — analytics.v_champion_model(품목당 최신 선정 1행) */
+export async function getChampionModels(): Promise<{ rows: ChampionModel[]; error: string | null }> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase.schema('analytics').from('v_champion_model').select('*').order('item_id');
+    if (error) return { rows: [], error: error.message };
+    return { rows: (data ?? []).map((row) => normalizeChampionModel(row as Record<string, unknown>)), error: null };
+  } catch (error) {
+    return { rows: [], error: error instanceof Error ? error.message : 'Champion 모델을 조회하지 못했습니다.' };
   }
 }

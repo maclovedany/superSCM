@@ -151,6 +151,7 @@ export type ForecastModelConfig = {
   applicableDemandType: string[];
   parameters: Record<string, unknown>;
   description: string | null;
+  updatedAt: string | null;
 };
 
 export type ForecastRun = {
@@ -356,6 +357,7 @@ export function normalizeForecastModelConfig(row: Record<string, unknown>): Fore
     applicableDemandType: Array.isArray(demandTypes) ? demandTypes.map(String) : [],
     parameters: typeof value(row, ['parameters']) === 'object' && value(row, ['parameters']) !== null ? value(row, ['parameters']) as Record<string, unknown> : {},
     description: value(row, ['description']) === null ? null : String(value(row, ['description'])),
+    updatedAt: value(row, ['updated_at']) === null ? null : String(value(row, ['updated_at'])),
   };
 }
 
@@ -372,5 +374,120 @@ export function normalizeForecastRun(row: Record<string, unknown>): ForecastRun 
     finishedAt: value(row, ['finished_at']) === null ? null : String(value(row, ['finished_at'])),
     durationMs: numberValue(row, ['duration_ms']), triggeredEmail: value(row, ['triggered_email']) === null ? null : String(value(row, ['triggered_email'])),
     message: value(row, ['message']) === null ? null : String(value(row, ['message'])), isStale: value(row, ['is_stale']) === true,
+  };
+}
+
+// Task 15 fix round 2 — STEP 7 Backtest · Champion 화면용 타입. ForecastRun과 같은 규칙(값 없으면 null,
+// 여기서 계산하지 않는다)을 따른다. analytics.v_backtest_run · v_model_performance · v_champion_model을 그대로 옮긴다.
+
+export type BacktestRun = {
+  backtestRunId: string;
+  forecastRunId: string;
+  status: 'RUNNING' | 'SUCCESS' | 'FAILED';
+  testStart: string | null;
+  testEnd: string | null;
+  metric: string | null;
+  referenceModelId: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  message: string | null;
+};
+
+export function normalizeBacktestRun(row: Record<string, unknown>): BacktestRun {
+  const status = value(row, ['status']);
+  return {
+    backtestRunId: String(value(row, ['backtest_run_id']) ?? ''),
+    forecastRunId: String(value(row, ['forecast_run_id']) ?? ''),
+    status: status === 'RUNNING' || status === 'SUCCESS' || status === 'FAILED' ? status : 'FAILED',
+    testStart: value(row, ['test_start']) === null ? null : String(value(row, ['test_start'])),
+    testEnd: value(row, ['test_end']) === null ? null : String(value(row, ['test_end'])),
+    metric: value(row, ['metric']) === null ? null : String(value(row, ['metric'])),
+    referenceModelId: value(row, ['reference_model_id']) === null ? null : String(value(row, ['reference_model_id'])),
+    startedAt: value(row, ['started_at']) === null ? null : String(value(row, ['started_at'])),
+    finishedAt: value(row, ['finished_at']) === null ? null : String(value(row, ['finished_at'])),
+    message: value(row, ['message']) === null ? null : String(value(row, ['message'])),
+  };
+}
+
+/**
+ * Backtest 실행별 채점 요약 — core.model_performance를 집계한다.
+ *
+ * ★ AGENTS.md 2번(숫자 계산은 SQL이 한다)은 평균 · 분위수 같은 통계 추정을 화면 코드에서 만들지
+ *   말라는 규칙이다. 여기서 하는 건 평균이 아니라 이미 core.run_backtest가 저장해 둔 wape 값들의
+ *   최솟값 · 최댓값(범위)과 단순 개수 집계뿐이다 — 새로운 수치를 추정하지 않는다. 그래도 이 계산은
+ *   화면 컴포넌트가 아니라 여기(순수 함수)에 두고 model.test.ts로 고정한다.
+ */
+export type ModelPerformanceSummary = {
+  backtestRunId: string;
+  scoredCount: number;
+  unavailableCount: number;
+  wapeMin: number | null;
+  wapeMax: number | null;
+};
+
+export function summarizeModelPerformance(
+  backtestRunId: string,
+  rows: Array<{ calculationStatus: string; wape: number | null }>,
+): ModelPerformanceSummary {
+  const scored = rows.filter((row) => row.calculationStatus === 'SUCCESS');
+  const wapes = scored.map((row) => row.wape).filter((wape): wape is number => wape !== null);
+  return {
+    backtestRunId,
+    scoredCount: scored.length,
+    unavailableCount: rows.length - scored.length,
+    wapeMin: wapes.length === 0 ? null : Math.min(...wapes),
+    wapeMax: wapes.length === 0 ? null : Math.max(...wapes),
+  };
+}
+
+export type ModelPerformanceRow = {
+  backtestRunId: string;
+  modelId: string;
+  itemId: string;
+  wape: number | null;
+  calculationStatus: string;
+};
+
+export function normalizeModelPerformanceRow(row: Record<string, unknown>): ModelPerformanceRow {
+  return {
+    backtestRunId: String(value(row, ['backtest_run_id']) ?? ''),
+    modelId: String(value(row, ['model_id']) ?? ''),
+    itemId: String(value(row, ['item_id']) ?? ''),
+    wape: numberValue(row, ['wape']),
+    calculationStatus: String(value(row, ['calculation_status']) ?? 'UNAVAILABLE'),
+  };
+}
+
+export type ChampionModel = {
+  selectionId: string;
+  backtestRunId: string;
+  itemId: string;
+  championModelId: string | null;
+  championMetric: string | null;
+  championMetricValue: number | null;
+  wape: number | null;
+  mape: number | null;
+  bias: number | null;
+  rmse: number | null;
+  mae: number | null;
+  selectionReason: string | null;
+  selectionMethod: 'AUTO' | 'MANUAL' | null;
+  selectedAt: string | null;
+};
+
+export function normalizeChampionModel(row: Record<string, unknown>): ChampionModel {
+  const selectionMethod = value(row, ['selection_method']);
+  return {
+    selectionId: String(value(row, ['selection_id']) ?? ''),
+    backtestRunId: String(value(row, ['backtest_run_id']) ?? ''),
+    itemId: String(value(row, ['item_id']) ?? ''),
+    championModelId: value(row, ['champion_model_id']) === null ? null : String(value(row, ['champion_model_id'])),
+    championMetric: value(row, ['champion_metric']) === null ? null : String(value(row, ['champion_metric'])),
+    championMetricValue: numberValue(row, ['champion_metric_value']),
+    wape: numberValue(row, ['wape']), mape: numberValue(row, ['mape']), bias: numberValue(row, ['bias']),
+    rmse: numberValue(row, ['rmse']), mae: numberValue(row, ['mae']),
+    selectionReason: value(row, ['selection_reason']) === null ? null : String(value(row, ['selection_reason'])),
+    selectionMethod: selectionMethod === 'AUTO' || selectionMethod === 'MANUAL' ? selectionMethod : null,
+    selectedAt: value(row, ['selected_at']) === null ? null : String(value(row, ['selected_at'])),
   };
 }
