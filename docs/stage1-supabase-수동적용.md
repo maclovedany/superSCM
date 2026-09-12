@@ -426,3 +426,123 @@ Auth 사용자와 `core.app_user` 프로필을 함께 만들었고, 로그인까
 - `auth.users` 의 `on_auth_user_created` 트리거가 프로필 행을 자동 생성하므로, 새 계정을
   만들 때는 프로필을 새로 넣지 말고 **직책·부서만 갱신**하면 됩니다.
 - 직책별 권한 개수는 STEP 19 의 `core.role_permission` 정의와 일치하는지 확인했습니다.
+
+## 10. Task 15 추가 — 실습용 데이터 (2026-09-12)
+
+수업에서 수요 제출 → 승인 → 배정 → 발주계획 → 팀장 승인 → 일정 생성까지 눌러 볼 수 있도록
+실습용 데이터를 넣습니다. §6 의 "아직 비어 있는 업무 마스터"와 "SQL 로 할 수 없어 남은 일"
+3·4 번을 이 절차가 채웁니다.
+
+### 10-1. 마이그레이션 적용
+
+| 순서 | 파일 | 내용 | 확인 쿼리 |
+|---|---|---|---|
+| 24 | `20260912000400_stage1_practice_dataset.sql` | 실습 데이터 표식·등기부·제거 절차 | `select * from analytics.v_practice_data_status;` → 1행, `reason_code = 'NO_PRACTICE_DATA'` |
+
+이 파일은 **장치만** 만들고 데이터를 넣지 않습니다. 운영 배포가 스키마를 적용하는 것만으로
+더미 행이 설치되면 안 되기 때문입니다.
+
+### 10-2. 실습 데이터 적재 — `supabase/practice-data/`
+
+마이그레이션이 아니라 별도 폴더의 SQL 을 **의도적으로 실행할 때만** 들어갑니다. 순서와 각
+파일의 확인 쿼리는 `supabase/practice-data/README.md` 에 있습니다.
+
+```
+00-open-dataset.sql → 01-master.sql → 02-items.sql → 03-item-policies.sql
+→ 04-usage-history.sql → 05-inventory.sql → 06-forecast.sql → 07-planning-cycle.sql
+→ 08-verify.sql   ★ 여기서 확인하고 수업에 들어갑니다
+```
+
+제거는 `99-remove.sql` (또는 아래 한 줄) 입니다.
+
+```sql
+select jsonb_pretty(core.remove_practice_dataset('PRACTICE-2026-09', p_confirm => true));
+```
+
+### 10-3. 반드시 알아야 할 것 세 가지
+
+1. **원천 게이트를 완화하지 않았습니다.** Task 9b 의 게이트는 학습·검증 기간의 사용 이력이
+   전부 `IMPORTED` 상태의 `usage_history` 적재 배치에서 왔을 때만 발주량을 계산합니다. 실습
+   데이터는 STEP 4 적재 경로를 그대로 거쳐 그 조건을 **진짜로 만족**합니다.
+   - 그래서 `04-usage-history.sql` 은 학습 기간을 **기존 미검증 행(5회차 더미 7,038행,
+     `batch_id` 가 null)의 마지막 날짜 다음 달부터** 잡습니다. 날짜를 하드코딩하지 않고 실행
+     시점에 계산하며, 고른 기간을 `notice` 로 출력합니다.
+   - ⚠️ 그 결과 **실습 기준월이 실제 달력보다 미래일 수 있습니다.** 더미 데이터가 어디까지
+     있는지에 따라 달라지며, 이상해 보여도 정상입니다.
+2. **품목코드를 지어내지 않습니다.** `raw.dim_item`(실데이터 93,868행)에서 조회해서 씁니다.
+   `raw.dim_item` 자체는 한 줄도 바꾸지 않습니다.
+3. **화면이 실습임을 말합니다.** 재고·발주계획·월말 재고 성과·대시보드 상단에
+   "이 화면의 숫자는 실습용 데이터 기반입니다" 배너가 뜨고, 적재 이력과 계획 목록에는
+   `실습용` 배지가 붙습니다. 현황은 `/admin/practice-data` 에서 봅니다.
+
+### 10-4. 제거가 지우지 못하는 것
+
+등기부(`core.practice_object`)에 올라 있는 것만 지웁니다 — 실데이터는 등기부에 없어
+**구조적으로** 지워질 수 없고, 적재 원본은 `batch_id` 로만 지우므로 `batch_id` 가 null 인
+행은 어떤 경우에도 걸리지 않습니다. 다만 아래는 남으며 사유와 함께 보고됩니다.
+
+| 남는 것 | 사유 코드 |
+|---|---|
+| 승인된 발주계획·라인·이력 (Task 9b 가 삭제를 금지) | `PLAN_IMMUTABLE_HISTORY` |
+| 학생이 실습 품목으로 만든 주문·배정·긴급발주·수급회의·이벤트 수요 | `ACTED_ON_BY_USER` |
+| 실제 입고일이 입력된 발주 일정의 공급처 | `SCHEDULE_ACTUAL_RECORDED` |
+| 위 품목의 행이 남은 적재 배치 | `RETAINED_FOR_BLOCKED_ITEM` |
+
+**남은 객체의 등기는 일부러 지우지 않습니다.** 그래야 살아남은 실습 발주계획이 화면에서 계속
+"실습용" 으로 표시됩니다 — 제거했다는 이유로 실습 숫자가 실적처럼 보이면 안 됩니다.
+
+법인 출항 준비기간과 실습 전 활성 Forecast 설정은 `00-open-dataset.sql` 이 기록해 둔 값으로
+자동 복원됩니다.
+
+### 10-5. 검증 범위
+
+`bash supabase/tests/practice_data/run-all.sh` 가 표식·제거·실데이터 보존을 로컬 임시 DB 에서
+검증합니다(시나리오 12건). **다만 `supabase/practice-data/*.sql` 본체가 배포 DB 에서 원천
+게이트를 통과하는지는 로컬에서 재현할 수 없습니다** — `raw.dim_item` 실데이터와 더미 사용
+이력의 실제 날짜 분포에 의존하기 때문입니다. `08-verify.sql` 의 확인 쿼리로 적용 직후 직접
+확인하세요.
+
+## 10. 관리자 계정 관리 적용 기록 — 2026-09-12
+
+`supabase/migrations/20260912000300_stage1_user_admin.sql` 을 운영에 적용했습니다(커밋 `98fb577` 버전).
+관리자 화면 `/admin/users` 에서 계정을 만들고, 직책·부서를 바꾸고, 비활성화하거나 완전 삭제할 수 있습니다.
+
+### 적용 결과
+
+| 확인 항목 | 결과 |
+|---|---|
+| 함수 | `admin_upsert_app_user_profile` · `admin_set_app_user_active` · `admin_delete_app_user_profile` · `admin_record_auth_delete_failure` · `app_user_blocking_tables` |
+| CHECK 제약 | `app_user_job_role_chk` · `app_user_department_chk` (기존 `app_user_role_check` 유지) |
+| 허용값 위반 행 | 0 건 (적용 전 사전 점검에서도 0) |
+| `app_user_blocking_tables` 의 authenticated 실행 권한 | 없음(내부 전용) |
+| 실습 계정 직책 유지 | 6 건 |
+
+### 리뷰에서 잡아 고친 것 — 완전 삭제가 항상 거절되던 버그
+
+참조 검사가 `auth.users(id)` 를 참조하는 **모든** FK 를 훑는 바람에, Supabase 가 계정마다
+자동 생성하는 `auth.identities` 행이 "업무 이력" 으로 잡혔습니다. 그 결과 한 번도 쓰지 않은
+새 계정조차 완전 삭제가 거절됐습니다. 운영 DB 에서도 `auth` 스키마에 8 개 FK 가 있고 실습
+계정에 `auth.identities` 행이 1 개 있는 것을 확인했습니다. 검사 범위를 업무 스키마
+(`core`·`public`·`analytics`) 로 한정해 고쳤습니다. 이 프로젝트의 사용자 참조 FK 49 개는
+전부 `core` 에 있어 누락되는 것이 없습니다.
+
+### 운영 시 알아둘 것
+
+- **완전 삭제는 두 단계입니다.** 비활성화한 계정만 완전 삭제할 수 있습니다. 활성 계정에서
+  버튼이 비활성인 것은 의도된 동작입니다. 참조 검사와 Auth 삭제가 서로 다른 트랜잭션이라,
+  그 사이에 업무 행이 생기면 데이터가 함께 지워질 수 있어 정책으로 막았습니다.
+- **본인 계정은 강등·비활성화·삭제할 수 없습니다.** 관리자가 스스로를 잠그는 것을 막습니다.
+  그래서 활성 관리자가 최소 1 명 남는 것이 구조적으로 보장됩니다.
+- **대시보드에서 사용자를 만들 때 주의하세요.** `handle_new_auth_user` 트리거가
+  `user_metadata.department` 를 그대로 복사하므로, 허용값 밖 부서를 넣으면 `auth.users`
+  INSERT 자체가 실패합니다. `/admin/users` 화면을 쓰거나 부서 메타데이터를 비워 두세요.
+- **Vercel 에 `SUPABASE_SECRET_KEY` 가 필요합니다.** 없으면 생성·완전 삭제만 실패하고
+  편집·비활성화는 동작합니다.
+- Auth 삭제가 실패하면 `core.audit_log` 에 `USER_AUTH_DELETE_FAILED` 가 남고
+  `before->>'email'` 로 남겨진 Auth 사용자를 찾을 수 있습니다.
+
+### 아직 운영에서 실행해 보지 않은 경로
+
+계정 **생성·완전 삭제** 는 Auth Admin API 를 거치는데, 실습 계정 6 개는 이 화면이 있기 전에
+제가 직접 만들었습니다. 화면 배포 후 임시 계정 하나로 생성 → 비활성화 → 완전 삭제를 한 번
+돌려 보시면 전 구간이 확인됩니다.
