@@ -161,16 +161,34 @@ union all
 -- 있는지로 확인한다 — 주석이 아니라 실제 실행되는 WHEN 절 텍스트를 짚는다.
 select case when body like '%from raw.item_master m where core.normalize_item_id(m."품목코드") = o.object_key%'
             then 'PASS: ' else 'FAIL: ' end
-       || 'core.remove_practice_dataset의 ITEM 존재 검사가 두 번째 적용 뒤에도 raw.item_master 원본 기준(출처 게이트 우회)을 유지한다'
+       || 'core.remove_practice_dataset의 ITEM 존재 검사가 두 번째 적용 뒤에도 raw.item_master 원본 기준(출처 게이트 우회)을 유지한다(core.normalize_item_id 사용 포함)'
   from (select pg_get_functiondef(p.oid) as body from pg_proc p
           join pg_namespace n on n.oid = p.pronamespace
-         where n.nspname = 'core' and p.proname = 'remove_practice_dataset') f;
+         where n.nspname = 'core' and p.proname = 'remove_practice_dataset') f
+union all
+-- Task 17 리뷰 fix round 3 — create or replace function에서 SECURITY DEFINER · SET search_path
+-- 절을 빠뜨리면 오류 없이 조용히 사라진다(prosecdef t→f, proconfig 비워짐 — 리뷰어 실측).
+-- 권한·소유자는 create or replace로 보존되지만 이 두 속성은 새 정의문 자체가 다시 선언해야
+-- 유지된다. 이 함수는 실습 데이터를 삭제하는 관리자 전용 함수라 SECURITY DEFINER가 빠지면
+-- (호출자 권한으로 실행되어) 조용히 오작동할 수 있다 — 열 수·본문 텍스트만으로는 못 잡는
+-- 속성이라 따로 고정한다.
+select case when prosecdef then 'PASS: ' else 'FAIL: ' end
+       || 'core.remove_practice_dataset가 두 번째 적용 뒤에도 SECURITY DEFINER를 유지한다'
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+ where n.nspname = 'core' and p.proname = 'remove_practice_dataset'
+union all
+select case when proconfig is not null
+                  and exists (select 1 from unnest(proconfig) c where c like 'search_path=%')
+             then 'PASS: ' else 'FAIL: ' end
+       || 'core.remove_practice_dataset가 두 번째 적용 뒤에도 SET search_path를 유지한다'
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+ where n.nspname = 'core' and p.proname = 'remove_practice_dataset';
 SQL
 POST_PASS=$(grep -c '^PASS: ' "$LOG_DIR/postconditions.log" || true)
 POST_FAIL=$(grep -c '^FAIL: ' "$LOG_DIR/postconditions.log" || true)
 echo "사후 조건: PASS $POST_PASS · FAIL/ERROR $POST_FAIL"
 sed 's/^/  /' "$LOG_DIR/postconditions.log"
-if [ "$POST_PASS" -ne 16 ] || [ "$POST_FAIL" -ne 0 ]; then
+if [ "$POST_PASS" -ne 18 ] || [ "$POST_FAIL" -ne 0 ]; then
   STATUS=1
 fi
 
