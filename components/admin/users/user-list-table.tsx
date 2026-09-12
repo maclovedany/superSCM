@@ -89,13 +89,24 @@ function DeactivateForm({ user, self }: { user: ManagedAppUser; self: boolean })
 
 function DeleteForm({ user, self }: { user: ManagedAppUser; self: boolean }) {
   const [state, action, pending] = useActionState<UserAdminActionState, FormData>(deleteUserAction, initialUserAdminActionState);
+  // fix round 1 · I4 — 완전 삭제는 이미 비활성화된 계정만 허용한다(core.admin_delete_app_user_profile).
+  // 활성 계정은 버튼 자체를 막아, "먼저 비활성화하라"는 오류를 매번 겪지 않게 한다.
+  const blockedByActive = user.active;
+  const disabled = pending || self || blockedByActive;
+  const title = self
+    ? '자신의 계정은 삭제할 수 없습니다.'
+    : blockedByActive
+      ? '완전 삭제는 비활성화 후에만 할 수 있습니다. 먼저 비활성화하세요.'
+      : '업무 이력이 있으면 거절됩니다 — 비활성화를 권장합니다.';
   return (
     <form action={action} className="master-row-form">
       <input type="hidden" name="userId" value={user.userId} />
+      <input type="hidden" name="email" value={user.email} />
       {state.error ? <p className="form-error" role="alert">{state.error}</p> : null}
       {state.success ? <p className="form-success" role="status">{state.success}</p> : null}
+      {blockedByActive && !self ? <p className="muted">완전 삭제는 비활성화 후에만 할 수 있습니다.</p> : null}
       <input className="form-input" name="reason" placeholder="삭제 사유(필수)" required style={{ width: 160 }} aria-label={`${user.email} 완전 삭제 사유`} />
-      <Button type="submit" variant="danger" disabled={pending || self} title={self ? '자신의 계정은 삭제할 수 없습니다.' : '업무 이력이 있으면 거절됩니다 — 비활성화를 권장합니다.'}>
+      <Button type="submit" variant="danger" disabled={disabled} title={title}>
         {pending ? '삭제 중…' : '완전 삭제'}
       </Button>
     </form>

@@ -193,15 +193,21 @@ export function validateActiveInput(input: { userId: unknown; active: unknown; r
 
 // ── 완전 삭제 ────────────────────────────────────────────────
 
-export type ValidatedDeleteInput = { userId: string; reason: string };
-export type DeleteReasonCode = 'USER_ID_REQUIRED' | 'REASON_REQUIRED';
+export type ValidatedDeleteInput = { userId: string; email: string; reason: string };
+export type DeleteReasonCode = 'USER_ID_REQUIRED' | 'EMAIL_REQUIRED' | 'REASON_REQUIRED';
 
-export function validateDeleteInput(input: { userId: unknown; reason: unknown }): Result<ValidatedDeleteInput, DeleteReasonCode> {
+// fix round 1 · I5 — email은 core.app_user_blocking_tables/admin_delete_app_user_profile에
+// 넘기지 않는다(그 함수들은 user_id만 안다). Auth 계정 삭제가 실패했을 때 감사 로그에 어떤
+// 계정인지 남기려면(core.admin_record_auth_delete_failure) 여기서부터 들고 다녀야 한다 —
+// 프로필이 이미 지워진 뒤라 그 시점엔 core.app_user를 다시 조회해 이메일을 얻을 수 없다.
+export function validateDeleteInput(input: { userId: unknown; email: unknown; reason: unknown }): Result<ValidatedDeleteInput, DeleteReasonCode> {
   const userId = trimmed(input.userId);
   if (userId === '') return fail('USER_ID_REQUIRED', '대상 계정이 없습니다.');
+  const email = trimmed(input.email).toLowerCase();
+  if (email === '') return fail('EMAIL_REQUIRED', '대상 계정의 이메일 정보가 없습니다.');
   const reason = trimmed(input.reason);
   if (reason === '') return fail('REASON_REQUIRED', '삭제 사유를 입력하세요.');
-  return { ok: true, value: { userId, reason } };
+  return { ok: true, value: { userId, email, reason } };
 }
 
 export { JOB_ROLES, DEPARTMENTS };

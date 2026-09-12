@@ -37,7 +37,13 @@ export async function listManagedUsers(): Promise<{ rows: ManagedAppUser[]; erro
   }
 }
 
-/** 생성 직후 확정, 또는 기존 계정 편집 — core.admin_upsert_app_user_profile */
+/**
+ * 생성 직후 확정, 또는 기존 계정 편집 — core.admin_upsert_app_user_profile.
+ *
+ * ★ fix round 1 · I2: `created: true`는 "방금 Auth 계정을 만든 직후 확정 호출"임을 DB 함수에
+ *   명시한다. auth.users 트리거가 항상 먼저 기본 프로필을 넣어 두므로, 이 신호가 없으면
+ *   생성도 편집(USER_PROFILE_UPDATED)으로만 감사 로그에 남는다.
+ */
 export async function upsertUserProfile(input: {
   userId: string;
   email: string;
@@ -47,6 +53,7 @@ export async function upsertUserProfile(input: {
   department: string | null;
   active: boolean;
   reason: string;
+  created?: boolean;
 }): Promise<UserAdminResult<null>> {
   try {
     const supabase = await createSupabaseServerClient();
@@ -59,6 +66,7 @@ export async function upsertUserProfile(input: {
       p_department: input.department,
       p_active: input.active,
       p_reason: input.reason,
+      p_created: input.created ?? false,
     });
     if (error) return { data: null, error: error.message };
     return { data: null, error: null };
@@ -126,5 +134,25 @@ export async function deleteAuthUser(userId: string): Promise<UserAdminResult<nu
     return { data: null, error: null };
   } catch (error) {
     return { data: null, error: errorMessage(error, 'Auth 계정을 삭제하지 못했습니다.') };
+  }
+}
+
+/**
+ * fix round 1 · I5 — 완전 삭제 중 프로필은 지웠지만 Auth 계정 삭제가 실패했을 때 그 흔적을
+ * 감사 로그에 남긴다. 이 시점엔 core.app_user 행이 이미 없어 화면 목록에서 사라지므로, 이
+ * 로그가 남은 Auth 계정을 나중에 찾아 정리할 유일한 단서다.
+ */
+export async function recordAuthDeleteFailure(input: { userId: string; email: string; error: string }): Promise<UserAdminResult<null>> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { error } = await supabase.schema('core').rpc('admin_record_auth_delete_failure', {
+      p_user_id: input.userId,
+      p_email: input.email,
+      p_error: input.error,
+    });
+    if (error) return { data: null, error: error.message };
+    return { data: null, error: null };
+  } catch (error) {
+    return { data: null, error: errorMessage(error, 'Auth 삭제 실패 기록을 남기지 못했습니다.') };
   }
 }

@@ -23,6 +23,7 @@ import {
   createAuthUser,
   deleteAuthUser,
   deleteUserProfile,
+  recordAuthDeleteFailure,
   setUserActive,
   upsertUserProfile,
 } from '@/lib/user-admin';
@@ -63,6 +64,7 @@ export async function createUserAction(_prev: UserAdminActionState, formData: Fo
     department: value.department,
     active: true,
     reason: '신규 계정 생성',
+    created: true,
   });
   if (profile.error) {
     const rollback = await deleteAuthUser(newUserId);
@@ -127,22 +129,29 @@ export async function setActiveAction(_prev: UserAdminActionState, formData: For
 
 export async function deleteUserAction(_prev: UserAdminActionState, formData: FormData): Promise<UserAdminActionState> {
   const { profile: actor } = await requireAdmin();
-  const validation = validateDeleteInput({ userId: formData.get('userId'), reason: formData.get('reason') });
+  const validation = validateDeleteInput({
+    userId: formData.get('userId'),
+    email: formData.get('email'),
+    reason: formData.get('reason'),
+  });
   if (!validation.ok) return { error: validation.message, success: null };
   const { value } = validation;
 
   const decision = canDeleteUser({ actorId: actor.userId, targetId: value.userId });
   if (!decision.allowed) return { error: '자신의 계정은 삭제할 수 없습니다.', success: null };
 
-  // 먼저 core.app_user를 지운다 — 업무 이력 참조가 있으면 여기서 거절되고 Auth 계정은
-  // 그대로 남는다(core.admin_delete_app_user_profile 주석 참고).
+  // 먼저 core.app_user를 지운다 — 업무 이력 참조가 있거나(자세한 표 이름을 담아 거절) 아직
+  // 활성 상태면(fix round 1 · I4 — 완전 삭제는 비활성화된 계정만 가능하다) 여기서 거절되고
+  // Auth 계정은 그대로 남는다(core.admin_delete_app_user_profile 주석 참고).
   const profileResult = await deleteUserProfile(value);
   if (profileResult.error) return { error: profileResult.error, success: null };
 
   const authResult = await deleteAuthUser(value.userId);
   if (authResult.error) {
     // 프로필은 이미 지워졌다(위에서 성공) — 여기서부터는 되돌릴 것이 없다. 성공으로 포장하지
-    // 않고 운영자가 마저 처리해야 한다는 것을 분명히 알린다(form-error로 표시된다).
+    // 않고 운영자가 마저 처리해야 한다는 것을 분명히 알린다(form-error로 표시된다). fix round
+    // 1 · I5 — 흔적을 감사 로그에도 남긴다(프로필이 이미 없어져 화면에서는 안 보인다).
+    await recordAuthDeleteFailure({ userId: value.userId, email: value.email, error: authResult.error });
     revalidateUsersScreen();
     return {
       error: `계정 프로필은 삭제했지만 Auth 계정 삭제에는 실패했습니다. Supabase 대시보드(Authentication)에서 직접 삭제하세요: ${authResult.error}`,

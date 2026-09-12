@@ -15,6 +15,10 @@ require_local_target "$DB"
 mkdir -p "$LOG_DIR"
 PSQL=(psql -X -q -v ON_ERROR_STOP=1)
 TARGET_MIGRATION="$REPO/supabase/migrations/20260912000300_stage1_user_admin.sql"
+# fix round 1 · M1 — 이 이름의 파일이, 이 이유로 실패했을 때만 건너뛴다(다른 파일이 우연히
+# 같은 오류 문구를 내면 그대로 멈춘다).
+PG_CRON_MIGRATION_NAME="20260912000100_stage1_pg_cron_jobs.sql"
+SKIPPED_PG_CRON=0
 
 # 덤프 · 마이그레이션이 GRANT하는 역할. 클러스터 공용이라 없을 때만 로그인 불가 역할로 만든다(error.md #14).
 "${PSQL[@]}" -d postgres > "$LOG_DIR/roles.log" 2>&1 <<'SQL'
@@ -53,15 +57,17 @@ end $$;
 SQL
 
 # 0300(관리자 계정 관리)은 자기 순서 자리에서 곧바로 한 번 더 적용한다(재실행 안전성 확인).
-# Task 14(20260912000100_stage1_pg_cron_jobs.sql)는 pg_cron·pg_net 확장을 요구하는데, 이 두
-# 확장은 Supabase 전용이라 일반 로컬 PostgreSQL(Homebrew postgresql@17)에는 설치돼 있지 않다
-# (error.md 참고). 이 스위트는 pg_cron과 무관하므로, "확장이 없다"는 이유로만 실패하면 건너뛰고
-# 계속 진행한다 — 그 외 이유로 실패하면 지금까지와 같이 즉시 멈춘다.
+# Task 14($PG_CRON_MIGRATION_NAME)는 pg_cron·pg_net 확장을 요구하는데, 이 두 확장은 Supabase
+# 전용이라 일반 로컬 PostgreSQL(Homebrew postgresql@17)에는 설치돼 있지 않다(error.md #31).
+# 이 스위트는 pg_cron과 무관하므로, "정확히 그 파일이 그 이유로만" 실패하면 건너뛰고 계속
+# 진행한다 — 다른 파일이 같은 오류 문구를 우연히 내거나, 그 파일이 다른 이유로 실패하면
+# 지금까지와 같이 즉시 멈춘다(fix round 1 · M1).
 for migration in "$REPO"/supabase/migrations/*.sql; do
   name=$(basename "$migration")
   if ! "${PSQL[@]}" -d "$DB" -f "$migration" > "$LOG_DIR/migration-$name.log" 2>&1; then
-    if grep -qE 'extension "pg_(cron|net)" is not available' "$LOG_DIR/migration-$name.log"; then
+    if [ "$name" = "$PG_CRON_MIGRATION_NAME" ] && grep -qE 'extension "pg_(cron|net)" is not available' "$LOG_DIR/migration-$name.log"; then
       echo "건너뜀(로컬에 pg_cron/pg_net 확장 없음, 이 스위트와 무관): $name" >&2
+      SKIPPED_PG_CRON=1
       continue
     fi
     echo "마이그레이션 실패: $name" >&2
@@ -74,4 +80,8 @@ for migration in "$REPO"/supabase/migrations/*.sql; do
     exit 1
   fi
 done
-echo "bootstrap 완료: $DB (마이그레이션 전체 적용, $(basename "$TARGET_MIGRATION")은 자기 순서에서 재적용)"
+if [ "$SKIPPED_PG_CRON" = 1 ]; then
+  echo "bootstrap 완료: $DB (마이그레이션 전체 적용 — $PG_CRON_MIGRATION_NAME 1건 건너뜀, $(basename "$TARGET_MIGRATION")은 자기 순서에서 재적용)"
+else
+  echo "bootstrap 완료: $DB (마이그레이션 전체 적용, $(basename "$TARGET_MIGRATION")은 자기 순서에서 재적용)"
+fi

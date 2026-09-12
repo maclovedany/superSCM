@@ -46,8 +46,22 @@ insert into auth.users (id, email) values
   ('00000000-0000-4000-8000-000000000503', 'ua-user1@example.test'),
   ('00000000-0000-4000-8000-000000000504', 'ua-clean@example.test'),
   ('00000000-0000-4000-8000-000000000505', 'ua-history@example.test'),
-  ('00000000-0000-4000-8000-000000000506', 'ua-newprofile@example.test')
+  ('00000000-0000-4000-8000-000000000506', 'ua-newprofile@example.test'),
+  ('00000000-0000-4000-8000-000000000507', 'ua-orphan@example.test')
 on conflict (id) do nothing;
+
+-- fix round 1 · C1 — 이메일/비밀번호로 만든 계정은 GoTrue가 auth.identities 행을 반드시 하나
+-- 만든다. 이 fixture가 그 행을 실제와 같은 모양으로 넣지 않으면, "auth 스키마 자신의 FK까지
+-- 참조로 잡던 버그"를 로컬에서 재현·회귀 검증할 수 없다.
+insert into auth.identities (user_id, provider, provider_id, identity_data) values
+  ('00000000-0000-4000-8000-000000000501', 'email', 'ua-admin1@example.test', '{}'::jsonb),
+  ('00000000-0000-4000-8000-000000000502', 'email', 'ua-admin2@example.test', '{}'::jsonb),
+  ('00000000-0000-4000-8000-000000000503', 'email', 'ua-user1@example.test', '{}'::jsonb),
+  ('00000000-0000-4000-8000-000000000504', 'email', 'ua-clean@example.test', '{}'::jsonb),
+  ('00000000-0000-4000-8000-000000000505', 'email', 'ua-history@example.test', '{}'::jsonb),
+  ('00000000-0000-4000-8000-000000000506', 'email', 'ua-newprofile@example.test', '{}'::jsonb),
+  ('00000000-0000-4000-8000-000000000507', 'email', 'ua-orphan@example.test', '{}'::jsonb)
+on conflict do nothing;
 
 insert into core.app_user (user_id, email, name, department, job_role, role, active) values
   ('00000000-0000-4000-8000-000000000501', 'ua-admin1@example.test', '관리자1', null, null, 'ADMIN', true),
@@ -58,13 +72,16 @@ insert into core.app_user (user_id, email, name, department, job_role, role, act
 on conflict (user_id) do update
   set role = excluded.role, active = true, name = excluded.name, department = excluded.department, job_role = excluded.job_role;
 
--- S3(신규 프로필 확정) 전용 — auth.users는 있지만 core.app_user 행은 없는 상태를 만든다.
--- 트리거가 이미 기본 행을 넣었으므로 여기서는 fixture 준비 목적으로만(슈퍼유저로, 함수를 거치지
--- 않고) 그 행을 지운다. 실제 화면 흐름에서는 이 상태가 아주 짧게만 존재한다(Admin API 성공
--- 직후 곧바로 admin_upsert_app_user_profile을 부른다).
-delete from core.app_user where user_id = '00000000-0000-4000-8000-000000000506';
+-- S3(신규 프로필 확정, 실제 운영 경로) 전용 — 트리거가 방금 만든 기본 행(role=USER ·
+-- active=true · job_role=null)을 그대로 둔다. admin_upsert_app_user_profile(..., p_created =>
+-- true)이 이 행 "위에" upsert된다 — 이것이 운영에서 실제로 타는 유일한 분기다(fix round 1 · I3).
 
--- S10(완전 삭제 — 업무 이력) 전용 — history 계정이 감사 로그의 actor로 등장한 적이 있게 만든다.
+-- S3(방어적 분기) 전용 — trigger 행이 없는 상태(예: 어떤 이유로 트리거가 못 만든 경우)를
+-- fixture 준비 목적으로만(슈퍼유저로, 함수를 거치지 않고) 만든다. p_created를 안 넘겨도
+-- v_before is null이면 여전히 USER_CREATED로 남아야 한다.
+delete from core.app_user where user_id = '00000000-0000-4000-8000-000000000507';
+
+-- S11(완전 삭제 — 업무 이력) 전용 — history 계정이 감사 로그의 actor로 등장한 적이 있게 만든다.
 -- core.audit_log.actor는 on delete set null이라 DB가 스스로 삭제를 막지 않는 경우의 대표 예시다.
 insert into core.audit_log (actor, action, target_type, target_id, before, after) values
   ('00000000-0000-4000-8000-000000000505', 'ITEM_POLICY_UPDATED', 'item_policy', 'ITEM-UA-TEST', '{}'::jsonb, '{}'::jsonb);

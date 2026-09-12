@@ -2,6 +2,16 @@
 -- 구조는 supabase/tests/master_edit/scenarios.psql과 같다: 사용자 컨텍스트가 필요한 구간은
 -- `set role authenticated`(진짜 RLS·GRANT 적용) 안에서 as_user()로 auth.uid()를 지정하고,
 -- 결과 확인은 `reset role`(슈퍼유저) 뒤 원본 테이블을 직접 읽어 판정한다.
+--
+-- fix round 1 반영 — 번호를 처음부터 다시 매겼다:
+--   S1 blocking_tables 관련 항목 제거(M2로 authenticated GRANT 자체가 없어져 "ADMIN 여부"를
+--      시험하는 의미가 없어졌다 — 그 확인은 S16으로 옮겼다)
+--   S3 트리거가 이미 만든 기본 행 "위에" upsert하는 운영 경로(p_created=true)로 다시 작성(I3)
+--      + 방어적 분기(행이 정말 없을 때도 USER_CREATED)를 같은 번호에 추가
+--   S10 신설 — 완전 삭제는 active=false인 계정만 가능하다(I4)
+--   S11 재작성 — 비활성화까지 마친 계정이어야 업무 이력 검사(C1 · M5)까지 도달한다
+--   S12 재작성 — 완전 삭제 전에 먼저 비활성화하는 정상 흐름
+--   S16 신설 — app_user_blocking_tables는 authenticated에 직접 열려 있지 않다(M2)
 \set ON_ERROR_STOP 1
 \ir guard.psql
 \pset tuples_only on
@@ -13,6 +23,7 @@
 \set clean_user '00000000-0000-4000-8000-000000000504'
 \set history_user '00000000-0000-4000-8000-000000000505'
 \set newprofile_user '00000000-0000-4000-8000-000000000506'
+\set orphan_user '00000000-0000-4000-8000-000000000507'
 
 
 \echo '== S1 권한 없는 사용자(USER)는 관리자 계정 관리 함수를 모두 거절당한다 =='
@@ -29,10 +40,6 @@ select user_admin_test.expect_error(
 select user_admin_test.expect_error(
   $f$select core.admin_delete_app_user_profile('00000000-0000-4000-8000-000000000504', '사유')$f$,
   '관리자 권한이 필요합니다', 'S1 USER는 완전 삭제를 할 수 없다'
-);
-select user_admin_test.expect_error(
-  $f$select core.app_user_blocking_tables('00000000-0000-4000-8000-000000000504')$f$,
-  '관리자 권한이 필요합니다', 'S1 USER는 참조 확인 함수를 부를 수 없다'
 );
 reset role;
 
@@ -67,13 +74,24 @@ select user_admin_test.expect_error(
 reset role;
 
 
-\echo '== S3 신규 프로필 확정 — auth.users만 있고 core.app_user 행이 없으면 USER_CREATED로 남는다 =='
+\echo '== S3 신규 프로필 확정 — 운영과 같은 경로: 트리거 기본 행 위에 p_created로 upsert한다(fix round 1 · I2 · I3) =='
 set role authenticated;
 select user_admin_test.as_user(:'admin1') \g /dev/null
-select core.admin_upsert_app_user_profile(:'newprofile_user', 'ua-newprofile@example.test', '새사람', 'USER', 'SALES_REP', 'SALES', true, '신규 계정 생성');
+-- newprofile_user는 fixtures에서 core.app_user 행을 지우지 않았다 — auth.users insert 트리거가
+-- 만든 기본 행(role=USER · active=true · job_role=null)이 그대로 있다. 운영에서 실제로 타는
+-- 유일한 분기다.
+select core.admin_upsert_app_user_profile(:'newprofile_user', 'ua-newprofile@example.test', '새사람', 'USER', 'SALES_REP', 'SALES', true, '신규 계정 생성', true);
 reset role;
-select user_admin_test.check((select role = 'USER' and job_role = 'SALES_REP' and department = 'SALES' and active from core.app_user where user_id = :'newprofile_user'), 'S3 프로필이 원하는 값으로 만들어졌다');
-select user_admin_test.check((select action from core.audit_log where target_type = 'app_user' and target_id = :'newprofile_user' order by id desc limit 1) = 'USER_CREATED', 'S3 감사 로그 action이 USER_CREATED다');
+select user_admin_test.check((select role = 'USER' and job_role = 'SALES_REP' and department = 'SALES' and active from core.app_user where user_id = :'newprofile_user'), 'S3 트리거 기본 행 위에 원하는 값으로 확정됐다');
+select user_admin_test.check((select action from core.audit_log where target_type = 'app_user' and target_id = :'newprofile_user' order by id desc limit 1) = 'USER_CREATED', 'S3 p_created=true면 행이 이미 있어도 USER_CREATED로 남는다');
+
+set role authenticated;
+select user_admin_test.as_user(:'admin1') \g /dev/null
+-- orphan_user는 fixtures에서 core.app_user 행 자체를 지웠다(방어적 분기 — 트리거가 어떤 이유로
+-- 행을 못 만든 경우). p_created를 안 넘겨도(기본값 false) v_before is null이면 USER_CREATED다.
+select core.admin_upsert_app_user_profile(:'orphan_user', 'ua-orphan@example.test', '고아프로필', 'USER', null, null, true, '방어적 분기 확정');
+reset role;
+select user_admin_test.check((select action from core.audit_log where target_type = 'app_user' and target_id = :'orphan_user' order by id desc limit 1) = 'USER_CREATED', 'S3 p_created 없이도 행이 정말 없으면 USER_CREATED다(방어적 분기)');
 
 
 \echo '== S4 기존 계정 편집 — 값이 반영되고 USER_PROFILE_UPDATED로 남는다 =='
@@ -82,7 +100,7 @@ select user_admin_test.as_user(:'admin1') \g /dev/null
 select core.admin_upsert_app_user_profile(:'user1', 'ua-user1@example.test', '일반사용자1(수정)', 'USER', 'SCM_LEAD', 'SCM', true, '직책 부여');
 reset role;
 select user_admin_test.check((select name = '일반사용자1(수정)' and job_role = 'SCM_LEAD' and department = 'SCM' from core.app_user where user_id = :'user1'), 'S4 이름·직책·부서가 바뀌었다');
-select user_admin_test.check((select (after ->> 'reason') = '직책 부여' from core.audit_log where target_type = 'app_user' and target_id = :'user1' and action = 'USER_PROFILE_UPDATED' order by id desc limit 1), 'S4 감사 로그에 사유가 남는다');
+select user_admin_test.check((select (after ->> 'reason') = '직책 부여' from core.audit_log where target_type = 'app_user' and target_id = :'user1' and action = 'USER_PROFILE_UPDATED' order by id desc limit 1), 'S4 감사 로그에 사유가 남는다(p_created 기본값 false → UPDATED)');
 
 
 \echo '== S5 자기 자신의 관리자 권한을 낮추려 하면 거절된다 =='
@@ -150,70 +168,87 @@ select user_admin_test.expect_error(
 reset role;
 
 
-\echo '== S10 완전 삭제 — 업무 이력(core.audit_log)이 있으면 거절되고 참조 표 이름이 담긴다 =='
+\echo '== S10 완전 삭제 — 아직 활성인 계정은 거절된다(fix round 1 · I4, 경쟁 상태를 정책으로 막는다) =='
 set role authenticated;
 select user_admin_test.as_user(:'admin1') \g /dev/null
 select user_admin_test.expect_error(
-  $f$select core.admin_delete_app_user_profile('00000000-0000-4000-8000-000000000505', '중복 계정 정리')$f$,
-  'audit_log', 'S10 audit_log 참조가 있으면 완전 삭제가 거절되고 표 이름이 문구에 담긴다'
+  $f$select core.admin_delete_app_user_profile('00000000-0000-4000-8000-000000000503', '활성 상태에서 삭제 시도')$f$,
+  '비활성화된 계정만', 'S10 active=true인 계정은 완전 삭제가 거절된다'
 );
-select user_admin_test.check((select cardinality(core.app_user_blocking_tables(:'history_user')) > 0), 'S10 app_user_blocking_tables도 같은 계정을 참조 있음으로 본다');
 reset role;
-select user_admin_test.check((select count(*) from core.app_user where user_id = :'history_user') = 1, 'S10 거절 후에도 프로필 행은 그대로 남아 있다');
+select user_admin_test.check((select count(*) from core.app_user where user_id = :'user1') = 1, 'S10 거절 후에도 프로필 행은 그대로 남아 있다');
 
 
-\echo '== S11 완전 삭제 — 이력 없는 계정은 core.app_user에서 지워지고 감사 로그가 남는다 =='
+\echo '== S11 완전 삭제 — 비활성화까지 마쳐도 업무 이력(감사 로그)이 있으면 거절되고 한국어 라벨이 담긴다(fix round 1 · C1 · M5) =='
 set role authenticated;
 select user_admin_test.as_user(:'admin1') \g /dev/null
+select core.admin_set_app_user_active(:'history_user', false, '삭제 전 비활성화');
+select user_admin_test.expect_error(
+  $f$select core.admin_delete_app_user_profile('00000000-0000-4000-8000-000000000505', '중복 계정 정리')$f$,
+  '감사 로그', 'S11 감사 로그 참조가 있으면 완전 삭제가 거절되고 한국어 라벨(''감사 로그'')이 담긴다 — raw 이름(audit_log)이 아니다'
+);
+reset role;
+select user_admin_test.check((select count(*) from core.app_user where user_id = :'history_user') = 1, 'S11 거절 후에도 프로필 행은 그대로 남아 있다(비활성 상태로)');
+select user_admin_test.check((select active from core.app_user where user_id = :'history_user') = false, 'S11 비활성화는 유지된다');
+
+
+\echo '== S12 완전 삭제 — 비활성화 후 업무 이력이 없으면 core.app_user에서 지워지고 감사 로그가 남는다 =='
+set role authenticated;
+select user_admin_test.as_user(:'admin1') \g /dev/null
+select core.admin_set_app_user_active(:'clean_user', false, '삭제 전 비활성화');
 select core.admin_delete_app_user_profile(:'clean_user', '테스트 계정 정리');
 reset role;
-select user_admin_test.check((select count(*) from core.app_user where user_id = :'clean_user') = 0, 'S11 프로필이 삭제됐다');
-select user_admin_test.check((select count(*) from auth.users where id = :'clean_user') = 1, 'S11 auth.users는 그대로 남는다(서버가 이어서 Admin API로 지운다)');
-select user_admin_test.check((select action from core.audit_log where target_type = 'app_user' and target_id = :'clean_user' order by id desc limit 1) = 'USER_PROFILE_DELETED', 'S11 감사 로그 action이 USER_PROFILE_DELETED다');
+select user_admin_test.check((select count(*) from core.app_user where user_id = :'clean_user') = 0, 'S12 프로필이 삭제됐다');
+select user_admin_test.check((select count(*) from auth.users where id = :'clean_user') = 1, 'S12 auth.users는 그대로 남는다(서버가 이어서 Admin API로 지운다)');
+select user_admin_test.check((select action from core.audit_log where target_type = 'app_user' and target_id = :'clean_user' order by id desc limit 1) = 'USER_PROFILE_DELETED', 'S12 감사 로그 action이 USER_PROFILE_DELETED다');
 
 
-\echo '== S12 직접 테이블 쓰기 — job_role · department는 함수 없이 직접 UPDATE할 수 없다 =='
+\echo '== S13 직접 테이블 쓰기 — job_role · department는 함수 없이 직접 UPDATE할 수 없다 =='
 set role authenticated;
 select user_admin_test.as_user(:'admin1') \g /dev/null
 select user_admin_test.expect_error(
   $f$update core.app_user set job_role = 'SCM_LEAD' where user_id = '00000000-0000-4000-8000-000000000502'$f$,
-  'permission denied', 'S12 job_role 직접 UPDATE는 ADMIN이어도 거절된다'
+  'permission denied', 'S13 job_role 직접 UPDATE는 ADMIN이어도 거절된다'
 );
 select user_admin_test.expect_error(
   $f$update core.app_user set department = 'SCM' where user_id = '00000000-0000-4000-8000-000000000502'$f$,
-  'permission denied', 'S12 department 직접 UPDATE는 ADMIN이어도 거절된다'
+  'permission denied', 'S13 department 직접 UPDATE는 ADMIN이어도 거절된다'
 );
 reset role;
 
 
-\echo '== S13 job_role · department CHECK 제약 — 슈퍼유저 직접 UPDATE도 잘못된 값은 거절된다 =='
+\echo '== S14 job_role · department CHECK 제약 — 슈퍼유저 직접 UPDATE도 잘못된 값은 거절된다 =='
 select user_admin_test.expect_error(
   $f$update core.app_user set job_role = 'NOT_A_ROLE' where user_id = '00000000-0000-4000-8000-000000000502'$f$,
-  'app_user_job_role_chk|violates check constraint', 'S13 잘못된 job_role은 CHECK 제약에 걸린다(RLS를 우회해도)'
+  'app_user_job_role_chk|violates check constraint', 'S14 잘못된 job_role은 CHECK 제약에 걸린다(RLS를 우회해도)'
 );
 select user_admin_test.expect_error(
   $f$update core.app_user set department = 'NOT_A_DEPT' where user_id = '00000000-0000-4000-8000-000000000502'$f$,
-  'app_user_department_chk|violates check constraint', 'S13 잘못된 department는 CHECK 제약에 걸린다(RLS를 우회해도)'
+  'app_user_department_chk|violates check constraint', 'S14 잘못된 department는 CHECK 제약에 걸린다(RLS를 우회해도)'
 );
 
 
-\echo '== S14 같은 값으로 다시 호출해도 오류 없다(idempotent upsert) =='
+\echo '== S15 같은 값으로 다시 호출해도 오류 없다(idempotent upsert) =='
 set role authenticated;
 select user_admin_test.as_user(:'admin1') \g /dev/null
 select core.admin_upsert_app_user_profile(:'user1', 'ua-user1@example.test', '일반사용자1(수정)', 'USER', 'SCM_LEAD', 'SCM', true, '같은 값 재적용');
 reset role;
-select user_admin_test.check(true, 'S14 같은 값으로 다시 호출해도 오류 없이 끝났다(위 줄에서 멈추지 않았다면 통과)');
+select user_admin_test.check(true, 'S15 같은 값으로 다시 호출해도 오류 없이 끝났다(위 줄에서 멈추지 않았다면 통과)');
 
 
-\echo '== S15 직접 INSERT · DELETE — ADMIN이어도 core.app_user에 직접 쓸 수 없다(함수를 통해서만) =='
+\echo '== S16 직접 INSERT · DELETE · 내부 헬퍼 호출 — ADMIN이어도 함수를 거치지 않으면 거절된다(fix round 1 · M2) =='
 set role authenticated;
 select user_admin_test.as_user(:'admin1') \g /dev/null
 select user_admin_test.expect_error(
   $f$insert into core.app_user (user_id, email, name, role, active) values ('00000000-0000-4000-8000-000000000777','x@example.test','x','USER',true)$f$,
-  'permission denied', 'S15 ADMIN도 core.app_user에 직접 INSERT할 수 없다'
+  'permission denied', 'S16 ADMIN도 core.app_user에 직접 INSERT할 수 없다'
 );
 select user_admin_test.expect_error(
   $f$delete from core.app_user where user_id = '00000000-0000-4000-8000-000000000502'$f$,
-  'permission denied', 'S15 ADMIN도 core.app_user를 직접 DELETE할 수 없다'
+  'permission denied', 'S16 ADMIN도 core.app_user를 직접 DELETE할 수 없다'
+);
+select user_admin_test.expect_error(
+  $f$select core.app_user_blocking_tables('00000000-0000-4000-8000-000000000502')$f$,
+  'permission denied', 'S16 ADMIN도 app_user_blocking_tables를 RPC로 직접 부를 수 없다(내부 헬퍼, admin_delete_app_user_profile 안에서만 쓴다)'
 );
 reset role;

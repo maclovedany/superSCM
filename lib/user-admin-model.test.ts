@@ -91,10 +91,14 @@ test('활성 전환 · 완전 삭제 입력 검증도 사유를 요구한다', (
   assert.equal(active.ok, false);
   if (!active.ok) assert.equal(active.reasonCode, 'REASON_REQUIRED');
 
-  const del = validateDeleteInput({ userId: '', reason: '중복 계정' });
+  const del = validateDeleteInput({ userId: '', email: 'a@example.com', reason: '중복 계정' });
   assert.equal(del.ok, false);
   if (!del.ok) assert.equal(del.reasonCode, 'USER_ID_REQUIRED');
 
-  const okDelete = validateDeleteInput({ userId: 'u1', reason: '중복 계정' });
+  const missingEmail = validateDeleteInput({ userId: 'u1', email: '', reason: '중복 계정' });
+  assert.equal(missingEmail.ok, false);
+  if (!missingEmail.ok) assert.equal(missingEmail.reasonCode, 'EMAIL_REQUIRED');
+
+  const okDelete = validateDeleteInput({ userId: 'u1', email: 'a@example.com', reason: '중복 계정' });
   assert.equal(okDelete.ok, true);
 });
