@@ -79,7 +79,7 @@ Project Settings → API → Data API → Exposed schemas
 > 없이도 그대로 동작합니다. Task 13의 `20260911001200`은 이 테이블이 없어도(`to_regclass` 가드)
 > 안전하게 통과합니다.
 
-### 4-2. Stage 1 파일 — 아직 적용 안 됨, 이번에 순서대로 적용
+### 4-2. Stage 1 파일 — 2026-09-12 적용 완료 (아래 §6 기록 참고)
 
 | 순서 | 파일 | Task | 내용 | 확인 쿼리(파일 하단에 전체 있음) |
 |---|---|---|---|---|
@@ -154,3 +154,48 @@ Project Settings → API → Data API → Exposed schemas
 나오는지, `supabase/realdata/*`로 채운 6회차 실데이터 뷰 24개 등)가 정리되어 있습니다. 이번
 Task 13 적용과는 별개의 이력이며, 이 문서가 다루는 stage1(Task 1~13) 순서에는 영향을 주지
 않습니다.
+
+## 6. 적용 기록 — 2026-09-12
+
+Claude 가 세션 풀러(5432)로 직접 적용했습니다. 적용 전후 정의는 저장소에 남겼습니다.
+
+- 적용 전: `supabase/schema-dump/pre-apply-2026-09-12-1058.sql` (5,470줄 · CREATE 226)
+- 적용 후: `supabase/schema-dump/2026-09-12.sql` (17,976줄 · CREATE 520)
+
+### 적용 중 발견한 것 — STEP 19 가 빠져 있었습니다
+
+§4-1 은 STEP 파일이 모두 적용됐다고 가정했지만, 실제 배포 DB 에는
+`20260911000200_step19_permission.sql` 이 적용돼 있지 않았습니다 (`core.role_permission`
+자체가 없었습니다). stage1 전 파일이 `core.has_permission()` 에 의존하므로 선행 점검에서
+중단했고, STEP 19 를 맨 앞에 넣어 함께 적용했습니다.
+
+### 적용한 파일 (15개, 파일명 순서, 파일당 트랜잭션 1개)
+
+`20260911000200` → `000300` → `000400` → `000500` → `000600` → `000610` → `000700` →
+`000800` → `000850` → `000900` → `000950` → `001000` → `001100` → `001150` → `001200`
+
+### 적용 후 확인 결과
+
+| 항목 | 값 |
+|---|---|
+| 직책 / 권한 매핑 / 권한 코드 | 6 / 26 / 20 |
+| 활성 해외법인 | CN, JP, NL, SG, VN |
+| core 테이블 · analytics 뷰 · core 함수 | 62 · 62 · 125 |
+| `security_invoker` 적용 뷰 | 29 |
+| `core.submission_deadline('2026-04-01')` | `2026-03-30` (stage1 §3 예시와 일치) |
+| 기준월 | `PLANNING_CYCLE_NOT_OPEN` (주기 미개설, 정상) |
+| 레거시 public 테이블의 authenticated·anon 권한 | 0건 (회수 완료) |
+
+### 아직 비어 있는 업무 마스터 (화면이 사유 코드만 보이는 이유)
+
+`core.item_policy` 0행 · `core.stock_balance` 0행 · `core.supplier` 0행 ·
+`core.business_calendar` 0행 · `core.forecast_run` 0행 · `core.app_user` 1행.
+실데이터(`raw.dim_item` 93,868행)는 그대로이며, `raw.inventory` 43행은 5회차 더미입니다.
+
+### SQL 로 할 수 없어 남은 일
+
+1. Vercel 환경변수 4개(`SUPABASE_SECRET_KEY`·`CRON_SECRET`·`RESEND_API_KEY`·`RESEND_FROM_EMAIL`)와
+   10분 Cron(Pro 이상 또는 동등 스케줄러)
+2. 직책·부서가 지정된 사용자 계정 생성 — 현재 `core.app_user` 1행이라 직책별 검수 불가
+3. 업무 마스터 입력: 공급처, 법인 출항 준비기간, 출항일 규칙, 한국 공휴일, 품목 정책 승인
+4. 취합 주기 열기(SCM 품목담당자) — 이후 기준월이 화면에 표시됨
