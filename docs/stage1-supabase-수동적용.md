@@ -34,7 +34,11 @@
 `NEXT_PUBLIC_SUPABASE_URL` · `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`는 기존 그대로입니다
 (AGENTS.md).
 
-## 2. Vercel Cron 설정 (`vercel.json`, 이미 저장소에 있음)
+## 2. 반복 작업 스케줄 — 기본은 Supabase pg_cron(`vercel.json`에는 없음)
+
+기본 경로는 Supabase pg_cron/pg_net입니다(`docs/notification-operations.md`). `vercel.json`에는
+더 이상 아래 세 라우트의 Cron 설정이 없습니다 — 관리자 계정 관리 작업에서 제거했습니다(둘 다
+남겨 두면 Vercel 프로젝트가 유료 플랜으로 바뀔 때 두 경로가 동시에 켜집니다).
 
 ```json
 "/api/cron/notifications"       */10 * * * *
@@ -42,9 +46,10 @@
 "/api/cron/demand-submissions"  */10 * * * *
 ```
 
-**10분 주기는 Vercel Hobby 플랜에서 지원되지 않습니다.** Vercel Pro 이상이거나, 같은 주기를
-보장하는 Supabase Cron 등 외부 스케줄러로 대신 호출해야 합니다(`docs/notification-operations.md`).
-외부 스케줄러를 쓸 때도 위 `CRON_SECRET` 헤더를 반드시 붙입니다.
+**10분 주기는 Vercel Hobby 플랜에서 지원되지 않습니다.** Vercel Cron 경로로 되돌리려면
+`vercel.json`에 위 세 항목을 `crons` 배열로 다시 추가하고 Supabase pg_cron의 동일 작업 세
+개는 꺼야 합니다 — 자세한 내용과 되돌리는 방법은 `docs/notification-operations.md`를
+참고하세요. 외부 스케줄러를 쓸 때도 위 `CRON_SECRET` 헤더를 반드시 붙입니다.
 
 ## 3. Supabase 대시보드 설정
 
@@ -376,8 +381,9 @@ Resend 도메인 `send.upflash.co.kr` verified (리전 ap-northeast-1). DKIM 은
 
 ### 운영 시 주의
 
-- `vercel.json` 의 크론 3 건과 **동시에 켜 두지 마세요.** 같은 조건을 한쪽은 영구 실패,
-  다른 쪽은 재시도로 기록해 알림 이력이 모순됩니다.
+- Vercel Cron 경로로 되돌린 경우 그 3건과 **동시에 켜 두지 마세요**(`vercel.json`에는
+  기본적으로 없습니다 — 위 §2 참고). 같은 조건을 한쪽은 영구 실패, 다른 쪽은 재시도로
+  기록해 알림 이력이 모순됩니다.
 - 예약이 안 도는 것 같으면 `cron.job_run_details` 를 **먼저** 보고, 그다음
   `net._http_response` 를 보세요. Vault 비밀값이 없으면 not-null 위반으로 job_run_details
   에만 남습니다.
@@ -397,3 +403,26 @@ Resend 도메인 `send.upflash.co.kr` verified (리전 ap-northeast-1). DKIM 은
 
 pg_cron → pg_net → Edge Function → DB 전 구간이 연결된 것을 확인했습니다.
 업무 데이터가 쌓이면 같은 경로로 앱 내 알림과 이메일이 발송됩니다.
+
+## 9. 실습 계정 — 2026-09-12 생성
+
+직책별 화면과 승인 흐름을 눌러 보려면 직책·부서가 지정된 계정이 필요합니다.
+Auth 사용자와 `core.app_user` 프로필을 함께 만들었고, 로그인까지 확인했습니다.
+
+| 직책 | 부서 | 이메일 | 시스템 권한 | 업무 권한 수 |
+|---|---|---|---|---|
+| SCM 품목담당자 | SCM | insightdany@naver.com | ADMIN | 9 |
+| SCM팀장 | SCM | upflash@naver.com | USER | 7 |
+| 영업담당자 | SALES | insightcha0624@gmail.com | USER | 3 |
+| 서비스부 | SERVICE | imagineworld@kakao.com | USER | 3 |
+| 사업강화부 | BIZ_DEV | pro-worker@daum.net | USER | 2 |
+| 마케팅부 | MARKETING | alltest@nate.com | USER | 2 |
+
+- 공통 비밀번호는 저장소에 적지 않습니다. 담당자에게 별도로 전달했으며, 관리자 화면에서
+  변경할 수 있습니다. 수업 전에 바꾸기를 권합니다.
+- `insightdany@naver.com` 은 기존 ADMIN 계정이라 새로 만들지 않고 직책·부서만 부여했습니다.
+  ADMIN 을 유지한 이유는, 이 계정까지 USER 로 낮추면 관리자 화면에 아무도 못 들어가기
+  때문입니다.
+- `auth.users` 의 `on_auth_user_created` 트리거가 프로필 행을 자동 생성하므로, 새 계정을
+  만들 때는 프로필을 새로 넣지 말고 **직책·부서만 갱신**하면 됩니다.
+- 직책별 권한 개수는 STEP 19 의 `core.role_permission` 정의와 일치하는지 확인했습니다.
