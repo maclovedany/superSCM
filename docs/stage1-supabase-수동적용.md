@@ -105,19 +105,39 @@ Project Settings → API → Data API → Exposed schemas
 
 - **이미 적용된 파일 5개가 재실행 안전성 때문에 수정되었습니다(2026-09-12 최종 fix).** 내용상
   동작은 그대로이고, "다시 실행했을 때 멈추지 않게" 하는 보강만 들어갔습니다(error.md #29).
-  이미 적용한 DB에 **다시 적용할 필요는 없지만**, 다시 적용해도 안전합니다.
+  이미 적용한 DB에 **다시 적용할 필요는 없습니다.**
 
-  | 파일 | 보강 내용 |
-  |---|---|
-  | `20260828000300_step4_import_pipeline.sql` | RLS 정책 생성 앞에 `drop policy if exists` |
-  | `20260828000500_step6_baseline_forecast.sql` | `0900`이 `core.forecast_run`에 열을 추가한 뒤면 `analytics.v_forecast_run` 재정의를 건너뜀 |
-  | `20260828000600_step7_backtest_champion.sql` | RLS 정책 생성 앞에 `drop policy if exists` |
-  | `20260911000100_step18_master.sql` | 뒤 파일이 넓힌 뷰 3개(`v_supplier_departure`·`v_item_policy`·`v_master_readiness`) 재정의를 건너뜀 |
-  | `20260911000850_stage1_item_policy_revision.sql` | `0900`이 넓힌 `analytics.v_item_policy` 재정의를 건너뜀 |
+  ⚠️ **"멈추지 않는다"가 "혼자 다시 실행해도 된다"는 뜻은 아닙니다.** 한 파일만 다시 실행하면,
+  그 뒤 파일이 같은 함수를 다시 정의해 두었을 때 **옛 정의로 조용히 되돌아갑니다**(오류도
+  `notice`도 나오지 않습니다). 실측으로 확인된 사례:
+
+  - `20260828000300_step4_import_pipeline.sql`을 완전히 적용된 DB에서 **혼자** 다시 실행하면
+    `core.commit_import_batch`가 STEP 4 원본으로 되돌아가면서 Task 4의 재고·입고 원장 반영,
+    Task 12의 월말 스냅샷 반영, 다품목 upsert 삭제 키 수정이 **한꺼번에 사라집니다.**
+  - `20260911000500_stage1_inventory_availability.sql`도 같은 이유로 단독 재실행 대상이 아닙니다
+    (그 뒤 `20260911001150`이 같은 함수의 최종 정의를 갖고 있습니다).
+
+  **규칙** — 어떤 파일이든 하나를 다시 실행했다면 **그 뒤 파일을 파일명 순서로 이어서 끝까지**
+  다시 실행하세요. 표준 복구 절차는 지금도 "**전체를 파일명 순서로 다시 적용**"입니다(§0-4).
+
+  | 파일 | 보강 내용 | 단독 재실행 |
+  |---|---|---|
+  | `20260828000300_step4_import_pipeline.sql` | RLS 정책 생성 앞에 `drop policy if exists` | ❌ **금지** — `commit_import_batch`가 원본으로 되돌아감. 반드시 뒤 파일까지 이어서 적용 |
+  | `20260828000500_step6_baseline_forecast.sql` | `0900`이 `core.forecast_run`에 열을 추가한 뒤면 `analytics.v_forecast_run` 재정의를 건너뜀 | ⭕ 안전(뷰만 건너뜀) |
+  | `20260828000600_step7_backtest_champion.sql` | RLS 정책 생성 앞에 `drop policy if exists` | ⭕ 안전 |
+  | `20260911000100_step18_master.sql` | 뒤 파일이 넓힌 뷰 3개(`v_supplier_departure`·`v_item_policy`·`v_master_readiness`) 재정의를 건너뜀 | ⭕ 안전 |
+  | `20260911000850_stage1_item_policy_revision.sql` | `0900`이 넓힌 `analytics.v_item_policy` 재정의를 건너뜀 | ⭕ 안전 |
 
 - **`0850` 단독 재실행** — `0900`이 `analytics.v_item_policy`를 넓힌 뒤에 `0850`만 다시 실행하면,
   이제 오류 없이 그 뷰만 건너뜁니다(`raise notice`). 예전에는 `cannot drop columns from view`로
   실패했습니다(error.md #24 → #29).
+
+- **`goods_receipt`·`purchase_order`의 `upsert` 적재 규칙이 바뀌었습니다(2026-09-12).** 덮어쓰기
+  삭제 키가 문서번호(`source_record_id`) 하나에서 **(문서번호, 품목코드)**로 바뀌었습니다. 그래서
+  한 입고번호·발주번호에 품목이 여러 줄이어도 모두 남습니다(예전에는 마지막 품목만 남았습니다).
+  ⚠️ 뒤집어 말하면, **품목 줄을 뺀 정정본을 같은 문서번호로 다시 올려도 빠진 줄은 지워지지 않고
+  그대로 남습니다.** 줄 자체를 없애야 한다면 그 배치를 `rollback`하고 다시 올리거나, 전체를 바꾸는
+  `replace` 모드를 쓰세요. 다른 적재 유형(재고·품목·공급처 등)은 규칙이 바뀌지 않았습니다.
 - **10분 반복 알림은 Vercel Pro 필요** — Hobby 플랜은 10분 주기 Cron을 지원하지 않습니다. 동등한
   외부 스케줄러로 대체하세요(docs/notification-operations.md).
 - **`raw.usage_history`를 수동으로 바꾼 뒤에는 Forecast·Backtest를 다시 실행해야 합니다** —

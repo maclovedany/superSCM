@@ -74,8 +74,10 @@ for round in $(seq 1 $ROUNDS); do
   wait $PC; EC=$?
 
   # 1) 어느 쪽도 교착으로 끝나지 않아야 한다.
-  DEADLOCK=$(grep -clE '40P01|deadlock detected|교착' "$LOG_DIR/c1-approve-$round.log" "$LOG_DIR/c1-cancel-$round.log" | grep -c ':[1-9]' || true)
-  expect_equal "$DEADLOCK" 0 "C1 라운드 $round 교착(40P01) 발생 파일 수"
+  #    ★ grep -l은 파일명만 출력하므로 건수를 셀 수 없다(그렇게 쓰면 이 검증이 항상 통과한다).
+  #      sales_order_allocation/concurrency.sh C7과 같이 두 로그를 이어 붙여 실제 건수를 센다.
+  DEADLOCKS=$(cat "$LOG_DIR/c1-approve-$round.log" "$LOG_DIR/c1-cancel-$round.log" | grep -cE '40P01|deadlock detected' || true)
+  expect_equal "$DEADLOCKS" 0 "C1 라운드 $round 교착(40P01) 발생 건수"
 
   # 2) 정확히 한쪽만 성공해야 한다.
   WINNERS=$(( (EA == 0 ? 1 : 0) + (EC == 0 ? 1 : 0) ))

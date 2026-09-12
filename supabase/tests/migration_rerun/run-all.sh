@@ -74,6 +74,49 @@ for pass in 1 2; do
   echo "pass$pass: PASS $OK · FAIL/ERROR $FAILED"
 done
 
+# ── 사후 조건 ────────────────────────────────────────────────────
+# psql 종료 코드만 보면 "가드가 엉뚱한 객체를 건너뛰어 좁은 정의가 남았는지"를 알 수 없다.
+# 두 번째 적용이 끝난 상태에서 최종 정의가 실제로 넓은 쪽인지 직접 센다.
+"${PSQL[@]}" -d "$DB" -At > "$LOG_DIR/postconditions.log" 2>&1 <<'SQL'
+with expected(label, actual, want) as (
+  values
+    ('analytics.v_item_policy 열 수',
+       (select count(*) from information_schema.columns where table_schema = 'analytics' and table_name = 'v_item_policy'), 24::bigint),
+    ('analytics.v_master_readiness 열 수',
+       (select count(*) from information_schema.columns where table_schema = 'analytics' and table_name = 'v_master_readiness'), 9),
+    ('analytics.v_supplier_departure 열 수',
+       (select count(*) from information_schema.columns where table_schema = 'analytics' and table_name = 'v_supplier_departure'), 11),
+    ('analytics.v_forecast_run 열 수',
+       (select count(*) from information_schema.columns where table_schema = 'analytics' and table_name = 'v_forecast_run'), 21),
+    ('analytics.v_inventory_performance 열 수',
+       (select count(*) from information_schema.columns where table_schema = 'analytics' and table_name = 'v_inventory_performance'), 13),
+    ('core.upload_batch 정책 수',
+       (select count(*) from pg_policies where schemaname = 'core' and tablename = 'upload_batch'), 2)
+)
+select case when actual = want then 'PASS: ' else 'FAIL: ' end
+       || label || ' (' || actual::text || ' · 기대 ' || want::text || ')'
+  from expected
+union all
+select case when body like '%품목코드" is not distinct from%' then 'PASS: ' else 'FAIL: ' end
+       || 'core.commit_import_batch에 다품목 (문서번호, 품목코드) 삭제 술어가 남아 있다'
+  from (select pg_get_functiondef(p.oid) as body from pg_proc p
+          join pg_namespace n on n.oid = p.pronamespace
+         where n.nspname = 'core' and p.proname = 'commit_import_batch') f
+union all
+select case when body like '%apply_month_end_inventory_snapshot_from_batch%' then 'PASS: ' else 'FAIL: ' end
+       || 'core.commit_import_batch에 Task 12 월말 스냅샷 훅이 남아 있다'
+  from (select pg_get_functiondef(p.oid) as body from pg_proc p
+          join pg_namespace n on n.oid = p.pronamespace
+         where n.nspname = 'core' and p.proname = 'commit_import_batch') f;
+SQL
+POST_PASS=$(grep -c '^PASS: ' "$LOG_DIR/postconditions.log" || true)
+POST_FAIL=$(grep -c '^FAIL: ' "$LOG_DIR/postconditions.log" || true)
+echo "사후 조건: PASS $POST_PASS · FAIL/ERROR $POST_FAIL"
+sed 's/^/  /' "$LOG_DIR/postconditions.log"
+if [ "$POST_PASS" -ne 8 ] || [ "$POST_FAIL" -ne 0 ]; then
+  STATUS=1
+fi
+
 if [ "$STATUS" -ne 0 ]; then
   echo "결과: 실패 — 마이그레이션 전체 재실행이 안전하지 않습니다 (로그 $LOG_DIR)"
 else
