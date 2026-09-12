@@ -38,18 +38,23 @@ fi
 
 STATUS=0
 "${PSQL[@]}" -f "$HERE/scenarios.psql" > "$LOG_DIR/scenarios.log" 2>&1 || STATUS=1
-echo "scenarios: PASS $(count '^PASS' "$LOG_DIR/scenarios.log") · FAIL/ERROR $(count 'FAIL|ERROR' "$LOG_DIR/scenarios.log")"
+# fix round 1(Task 13 리뷰) — 'FAIL|ERROR'는 부분 문자열 매칭이라 S5처럼 통과 메시지 자체에
+# 업무 용어 "ERROR"가 들어간 라인("PASS: S5 ERROR 행이 있으면...")까지 실패로 잘못 센다.
+# 실제 실패는 demand_test.check/expect_error가 raise exception으로 남기는 'FAIL: ...'이거나
+# ON_ERROR_STOP으로 psql이 멈출 때 찍는 'psql:....: ERROR:' 줄뿐이다(procurement_plan/run-all.sh와
+# 같은 패턴).
+echo "scenarios: PASS $(count '^PASS' "$LOG_DIR/scenarios.log") · FAIL/ERROR $(count '^FAIL|FAIL:|psql:.*ERROR' "$LOG_DIR/scenarios.log")"
 for scenario in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13; do
   printf '  %s PASS %s\n' "$scenario" "$(count "^PASS: $scenario " "$LOG_DIR/scenarios.log")"
 done
 
 bash "$HERE/concurrency.sh" "$DB" "$LOG_DIR" > "$LOG_DIR/concurrency.log" 2>&1 || STATUS=1
-echo "concurrency: PASS $(count '^PASS' "$LOG_DIR/concurrency.log") · FAIL/ERROR $(count '^FAIL|ERROR' "$LOG_DIR/concurrency.log")"
+echo "concurrency: PASS $(count '^PASS' "$LOG_DIR/concurrency.log") · FAIL/ERROR $(count '^FAIL|FAIL:|psql:.*ERROR' "$LOG_DIR/concurrency.log")"
 grep -E '기다리는 중|정상 종료|거절되어|먼저 반영|얼어붙음' "$LOG_DIR/concurrency.log" | sed 's/^/  /'
 
 if [ "$STATUS" -ne 0 ]; then
   echo "결과: 실패"
-  grep -hE 'FAIL|ERROR' "$LOG_DIR"/scenarios.log "$LOG_DIR"/concurrency.log | head -30
+  grep -hE '^FAIL|FAIL:|psql:.*ERROR' "$LOG_DIR"/scenarios.log "$LOG_DIR"/concurrency.log | head -30
 else
   echo "결과: 전부 통과"
 fi
