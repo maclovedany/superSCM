@@ -203,6 +203,11 @@ STEP 8 Croston 계열 엔진이 추가될 때 registry 설정으로 연결합니
 
 ### STEP 7 Backtest와 Champion
 
+`core.backtest_run`, `core.model_performance`, `core.champion_model_selection`은 Forecast 실행과 분리된 검증 이력입니다.
+Backtest는 `core.forecast_result + core.v_test_actual`만 사용합니다. Bias는 `Forecast - Actual`이며 양수는 과대예측입니다.
+WAPE 분모가 0이거나 비교 행이 없으면 null과 reason code를 저장합니다. 최신 Champion은 `analytics.v_champion_model`에서 조회하며,
+수동 변경은 append-only 이력과 `core.audit_log`를 함께 남깁니다.
+
 ### Task 15 실습용(practice) 데이터 표식
 
 | 객체 | 역할 |
@@ -224,11 +229,6 @@ STEP 8 Croston 계열 엔진이 추가될 때 registry 설정으로 연결합니
 "전체를 파일명 순서로 다시 적용"하는 표준 복구 절차가 앞 파일에서 멈추기 때문입니다.
 
 적용 파일 — `supabase/migrations/20260912000400_stage1_practice_dataset.sql`
-
-`core.backtest_run`, `core.model_performance`, `core.champion_model_selection`은 Forecast 실행과 분리된 검증 이력입니다.
-Backtest는 `core.forecast_result + core.v_test_actual`만 사용합니다. Bias는 `Forecast - Actual`이며 양수는 과대예측입니다.
-WAPE 분모가 0이거나 비교 행이 없으면 null과 reason code를 저장합니다. 최신 Champion은 `analytics.v_champion_model`에서 조회하며,
-수동 변경은 append-only 이력과 `core.audit_log`를 함께 남깁니다.
 
 ---
 
