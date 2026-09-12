@@ -81,28 +81,30 @@
 --   core/analytics 어떤 뷰·함수도 참조하지 않습니다 — 배포 DB 전수조사에서도 이 열의
 --   파싱 불가 행은 0건입니다.
 --
--- ★ 같은 패턴의 세 번째 사고 지점을 찾았습니다 — core.v_stock_on_hand(4~5회차 수업에서
---   SQL Editor로 직접 만든 뷰, supabase/realdata/03b-missing-objects.sql에 원본이 있고
---   2026-09-12 최신 배포 덤프에도 그대로 있습니다)가 raw.inventory."현재고"를 같은 방식
---   (`sum(nullif(...,'')::numeric)`, 출처 게이트 없음)으로 캐스트하고,
---   analytics.v_stockout_risk(/analysis 재고 소진 위험 화면)가 이 뷰를 직접 조인합니다.
---   raw.inventory도 43행 전부 출처 없는 5회차 더미입니다(20260911000500 주석). 이번
---   지시 범위(발주수량·입고수량·단가, analytics.v_available_stock 의존)에는 포함되지
---   않지만 같은 사고가 재발할 수 있는 지점이라 core.v_stock_on_hand만 같은 방식(관대한
---   파싱 + 출처 게이트)으로 함께 고칩니다. analytics.v_stockout_risk 자체는 건드리지
---   않습니다(그 뷰를 넓히는 것은 이번 판단 범위 밖이고, 이미 `coalesce(current_stock,
---   0)`으로 0 대체를 하고 있어 — 이 마이그레이션이 만든 동작이 아니라 기존 동작 —
---   core.v_stock_on_hand가 더 이상 죽지만 않으면 그 화면도 더 이상 죽지 않습니다).
---   raw.inventory."현재고"에 실제로 파싱 불가 행이 있는지는 확인하지 못했습니다(제 접근
---   범위에서는 배포 DB 데이터를 직접 조회할 수 없습니다) — 발주수량·입고수량·단가와 같은
---   방식으로 한 번 훑어봐 주시길 요청합니다.
+-- ★ 같은 패턴의 잠재 결함을 세 번째 지점에서 선제 차단합니다 — core.v_stock_on_hand
+--   (4~5회차 수업에서 SQL Editor로 직접 만든 뷰, 정본은 supabase/realdata/03b-missing-objects.sql)
+--   가 raw.inventory."현재고"를 같은 방식(`sum(nullif(...,'')::numeric)`, 출처 게이트 없음)
+--   으로 캐스트하고, analytics.v_stockout_risk(/analysis 재고 소진 위험 화면)가 이 뷰를
+--   직접 조인합니다. **team-lead가 배포 DB에서 직접 확인**: raw.inventory."현재고"에
+--   파싱 불가 행은 0건(비어 있지 않은 값 54개 전부 순수 숫자)이고, core.v_stock_on_hand ·
+--   analytics.v_stockout_risk 둘 다 지금 정상 조회됩니다 — **/analysis는 지금 죽어 있지
+--   않습니다.** 게다가 그 화면(`app/(user)/analysis/stockout/page.tsx`)은 안내 컴포넌트만
+--   렌더하고 이 뷰를 실제로 쿼리하지 않으며, 등록된 에이전트 툴 4개도 이 뷰를 읽지
+--   않습니다 — 지금은 앱에서 도달 불가능합니다. 그래도 같은 무방비 캐스트 패턴이고
+--   raw.inventory도 43행 전부 출처 없는 5회차 더미이므로(20260911000500 주석), **같은
+--   사고가 나중에 재발하는 것을 미리 막기 위해**(살아 있는 크래시를 고치는 것이 아니라)
+--   core.v_stock_on_hand만 같은 방식(관대한 파싱 + 출처 게이트)으로 함께 고칩니다.
+--   analytics.v_stockout_risk 자체는 건드리지 않습니다(그 뷰를 넓히는 것은 이번 판단
+--   범위 밖이고, 이미 `coalesce(current_stock, 0)`으로 0 대체를 하고 있어 — 이
+--   마이그레이션이 만든 동작이 아니라 기존 동작입니다).
 --
 -- ★ 이미 적용된 파일(20260911000500 · 20260911000600 · 20260911000610)은 고치지 않습니다.
 --   아래 정의가 core.v_open_po_qty · core.apply_stock_receipts_from_batch ·
 --   core.apply_stock_balance_from_batch · core.apply_month_end_inventory_snapshot_from_batch ·
 --   core.v_stock_on_hand · core.v_fact_shipment · core.v_inbound_qty의 최종본이 됩니다.
---   뒤 두 개는 저장소 마이그레이션에 처음 정의됩니다(정본이 지금까지 배포 DB에만 있었습니다
---   — 4-1절 참고). analytics.v_available_stock은 여기서 다시 정의하지 않습니다 —
+--   뒤 두 개는 정본이 supabase/realdata/03b-missing-objects.sql이고(그 파일도 같은
+--   게이트를 갖도록 함께 고쳤습니다 — 4-1절 참고), 저장소 **마이그레이션**에는 이 파일이
+--   처음입니다. analytics.v_available_stock은 여기서 다시 정의하지 않습니다 —
 --   20260911000600의 정의가 그대로 최종본이고, core.v_open_po_qty·core.v_inbound_qty만
 --   고쳐도 값이 자동으로 전파됩니다(아래 4절).
 --
@@ -504,13 +506,19 @@ revoke all on function core.apply_stock_receipts_from_batch(uuid) from public, a
 --   열을 그대로 두면, 화면을 살리는 순간 Open PO는 정직하게 비고 바로 옆 열은 12,137을
 --   보이는 상태로 배포된다 — 둘 중 어느 쪽보다 나쁘다.
 --
--- ★ core.v_fact_shipment · core.v_inbound_qty는 저장소 마이그레이션 어디에도 없는
---   배포 전용 객체다(정본은 supabase/realdata/03b-missing-objects.sql, `CREATE VIEW`이고
---   `create or replace`가 아니다 — 4~5회차 수업에서 SQL Editor로 직접 만들었다). 이
---   마이그레이션이 처음으로 이 뷰들을 저장소 마이그레이션에 정의해, 저장소가 배포 상태를
---   따라잡는다. core.v_fact_shipment는 배포 정의(위 03b 파일 그대로)에 batch_id 열만
---   끝에 추가한다 — 이 뷰는 지금까지 마이그레이션에 없었으므로 "cannot drop columns"
---   위험이 없다(추가가 아니라 최초 정의다).
+-- ★★ 정정(2026-09-12, team-lead) — 이 두 뷰의 정본은 배포 DB가 아니라
+--   supabase/realdata/03b-missing-objects.sql이다(저장소 안에 이미 있다 — 2026-09-11
+--   docs/db-저장소-대조가 진단·조치한 26건 중 24건이 그 파일로 편입됐다). 적용 순서가
+--   realdata → migrations이므로 이 마이그레이션의 create or replace가 나중에 이겨 배포
+--   DB는 항상 게이트 걸린 정의를 쓰지만, **03b를 단독으로 재실행하는 것이 문서화된 복구
+--   절차**이므로 03b 쪽 정의도 같은 게이트를 가져야 한다(그러지 않으면 단독 재실행 때
+--   게이트가 조용히 사라진다). 그래서 03b의 두 뷰 정의도 이 마이그레이션과 같은 내용으로
+--   함께 고쳤다(batch_id 노출 + 출처 게이트, CREATE VIEW → CREATE OR REPLACE VIEW로
+--   바꿔 재실행 안전하게 만들었다) — **이 뷰를 다시 고칠 때는 두 파일을 항상 함께 고친다.**
+--   core.v_fact_shipment는 03b의 정의에 batch_id 열만 끝에 추가한다 — 열 구성 확대가
+--   아니다(이 두 뷰 모두 저장소 **마이그레이션**에는 이 파일 전까지 없었으므로, 여기서는
+--   "cannot drop columns" 위험이 없다 — 위험은 03b를 단독 재실행할 때뿐이고, 그건 03b
+--   자체를 고쳐서 막았다).
 create or replace view core.v_fact_shipment as
 select
   shipment_id,
@@ -548,11 +556,11 @@ select
 from raw.shipment_log s;
 
 comment on view core.v_fact_shipment is
-  '보정(2026-09-12) — 저장소 마이그레이션에 처음 정의(정본이던 supabase/realdata/03b-missing-objects.sql
-  의 배포 전용 정의를 그대로 옮기고 batch_id만 끝에 추가). docs/db-저장소-대조 §6.2가 "발주 계산에
-  재사용하면 안 되고 4~5회차 화면 전용으로 남긴다"고 이미 결론냈는데 analytics.v_available_stock이
-  core.v_inbound_qty를 통해 재사용 중이다 — 이 마이그레이션은 그 구조를 바꾸지 않는다(범위 밖).
-  batch_id를 추가한 것은 출처 게이트(core.v_inbound_qty)를 위해서다';
+  '보정(2026-09-12) — 정본은 supabase/realdata/03b-missing-objects.sql(그 파일을 고칠 때
+  이 정의도 함께 고친다). 03b의 정의에 batch_id만 끝에 추가했다(출처 게이트용).
+  docs/db-저장소-대조 §6.2가 "발주 계산에 재사용하면 안 되고 4~5회차 화면 전용으로
+  남긴다"고 이미 결론냈는데 analytics.v_available_stock이 core.v_inbound_qty를 통해
+  재사용 중이다 — 이 마이그레이션은 그 구조를 바꾸지 않는다(범위 밖)';
 
 grant select on core.v_fact_shipment to authenticated;
 revoke all on core.v_fact_shipment from anon, public;
@@ -583,11 +591,13 @@ where f.status = 'IN_TRANSIT'
 group by f.item_id;
 
 comment on view core.v_inbound_qty is
-  '보정(2026-09-12) — 열 이름·순서는 배포 정의와 동일(item_id, inbound_qty, inbound_shipments,
-  earliest_eta) — 열을 더하지 않는다. 기여하는 core.v_fact_shipment 행 중 batch_id가 없는
-  행이 하나라도 있으면 그 품목 전체를 null로 낸다(부분합 금지, core.v_open_po_qty와 같은
-  전부-또는-전무 판정). raw.shipment_log에 batch_id를 채우는 적재 경로가 없어 지금은
-  전 품목이 null이다 — 사유는 analytics.v_stock_reference_source_status가 알려준다';
+  '보정(2026-09-12) — 정본은 supabase/realdata/03b-missing-objects.sql(그 파일을 고칠 때
+  이 정의도 함께 고친다). 열 이름·순서는 원래 정의와 동일(item_id, inbound_qty,
+  inbound_shipments, earliest_eta) — 열을 더하지 않는다. 기여하는 core.v_fact_shipment
+  행 중 batch_id가 없는 행이 하나라도 있으면 그 품목 전체를 null로 낸다(부분합 금지,
+  core.v_open_po_qty와 같은 전부-또는-전무 판정, earliest_eta도 예외 없이 같은 게이트를
+  받는다). raw.shipment_log에 batch_id를 채우는 적재 경로가 없어 지금은 전 품목이
+  null이다 — 사유는 analytics.v_stock_reference_source_status가 알려준다';
 
 grant select on core.v_inbound_qty to authenticated;
 revoke all on core.v_inbound_qty from anon, public;

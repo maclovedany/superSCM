@@ -95,7 +95,17 @@ CREATE TABLE raw.shipment_log (
 );
 
 -- ── core.v_fact_shipment ─────────────────────────
-CREATE VIEW core.v_fact_shipment AS
+-- ★ 2026-09-12 보정(Task 16, supabase/migrations/20260912000800_fix_open_po_qty_cast.sql) —
+--   이 뷰(그리고 아래 core.v_inbound_qty)는 이 파일이 정본이다. 적용 순서(realdata →
+--   migrations)상 그 마이그레이션의 create or replace가 나중에 이겨 배포 DB는 항상 게이트가
+--   걸린 최종 정의를 쓰지만, 이 파일을 단독으로 재실행하는 것이 문서화된 복구 절차이므로
+--   이 파일 자체의 정의도 같은 게이트를 가져야 한다 — 그러지 않으면 단독 재실행 때 게이트가
+--   조용히 사라져 출처 없는 raw.shipment_log(2,864행 전부 batch_id null, IN_TRANSIT 117행·
+--   수량 합 12,137)가 다시 실적처럼 보인다. **이 뷰를 고칠 때는 반드시 그 마이그레이션의
+--   같은 정의도 함께 고친다.** batch_id 추가는 열 구성 확대가 아니라(그 마이그레이션이
+--   이 뷰를 create or replace로 재정의하기 전까지 저장소 마이그레이션에 이 뷰가 아예 없었다)
+--   출처 게이트를 위한 것이다.
+CREATE OR REPLACE VIEW core.v_fact_shipment AS
  SELECT shipment_id,
     upper(regexp_replace(COALESCE(po_no, ''::text), '[\s\-_]'::text, ''::text, 'g'::text)) AS po_no,
     upper(regexp_replace(COALESCE(item_id, ''::text), '[\s\-_]'::text, ''::text, 'g'::text)) AS item_id,
@@ -126,7 +136,8 @@ CREATE VIEW core.v_fact_shipment AS
             WHEN (qc_release_date < warehouse_receipt_date) THEN 'IMPOSSIBLE_ORDER'::text
             WHEN (warehouse_receipt_date < order_date) THEN 'IMPOSSIBLE_ORDER'::text
             ELSE 'OK'::text
-        END AS quality_flag
+        END AS quality_flag,
+    batch_id
    FROM raw.shipment_log s;
 
 -- ── core.v_shipment_valid ─────────────────────────
@@ -249,16 +260,26 @@ CREATE VIEW core.v_leadtime_effective AS
      LEFT JOIN core.leadtime_plan p ON ((p.supplier_id = st.supplier_id)));
 
 -- ── core.v_inbound_qty ─────────────────────────
-CREATE VIEW core.v_inbound_qty AS
- SELECT item_id,
-    sum(qty) AS inbound_qty,
-    count(*) AS inbound_shipments,
-    min((order_date + COALESCE(( SELECT e.effective_lead_time
-           FROM core.v_leadtime_effective e
-          WHERE (e.supplier_id = f.supplier_id)), 30))) AS earliest_eta
+-- ★ 2026-09-12 보정 — core.v_fact_shipment와 같은 이유로 이 정의도 출처 게이트를 갖는다.
+--   supabase/migrations/20260912000800_fix_open_po_qty_cast.sql의 같은 뷰 정의를 함께 고친다.
+--   raw.shipment_log.batch_id를 채우는 적재 경로가 아직 없어(commit_import_batch에 shipment
+--   분기 없음) 지금은 이 뷰가 전 품목 null을 낸다 — 지어낸 12,137 EA를 보여주는 것보다 낫다.
+CREATE OR REPLACE VIEW core.v_inbound_qty AS
+ SELECT f.item_id,
+    CASE WHEN bool_or(f.batch_id IS NULL) THEN NULL
+         ELSE sum(f.qty) FILTER (WHERE f.batch_id IS NOT NULL)
+    END AS inbound_qty,
+    CASE WHEN bool_or(f.batch_id IS NULL) THEN NULL
+         ELSE count(*) FILTER (WHERE f.batch_id IS NOT NULL)
+    END AS inbound_shipments,
+    CASE WHEN bool_or(f.batch_id IS NULL) THEN NULL
+         ELSE min((f.order_date + COALESCE(( SELECT e.effective_lead_time
+                FROM core.v_leadtime_effective e
+               WHERE (e.supplier_id = f.supplier_id)), 30))) FILTER (WHERE f.batch_id IS NOT NULL)
+    END AS earliest_eta
    FROM core.v_fact_shipment f
   WHERE (status = 'IN_TRANSIT'::text)
-  GROUP BY item_id;
+  GROUP BY f.item_id;
 
 -- ── raw.inventory ─────────────────────────
 CREATE TABLE raw.inventory (
