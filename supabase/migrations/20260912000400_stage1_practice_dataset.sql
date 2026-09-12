@@ -232,9 +232,13 @@ comment on function core.register_practice_object(text, text, text, text) is
 --   blocked 목록에 사유와 함께 담아 돌려준다. 그 객체의 등기는 그대로 남겨 화면이 계속
 --   "실습용"으로 표시하게 한다.
 --
---   PLAN_IMMUTABLE_HISTORY   core.procurement_plan/_line/_event은 트리거가 DELETE를 막는다(Task 9b 설계).
+--   PLAN_IMMUTABLE_HISTORY   core.procurement_plan/_line/_event은 트리거가 DELETE를 막는다. ★ 승인본만이
+--                            아니라 DRAFT를 포함한 **모든 상태**에서 막는다(Task 9b guard_procurement_plan_mutation).
+--   PLAN_REFERENCES_ITEM     지울 수 없는 계획 라인이 그 품목을 참조한다 — 품목·정책만 지우면 "없는 품목을
+--                            가리키는 계획 라인"이 남는다(fix round 1).
 --   SCHEDULE_ACTUAL_RECORDED 실제 입고일이 입력된 발주 일정이 그 공급처를 참조한다(사람이 한 입력).
---   ORDER_EXISTS             실습 품목으로 영업 주문·배정이 만들어졌다(사람이 한 업무).
+--   ACTED_ON_BY_USER         실습 품목으로 주문·배정·긴급발주·수급회의·이벤트 수요가 만들어졌다.
+--   RETAINED_FOR_BLOCKED_ITEM 위 품목의 행이 남아 있어 적재 배치도 함께 남긴다.
 --   FK_IN_USE                그 밖에 다른 행이 참조하고 있다.
 
 create or replace function core.remove_practice_dataset(p_label text, p_confirm boolean default false)
@@ -300,6 +304,17 @@ begin
   loop
     v_blocked := v_blocked || jsonb_build_array(jsonb_build_object(
       'kind', 'ITEM', 'key', v_key, 'reason', 'ACTED_ON_BY_USER'));
+    v_items := array_remove(v_items, v_key);
+    v_blocked_items := array_append(v_blocked_items, v_key);
+  end loop;
+
+  -- ★ fix round 1 — 발주계획 라인이 참조하는 품목도 지우지 않는다. 계획은 상태와 무관하게(DRAFT 포함)
+  --   삭제할 수 없으므로, 품목과 정책만 지우면 "존재하지 않는 품목을 가리키는 계획 라인"이 영구히 남는다.
+  for v_key in
+    select distinct l.item_id from core.procurement_plan_line l where l.item_id = any(v_items)
+  loop
+    v_blocked := v_blocked || jsonb_build_array(jsonb_build_object(
+      'kind', 'ITEM', 'key', v_key, 'reason', 'PLAN_REFERENCES_ITEM'));
     v_items := array_remove(v_items, v_key);
     v_blocked_items := array_append(v_blocked_items, v_key);
   end loop;
@@ -527,7 +542,10 @@ select
   d.dataset_id,
   d.label,
   d.active,
-  coalesce(d.label is not null, false) as has_practice_data,
+  -- ★ fix round 1 — 완전히 제거되어 남은 객체가 하나도 없으면 다시 false가 되어야 한다. 묶음 행은
+  --   "언제 무엇을 지웠는가"를 남기려고 보존하므로, label 존재 여부로 판단하면 영원히 true가 되어
+  --   관리자 화면이 "실습용 데이터가 없습니다" 상태로 돌아가지 못한다.
+  (coalesce(d.active, false) or exists (select 1 from core.practice_object)) as has_practice_data,
   (select count(*) from core.practice_object o where o.object_kind = 'ITEM')          as n_items,
   (select count(*) from core.practice_object o where o.object_kind = 'UPLOAD_BATCH')  as n_batches,
   (select count(*) from core.practice_object)                                         as n_objects,
@@ -535,7 +553,8 @@ select
   exists (select 1 from core.stock_balance s where core.is_practice_item(s.item_id))   as affects_inventory,
   exists (select 1 from core.procurement_plan p where core.is_practice_plan(p.plan_id)) as affects_procurement_plan,
   exists (select 1 from core.month_end_inventory_snapshot m where core.is_practice_item(m.item_id)) as affects_month_end_kpi,
-  case when d.label is null then 'NO_PRACTICE_DATA' end as reason_code
+  case when not (coalesce(d.active, false) or exists (select 1 from core.practice_object))
+       then 'NO_PRACTICE_DATA' end as reason_code
 from (values (1)) as base(x)
 left join (
   select * from core.practice_dataset order by active desc, created_at desc limit 1

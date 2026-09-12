@@ -132,6 +132,10 @@ select practice_test.check(
 select practice_test.check(
   not exists (select 1 from core.supplier where supplier_id = 'PRC-T15'),
   'S7 실습 공급처가 지워졌다');
+select practice_test.check(
+  not exists (select 1 from core.forecast_setting where setting_id in
+    (select object_key::uuid from core.practice_object where object_kind = 'FORECAST_SETTING')),
+  'S7 실습 Forecast 설정이 지워졌다');
 
 
 \echo '== S8 ★ 사람이 업무를 한 품목은 지우지 않고 사유와 함께 보고한다 =='

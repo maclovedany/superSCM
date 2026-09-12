@@ -1,0 +1,171 @@
+-- 실습 데이터 **실제 경로** 검증 시나리오 (fix round 1 · I1). pipeline-fixtures.psql 적용 뒤 실행.
+--
+-- fixtures.psql/scenarios.psql이 표식과 제거의 "뼈대"를 검증한다면, 이 파일은 실습 스크립트가
+-- 실제로 밟는 경로가 끝까지 이어지는지를 검증한다 — 특히 원천 게이트가 **우회 없이** 통과하는지,
+-- 그리고 발주계획이 생긴 뒤에는 제거가 무엇을 왜 남기는지.
+
+\set ON_ERROR_STOP 1
+\ir guard.psql
+\pset tuples_only on
+\pset format unaligned
+
+\set admin1 '00000000-0000-4000-8000-000000000501'
+
+
+\echo '== S13 적재 — core.commit_import_batch가 실제 매핑을 수행한다 =='
+-- 직접 INSERT로는 이 매핑이 검증되지 않는다(그래서 03-item-policies.sql의 권한 버그가 안 보였다).
+select practice_test.check(
+  (select count(*) = 4 from raw.item_master where "품목코드" like 'PIPE00%' and supplier_id = 'PIPE-SUP'),
+  'S13 품목 마스터가 supplier_id까지 매핑되어 적재된다');
+select practice_test.check(
+  (select count(*) = 4 from core.v_item_master where item_id like 'PIPE00%'),
+  'S13 적재된 품목이 core.v_item_master에 정규화되어 나타난다');
+select practice_test.check(
+  (select count(*) = 48 from raw.usage_history where item_id like 'PIPE00%' and source_type = 'FILE_UPLOAD'),
+  'S13 사용 이력 48행이 FILE_UPLOAD 출처로 적재된다');
+select practice_test.check(
+  (select count(*) = 4 from core.stock_balance where item_id like 'PIPE00%'),
+  'S13 재고 배치 커밋이 정상 창고재고를 자동 반영한다');
+select practice_test.check(
+  (select count(*) = 4 from core.month_end_inventory_snapshot where item_id like 'PIPE00%' and plan_month = '2027-01-01'),
+  'S13 같은 커밋이 그 달 월말 스냅샷도 남긴다');
+
+
+\echo '== S14 정책 — 9a 승인 흐름을 거쳐야 approved_* 가 채워진다 =='
+select practice_test.check(
+  (select count(*) = 4 from core.item_policy_revision r
+    where r.item_id like 'PIPE00%' and r.status = 'APPROVED'),
+  'S14 네 품목 모두 요청 → SCM팀장 승인을 거쳤다');
+select practice_test.check(
+  (select bool_and(approved_target_dos_days is not null and approved_unit_price is not null and not order_blocked)
+     from analytics.v_item_policy where item_id like 'PIPE00%'),
+  'S14 승인값이 채워지고 발주 확정 차단이 풀린다');
+select practice_test.check(
+  (select approved_moq = 50 from analytics.v_item_policy where item_id = 'PIPE001'),
+  'S14 MOQ 50이 승인값으로 반영된다');
+
+
+\echo '== S15 ★ 원천 게이트가 우회 없이 VERIFIED 가 된다 =='
+-- 실습 데이터의 존재 이유가 걸린 시나리오다. 게이트를 완화하지 않고도 통과해야 한다.
+select practice_test.check(
+  (select core.procurement_forecast_source_status(o.object_key::uuid) = 'VERIFIED'
+     from core.practice_object o
+     join core.practice_dataset d on d.dataset_id = o.dataset_id
+    where o.object_kind = 'FORECAST_RUN' and d.label = 'TEST-PIPE'),
+  'S15 STEP 4 적재 경로로 넣은 사용 이력은 원천 게이트를 VERIFIED로 통과한다');
+select practice_test.check(
+  (select train_input_md5 is not null from core.forecast_run r
+     join core.practice_object o on o.object_kind = 'FORECAST_RUN' and o.object_key = r.run_id::text),
+  'S15 실행이 SUCCESS가 되는 순간 입력 지문이 기록된다');
+select practice_test.check(
+  (select count(*) = 4 from analytics.v_champion_model where item_id like 'PIPE00%' and champion_model_id is not null),
+  'S15 네 품목 모두 Champion이 선정된다(수요 유형이 SMOOTH/ERRATIC)');
+
+
+\echo '== S16 발주계획이 계산되고 실습으로 표시된다 =='
+select practice_test.check(
+  (select n_unavailable_lines = 0 and n_lines = 24 and source_status = 'VERIFIED'
+     from analytics.v_procurement_plan p
+     join core.practice_object o on o.object_kind = 'PROCUREMENT_PLAN' and o.object_key = p.plan_id::text),
+  'S16 24개 라인(4품목 × 6개월)이 전부 계산된다');
+select practice_test.check(
+  (select core.is_practice_plan(o.object_key::uuid) from core.practice_object o
+    where o.object_kind = 'PROCUREMENT_PLAN' limit 1),
+  'S16 core.is_practice_plan이 이 계획을 실습으로 판정한다');
+select practice_test.check(
+  (select is_practice from analytics.v_practice_plan v
+     join core.practice_object o on o.object_kind = 'PROCUREMENT_PLAN' and o.object_key = v.plan_id::text),
+  'S16 analytics.v_practice_plan도 true다(화면 목록의 실습용 태그 근거)');
+select practice_test.check(
+  (select affects_procurement_plan from analytics.v_practice_data_status),
+  'S16 현황 뷰가 발주계획 화면이 영향받는다고 알린다');
+select practice_test.check(
+  (select bool_and(final_order_qty % 50 = 0) from analytics.v_procurement_plan_line
+    where item_id = 'PIPE001' and final_order_qty is not null and final_order_qty > 0),
+  'S16 MOQ 50 품목의 발주량은 50의 배수로 올림된다');
+
+
+\echo '== S17 발주 일정과 실제 입고일이 만들어진다 =='
+select practice_test.check(
+  (select count(*) > 0 from core.procurement_schedule where calculation_status = 'SCHEDULED'),
+  'S17 공급처 · 출항일 · 준비기간 · 달력이 갖춰지면 일정이 계산된다');
+select practice_test.check(
+  (select count(*) = 1 from core.receipt_schedule_result where actual_receipt_date is not null),
+  'S17 실제 입고일이 기록된다(사람이 한 입력)');
+
+
+\echo '== S18 ★ 계획이 생긴 뒤의 제거 — 무엇을 왜 남기는지 보고한다 =='
+select practice_test.as_user(:'admin1') \g /dev/null
+insert into practice_test.remove_result (result)
+select core.remove_practice_dataset('TEST-PIPE', p_confirm => true);
+
+-- 발주계획은 DRAFT를 포함한 모든 상태에서 삭제할 수 없다(Task 9b 트리거). 그래서 계획이 참조하는
+-- Forecast 실행도, 계획 라인이 참조하는 품목도 함께 남아야 한다 — 하나만 지우면 고아 기록이 된다.
+select practice_test.check(
+  (select result -> 'blocked' @> '[{"kind": "PROCUREMENT_PLAN", "reason": "PLAN_IMMUTABLE_HISTORY"}]'::jsonb
+     from practice_test.remove_result order by ctid desc limit 1),
+  'S18 발주계획은 PLAN_IMMUTABLE_HISTORY로 보고된다');
+select practice_test.check(
+  (select result -> 'blocked' @> '[{"kind": "FORECAST_RUN", "reason": "PLAN_IMMUTABLE_HISTORY"}]'::jsonb
+     from practice_test.remove_result order by ctid desc limit 1),
+  'S18 그 계획이 참조하는 Forecast 실행도 남는다');
+select practice_test.check(
+  (select result -> 'blocked' @> '[{"kind": "ITEM", "key": "PIPE001", "reason": "PLAN_REFERENCES_ITEM"}]'::jsonb
+     from practice_test.remove_result order by ctid desc limit 1),
+  'S18 계획 라인이 참조하는 품목은 PLAN_REFERENCES_ITEM으로 남는다');
+select practice_test.check(
+  (select result -> 'blocked' @> '[{"kind": "SUPPLIER", "key": "PIPE-SUP", "reason": "SCHEDULE_ACTUAL_RECORDED"}]'::jsonb
+     from practice_test.remove_result order by ctid desc limit 1),
+  'S18 실제 입고일이 기록된 일정의 공급처는 SCHEDULE_ACTUAL_RECORDED로 남는다');
+select practice_test.check(
+  (select result -> 'blocked' @> '[{"kind": "UPLOAD_BATCH", "reason": "RETAINED_FOR_BLOCKED_ITEM"}]'::jsonb
+     from practice_test.remove_result order by ctid desc limit 1),
+  'S18 남은 품목의 적재 배치도 함께 남는다');
+
+-- ★ 고아 기록이 생기지 않았는지 — 계획 라인이 가리키는 품목의 마스터 · 정책이 실제로 살아 있어야 한다.
+select practice_test.check(
+  (select count(*) = 4 from raw.item_master where "품목코드" like 'PIPE00%'),
+  'S18 계획이 참조하는 품목 마스터가 남는다(없는 품목을 가리키는 라인이 생기지 않는다)');
+select practice_test.check(
+  (select count(*) = 4 from core.item_policy where item_id like 'PIPE00%'),
+  'S18 그 품목의 정책도 남는다');
+select practice_test.check(
+  (select count(*) = 48 from raw.usage_history where item_id like 'PIPE00%'),
+  'S18 그 품목의 사용 이력도 남는다');
+select practice_test.check(core.is_practice_item('PIPE001'),
+  'S18 남은 품목은 계속 실습으로 표시된다');
+
+-- 실데이터는 이번에도 그대로다.
+select practice_test.check(
+  (select count(*) from raw.dim_item) = (select n from practice_test.baseline where name = 'pipe_dim_item'),
+  'S18 raw.dim_item은 그대로다');
+select practice_test.check(
+  (select count(*) from raw.usage_history where batch_id is null) = (select n from practice_test.baseline where name = 'pipe_usage_legacy'),
+  'S18 batch_id가 null인 사용 이력은 그대로다');
+
+
+\echo '== S19 달력 · 등기 정리와 빈 상태 복귀 =='
+-- 문자열 키(KR:2027-01-01 · KR:2027-01)로 등기한 달력 행이 실제로 지워지는지 — 키 조합이 틀리면
+-- 조용히 남는다(제거 보고서에는 0건으로 찍혀 눈에 띄지 않는다).
+select practice_test.check(
+  not exists (select 1 from core.business_calendar where country_code = 'KR' and calendar_date = '2027-01-01'),
+  'S19 등기된 공휴일이 문자열 키로 정확히 지워진다');
+select practice_test.check(
+  not exists (select 1 from core.business_calendar_readiness where country_code = 'KR' and cal_year = 2027),
+  'S19 등기된 달력 준비 상태도 지워진다');
+select practice_test.check(
+  (select prep_days = 0 from core.supply_entity where entity_id = 'JP'),
+  'S19 법인 출항 준비기간이 실습 전 값으로 복원된다');
+
+-- ★ I5 — 남은 등기가 하나도 없으면 현황 뷰가 다시 "실습 데이터 없음"으로 돌아가야 한다.
+--   실제로 지우지 않고 트랜잭션 안에서만 그 상태를 만들어 확인한 뒤 되돌린다.
+begin;
+  delete from core.practice_object;
+  select practice_test.check(
+    (select not has_practice_data and reason_code = 'NO_PRACTICE_DATA' from analytics.v_practice_data_status),
+    'S19 남은 실습 객체가 없으면 현황 뷰가 다시 NO_PRACTICE_DATA가 된다');
+rollback;
+
+select practice_test.check(
+  (select has_practice_data from analytics.v_practice_data_status),
+  'S19 되돌린 뒤에는 남은 객체가 있으므로 다시 true다');

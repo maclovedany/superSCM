@@ -102,6 +102,48 @@ export async function getPracticeItemIds(): Promise<Set<string>> {
   }
 }
 
+/**
+ * 등기된 실습 객체의 키 집합 — 종류별.
+ *
+ * ★ 조회에 실패하면 빈 집합이다. 표시가 빠질 뿐 화면은 그대로 동작한다 — 실데이터만 있는 화면에
+ *   거짓 경고를 붙이지 않기 위해 "모르면 표시하지 않는다"를 택한다.
+ */
+async function getPracticeObjectKeys(objectKind: string): Promise<Set<string>> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase
+      .schema('analytics')
+      .from('v_practice_object')
+      .select('object_key')
+      .eq('object_kind', objectKind);
+    if (error) return new Set();
+    return new Set((data ?? []).map((row) => String((row as Record<string, unknown>).object_key)));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * 실습 취합 주기 id 집합.
+ *
+ * ★ 취합 주기는 **전역 기준월**이다. 상단바 · 사이드바에 모든 사용자에게 보이고, 월말 재고 KPI ·
+ *   제출 마감 · 반복 알림이 이 값을 기준으로 계산된다. 실습 주기가 열려 있는 동안 그 사실이
+ *   보이지 않으면, 실습으로 연 달이 운영 기준월처럼 읽힌다(fix round 1 · C2-1).
+ */
+export function getPracticeCycleIds(): Promise<Set<string>> {
+  return getPracticeObjectKeys('PLANNING_CYCLE');
+}
+
+/** 실습 Forecast 실행 id 집합 */
+export function getPracticeForecastRunIds(): Promise<Set<string>> {
+  return getPracticeObjectKeys('FORECAST_RUN');
+}
+
+/** 실습 Backtest 실행 id 집합 */
+export function getPracticeBacktestRunIds(): Promise<Set<string>> {
+  return getPracticeObjectKeys('BACKTEST_RUN');
+}
+
 /** 실습 발주계획 id 집합 — analytics.v_practice_plan(is_practice = true인 것만) */
 export async function getPracticePlanIds(): Promise<Set<string>> {
   try {

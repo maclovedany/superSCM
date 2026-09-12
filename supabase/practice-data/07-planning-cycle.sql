@@ -23,6 +23,11 @@ begin
   end if;
   perform set_config('request.jwt.claim.sub', v_planner::text, false);
 
+  -- ── 순서 가드(fix round 1 · I2) ──────────────────────────────────
+  if not exists (select 1 from core.practice_dataset where label = v_label and active) then
+    raise exception '열려 있는 실습 묶음(%)이 없습니다. 00-open-dataset.sql을 먼저 실행하세요.', v_label;
+  end if;
+
   select (date_trunc('month', test_end) + interval '1 month')::date into v_plan_month
     from core.forecast_setting where active;
   if v_plan_month is null then

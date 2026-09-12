@@ -438,6 +438,21 @@ Auth 사용자와 `core.app_user` 프로필을 함께 만들었고, 로그인까
 | 순서 | 파일 | 내용 | 확인 쿼리 |
 |---|---|---|---|
 | 24 | `20260912000400_stage1_practice_dataset.sql` | 실습 데이터 표식·등기부·제거 절차 | `select * from analytics.v_practice_data_status;` → 1행, `reason_code = 'NO_PRACTICE_DATA'` |
+| 25 | `20260912000500_fix_backtest_rmse_filter.sql` | ★ **STEP 7 보정** — Backtest 가 항상 실패하던 것을 고칩니다 | 아래 참고 |
+
+> ⚠️ **순서 25 는 실습 데이터와 무관하게 반드시 적용해야 합니다.** `core.run_backtest` 가
+> `FILTER specified, but sqrt is not an aggregate function` 으로 **항상 실패**하고 있었습니다
+> (STEP 7 의 RMSE 식에서 FILTER 가 집계가 아니라 `sqrt()` 에 붙어 있었습니다 — error.md #32).
+> 함수가 예외를 삼키고 `backtest_run.status='FAILED'` 로만 적기 때문에 호출한 쪽에서는 성공처럼
+> 보였습니다. Backtest 가 실패하면 Champion 이 선정되지 않고, 발주계획의 모든 라인이
+> `CHAMPION_UNAVAILABLE` 이 됩니다 — **실데이터로 돌려도 똑같이 실패합니다.**
+>
+> 적용 후 확인:
+> ```sql
+> select backtest_run_id, status, message from core.backtest_run order by started_at desc limit 1;
+> -- 보정 전: FAILED · 'FILTER specified, but sqrt is not an aggregate function'
+> -- 보정 후 재실행: SUCCESS · 'Backtest scoring 완료'
+> ```
 
 이 파일은 **장치만** 만들고 데이터를 넣지 않습니다. 운영 배포가 스키마를 적용하는 것만으로
 더미 행이 설치되면 안 되기 때문입니다.
@@ -450,8 +465,15 @@ Auth 사용자와 `core.app_user` 프로필을 함께 만들었고, 로그인까
 ```
 00-open-dataset.sql → 01-master.sql → 02-items.sql → 03-item-policies.sql
 → 04-usage-history.sql → 05-inventory.sql → 06-forecast.sql → 07-planning-cycle.sql
-→ 08-verify.sql   ★ 여기서 확인하고 수업에 들어갑니다
+→ 08-verify.sql   ★ 여기서 확인하고 수업에 들어갑니다 (조회만 합니다)
+→ 09-build-plan.sql   선택 · ⚠️ 실행하면 완전 제거가 불가능해집니다
 ```
+
+⚠️ **`09-build-plan.sql`은 되돌릴 수 없습니다.** `core.procurement_plan`은 Task 9b 트리거가
+**DRAFT 를 포함한 모든 상태에서** DELETE 를 막습니다(승인본만이 아닙니다). 계획을 만들면
+계획·라인·이력과 그 계획이 참조하는 Forecast 실행·Backtest·Champion, 계획 라인이 참조하는
+품목·정책·적재 원본까지 전부 남습니다. 수업에서 발주계획 단계를 보여 줄 때만 실행하고,
+그 전에 `08-verify.sql` 3절의 `source_status` 가 `VERIFIED` 인지 반드시 확인하세요.
 
 제거는 `99-remove.sql` (또는 아래 한 줄) 입니다.
 
@@ -483,10 +505,14 @@ select jsonb_pretty(core.remove_practice_dataset('PRACTICE-2026-09', p_confirm =
 
 | 남는 것 | 사유 코드 |
 |---|---|
-| 승인된 발주계획·라인·이력 (Task 9b 가 삭제를 금지) | `PLAN_IMMUTABLE_HISTORY` |
+| 발주계획·라인·이력 (Task 9b 가 **모든 상태에서** 삭제를 금지) | `PLAN_IMMUTABLE_HISTORY` |
+| 그 계획이 참조하는 Forecast 실행·Backtest·Champion | `PLAN_IMMUTABLE_HISTORY` |
+| 계획 라인이 참조하는 품목과 그 정책 | `PLAN_REFERENCES_ITEM` |
 | 학생이 실습 품목으로 만든 주문·배정·긴급발주·수급회의·이벤트 수요 | `ACTED_ON_BY_USER` |
 | 실제 입고일이 입력된 발주 일정의 공급처 | `SCHEDULE_ACTUAL_RECORDED` |
 | 위 품목의 행이 남은 적재 배치 | `RETAINED_FOR_BLOCKED_ITEM` |
+
+`09-build-plan.sql` 을 실행하지 않았다면 앞 세 줄은 생기지 않고 거의 완전히 지워집니다.
 
 **남은 객체의 등기는 일부러 지우지 않습니다.** 그래야 살아남은 실습 발주계획이 화면에서 계속
 "실습용" 으로 표시됩니다 — 제거했다는 이유로 실습 숫자가 실적처럼 보이면 안 됩니다.

@@ -11,6 +11,8 @@
 --
 --    ⚠️ 그래서 실습 기간이 실제 달력보다 미래일 수 있습니다(더미 데이터가 어디까지 있는지에 따라).
 --    이상해 보여도 정상입니다 — 게이트를 우회하는 것보다 기간이 미래인 편이 낫습니다.
+--    ⚠️ 실습 기간이 2026년을 벗어나면 그 해 공휴일이 없어 발주 일정이 CALENDAR_NOT_READY가 됩니다.
+--    /admin/master에서 그 해 공휴일을 넣고 달을 준비됨으로 표시하세요(01-master.sql 주석 참고).
 --
 -- 기간 구성 (M1이 첫 달)
 --   M1 ~ M9    학습(train)      — Forecast가 배우는 구간
@@ -35,6 +37,7 @@ declare
   v_train_end date;
   v_test_start date;
   v_test_end date;
+  v_items integer;
   v_rows integer;
   v_prev_setting uuid;
   v_setting uuid;
@@ -42,9 +45,22 @@ begin
   select user_id into v_admin from core.app_user
    where email = 'insightdany@naver.com' and active and role = 'ADMIN';
   if v_admin is null then
-    raise exception '실습 관리자 계정을 찾을 수 없습니다.';
+    raise exception '실습 관리자(ADMIN) 계정을 찾을 수 없습니다.';
   end if;
   perform set_config('request.jwt.claim.sub', v_admin::text, false);
+
+  -- ── 순서 가드(fix round 1 · I2) ──────────────────────────────────
+  -- 가드가 없으면 02를 건너뛴 채로도 0행 배치와 활성 forecast_setting만 만들어 놓고 "완료"라고
+  -- 출력합니다. 그 상태는 Forecast가 학습할 것이 없어 Champion이 안 나오는 것으로만 드러납니다.
+  if not exists (select 1 from core.practice_dataset where label = v_label and active) then
+    raise exception '열려 있는 실습 묶음(%)이 없습니다. 00-open-dataset.sql을 먼저 실행하세요.', v_label;
+  end if;
+  select count(*) into v_items
+    from core.practice_object
+   where object_kind = 'ITEM' and substring(note from 'seq:([0-9]+)')::int <= 10;
+  if v_items < 10 then
+    raise exception '사용 이력을 넣을 실습 품목이 %개뿐입니다(10개 필요). 02-items.sql을 먼저 실행하세요.', v_items;
+  end if;
 
   if exists (select 1 from core.practice_object where object_kind = 'FORECAST_SETTING') then
     raise notice '실습 사용 이력과 학습 기간이 이미 있습니다 — 건너뜁니다';
@@ -73,25 +89,32 @@ begin
   raise notice '미검증 사용 이력 마지막 날짜 = % → 실습 기간 학습 % ~ % · 검증 % ~ % · 기준월 %',
     coalesce(v_max_unverified::text, '(없음)'), v_train_start, v_train_end, v_test_start, v_test_end,
     to_char((date_trunc('month', v_m1 + interval '12 months'))::date, 'YYYY-MM');
+  if extract(year from v_test_end) > 2026 then
+    raise notice '★ 실습 기간이 2026년을 벗어납니다 — % 년 공휴일을 /admin/master 에서 넣고 달을 준비됨으로 표시해야 발주 일정이 계산됩니다',
+      extract(year from v_test_end);
+  end if;
 
   -- ── 2. STEP 4 적재 경로로 사용 이력을 넣는다 ─────────────────────
   create temporary table practice_usage on commit drop as
   select
     o.object_key as item_id,
-    split_part(o.note, ':', 2)::int as seq,
+    substring(o.note from 'seq:([0-9]+)')::int as seq,
     m.month_no,
     (v_m1 + make_interval(months => m.month_no - 1) + interval '14 days')::date as use_date,
     -- 기준량 × 계절성(±25%) × 완만한 증가 추세. 0이 나오지 않도록 최소 1로 clamp.
     greatest(1, round(
-      (150 + 40 * split_part(o.note, ':', 2)::int)
+      (150 + 40 * substring(o.note from 'seq:([0-9]+)')::int)
       * (1 + 0.25 * sin(2 * pi() * (m.month_no - 1) / 12.0))
       * (1 + 0.01 * (m.month_no - 1))
     ))::numeric as qty
   from core.practice_object o
   cross join (select generate_series(1, 12) as month_no) m
-  where o.object_kind = 'ITEM' and split_part(o.note, ':', 2)::int <= 10;
+  where o.object_kind = 'ITEM' and substring(o.note from 'seq:([0-9]+)')::int <= 10;
 
   select count(*) into v_rows from practice_usage;
+  if v_rows = 0 then
+    raise exception '만들어진 사용 이력 행이 0개입니다 — 실습 품목 등기(note의 seq)를 확인하세요.';
+  end if;
 
   insert into core.upload_batch (batch_id, file_name, import_type, import_mode, total_rows, success_rows,
                                  warning_rows, error_rows, status, uploaded_by, uploaded_at)
@@ -131,8 +154,8 @@ begin
   perform core.register_practice_object(v_label, 'FORECAST_SETTING', v_setting::text,
     '학습 ' || v_train_start || '~' || v_train_end || ' · 검증 ' || v_test_start || '~' || v_test_end);
 
-  raise notice '사용 이력 %행 적재 · 학습/검증 기간 설정 완료(이전 설정 %는 비활성화)',
-    v_rows, coalesce(v_prev_setting::text, '(없음)');
+  raise notice '사용 이력 %행(%품목 × 12개월) 적재 · 학습/검증 기간 설정 완료(이전 설정 %는 비활성화)',
+    v_rows, v_items, coalesce(v_prev_setting::text, '(없음)');
 end $$;
 
 -- ── 확인 ────────────────────────────────────────────────────────────

@@ -32,6 +32,17 @@ begin
   end if;
   perform set_config('request.jwt.claim.sub', v_admin::text, false);
 
+  -- ── 순서 가드(fix round 1 · I2) ──────────────────────────────────
+  if not exists (select 1 from core.practice_dataset where label = v_label and active) then
+    raise exception '열려 있는 실습 묶음(%)이 없습니다. 00-open-dataset.sql을 먼저 실행하세요.', v_label;
+  end if;
+  if not exists (select 1 from core.forecast_setting where active) then
+    raise exception '활성 학습/검증 기간이 없습니다. 04-usage-history.sql을 먼저 실행하세요.';
+  end if;
+  if not exists (select 1 from core.v_train_demand) then
+    raise exception '학습 기간에 사용 이력이 한 행도 없습니다. 04-usage-history.sql의 확인 쿼리를 먼저 보세요.';
+  end if;
+
   if exists (select 1 from core.practice_object where object_kind = 'FORECAST_RUN') then
     raise notice '실습 Forecast 실행이 이미 있습니다 — 건너뜁니다';
     return;

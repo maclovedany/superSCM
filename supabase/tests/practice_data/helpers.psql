@@ -1,0 +1,71 @@
+-- 실습 데이터 검증 공통 헬퍼 — 로컬 임시 DB(scm_test_*) 전용.
+--
+-- ★ fixtures.psql(1부)과 pipeline-fixtures.psql(2부)이 **서로 다른 임시 DB**에서 각각 \ir 로 읽는다.
+--   두 부를 한 DB에서 돌렸더니 1부가 일부러 남긴 행(제거하지 못한 실습 품목 PRCT003, 실데이터
+--   대역 REALT001)의 품목 정책이 2부의 발주계획 확정을 막았다 — Task 9b의 확정은 정책이 있는
+--   **모든** 품목에 대해 전부-아니면-전무이기 때문이다. 그 행을 지우면 1부가 증명한 것을
+--   무르게 되므로, 지우는 대신 DB를 나눴다(run-all.sh 참고).
+
+\set ON_ERROR_STOP 1
+\ir guard.psql
+
+create schema if not exists practice_test;
+grant usage on schema practice_test to anon, authenticated;
+
+create or replace function practice_test.as_user(p_user uuid) returns text language sql as $$
+  select set_config('request.jwt.claim.sub', p_user::text, false)
+$$;
+
+create or replace function practice_test.check(p_ok boolean, p_label text) returns text language plpgsql as $$
+begin
+  if p_ok is distinct from true then
+    raise exception 'FAIL: %', p_label;
+  end if;
+  return 'PASS: ' || p_label;
+end $$;
+
+create or replace function practice_test.expect_error(p_sql text, p_pattern text, p_label text) returns text language plpgsql as $$
+declare
+  v_state text;
+  v_message text;
+begin
+  begin
+    execute p_sql;
+  exception when others then
+    get stacked diagnostics v_state = returned_sqlstate, v_message = message_text;
+    if v_message !~ p_pattern then
+      raise exception 'FAIL: % — 다른 오류: % (%)', p_label, v_message, v_state;
+    end if;
+    return 'PASS: ' || p_label || ' → ' || v_state || ' ' || v_message;
+  end;
+  raise exception 'FAIL: % — 오류가 나지 않았습니다: %', p_label, p_sql;
+end $$;
+
+-- 제거 전후 실데이터 건수를 비교하기 위한 기준선 저장소.
+create table if not exists practice_test.baseline (name text primary key, n bigint);
+create table if not exists practice_test.remove_result (result jsonb);
+
+grant execute on all functions in schema practice_test to anon, authenticated;
+
+-- ══ 사용자 ═════════════════════════════════════════════════════════
+insert into auth.users (id, email) values
+  ('00000000-0000-4000-8000-000000000501', 't15-admin1@example.test'),
+  ('00000000-0000-4000-8000-000000000502', 't15-planner1@example.test'),
+  ('00000000-0000-4000-8000-000000000503', 't15-lead1@example.test'),
+  ('00000000-0000-4000-8000-000000000504', 't15-marketing1@example.test')
+on conflict (id) do nothing;
+
+insert into core.app_user (user_id, email, name, department, role, active, job_role) values
+  ('00000000-0000-4000-8000-000000000501', 't15-admin1@example.test', '관리자1', null, 'ADMIN', true, null),
+  ('00000000-0000-4000-8000-000000000502', 't15-planner1@example.test', 'SCM품목담당1', 'SCM', 'USER', true, 'SCM_PLANNER'),
+  ('00000000-0000-4000-8000-000000000503', 't15-lead1@example.test', 'SCM팀장1', 'SCM', 'USER', true, 'SCM_LEAD'),
+  ('00000000-0000-4000-8000-000000000504', 't15-marketing1@example.test', '마케팅1', 'MARKETING', 'USER', true, 'MARKETING')
+on conflict (user_id) do update
+  set job_role = excluded.job_role, department = excluded.department, role = excluded.role,
+      name = excluded.name, active = true;
+
+-- 실데이터 원본 대역 — 제거 절차가 절대 건드리면 안 되는 표(양쪽 DB에서 같은 기준으로 센다).
+insert into raw.dim_item (item_code, description, item_type) values
+  ('DIMREAL1', '실데이터 품목 1', 'REAL'),
+  ('DIMREAL2', '실데이터 품목 2', 'REAL')
+on conflict (item_code) do nothing;

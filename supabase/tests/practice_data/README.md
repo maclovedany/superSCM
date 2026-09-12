@@ -25,15 +25,32 @@ bash supabase/tests/practice_data/run-all.sh
 | S11 | 제거된 라벨은 재사용할 수 없고 두 번 제거되지 않는다 |
 | S12 | 등기부는 읽기만 열려 있다(일반 사용자의 직접 쓰기 거절) |
 
+### 2부 — 실제 경로 (fix round 1 · I1)
+
+1부의 fixture는 `upload_batch`를 `IMPORTED`로, `item_policy`를 직접 넣습니다. 그래서
+`commit_import_batch` 매핑 · 9a 승인 흐름 · 원천 게이트가 한 번도 실행되지 않았고,
+`03-item-policies.sql`의 권한 버그가 구조적으로 보이지 않았습니다. 2부는 실습 스크립트가
+실제로 밟는 경로를 그대로 밟습니다(`pipeline-fixtures.psql` · `pipeline-scenarios.psql`).
+
+| # | 시나리오 |
+|---|---|
+| S13 | `commit_import_batch`가 품목(`supplier_id` 포함)·사용 이력·재고를 실제로 매핑 적재하고, 재고 커밋이 정상 창고재고와 월말 스냅샷을 자동 반영한다 |
+| S14 | 9a 요청 → SCM팀장 승인을 거쳐야 `approved_*`가 채워지고 발주 확정 차단이 풀린다 |
+| **S15** | **★ 원천 게이트가 우회 없이 `VERIFIED`가 된다** — 실습 데이터의 존재 이유가 걸린 시나리오 |
+| S16 | 계획 24라인이 전부 계산되고 `is_practice_plan`·`v_practice_plan`이 true, MOQ 50 올림 |
+| S17 | 발주 일정이 계산되고 실제 입고일이 기록된다 |
+| **S18** | **★ 계획이 생긴 뒤의 제거** — `PLAN_IMMUTABLE_HISTORY`·`PLAN_REFERENCES_ITEM`·`SCHEDULE_ACTUAL_RECORDED`·`RETAINED_FOR_BLOCKED_ITEM`을 보고하고, 계획이 참조하는 품목의 마스터·정책·사용 이력이 **함께** 남아 고아 기록이 생기지 않는다 |
+| S19 | 달력 문자열 키(`KR:2027-01-01`·`KR:2027-01`)가 정확히 지워지고, 남은 등기가 없으면 현황 뷰가 다시 `NO_PRACTICE_DATA`가 된다 |
+
 ## 설계상 이 스위트가 증명하지 못하는 것
 
 - **화면(Next.js)이 배너를 실제로 그리는지** — 그것은 `lib/practice/model.test.ts`의 순수 모델
   테스트(`showsPracticeBanner` 규칙)와 `npm run build`가 담당합니다. 이 스위트는 DB가 화면에
   내려 주는 값이 맞는지까지만 봅니다.
-- **`supabase/practice-data/*.sql`(실습 데이터 본체)가 배포 DB에서 원천 게이트를 통과하는지** —
-  그 스크립트는 `raw.dim_item`의 실데이터 93,868행과 5회차 더미 사용 이력의 실제 날짜 분포에
-  의존합니다. 로컬 임시 DB에는 그 데이터가 없어 재현할 수 없습니다. 컨트롤러가
-  `08-verify.sql`의 확인 쿼리로 적용 직후 직접 확인해야 합니다.
+- **배포 DB에서 학습 기간이 어디로 잡히는지** — `04-usage-history.sql`은 5회차 더미 사용 이력의
+  **실제 날짜 분포**를 보고 기간을 고릅니다. 로컬 임시 DB에는 그 데이터가 없어(2부는 기간을
+  직접 지정합니다) 재현할 수 없습니다. 컨트롤러가 `08-verify.sql`로 적용 직후 확인해야 합니다.
+- **`raw.dim_item`에서 품목을 고르는 선택식** — 로컬에는 실데이터 93,868행이 없습니다.
 
 ## 다른 스위트와 같은 점
 

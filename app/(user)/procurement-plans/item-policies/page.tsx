@@ -14,6 +14,8 @@ import { getPermissions, requireAnyPermission } from '@/lib/auth';
 import { WORK_ROUTE_PERMISSIONS } from '@/lib/permission';
 import { getItemPolicies, getItemPolicyRevisions } from '@/lib/item-policy/repository';
 import type { ItemPolicy } from '@/lib/item-policy/model';
+import PracticeDataBanner from '@/components/ui/practice-banner';
+import { getPracticeDataStatus, getPracticeItemIds } from '@/lib/practice/repository';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,8 +23,21 @@ function formatQty(value: number | null): string | null {
   return value === null ? null : value.toLocaleString('ko-KR');
 }
 
-const policyColumns: Column<ItemPolicy>[] = [
-  { key: 'itemId', label: '품목' },
+// ★ Task 15 fix round 1 (C2-3) — 여기 보이는 목표 DoS · 단가 · MOQ는 승인 절차를 거친 값이지만,
+//   실습 묶음이 넣은 것이면 실제 업무 결정이 아니다. 품목 행마다 표시한다(계획 목록과 같은 방식).
+function policyColumns(practiceItemIds: Set<string>): Column<ItemPolicy>[] {
+  return [
+  {
+    key: 'itemId', label: '품목',
+    render: (row) => (
+      <>
+        {row.itemId}
+        {practiceItemIds.has(row.itemId)
+          ? <> <span className="tag amber" title="실습용 데이터 묶음이 넣은 품목입니다. 실제 업무 결정이 아닙니다.">실습용</span></>
+          : null}
+      </>
+    ),
+  },
   {
     key: 'targetDosDays', label: '목표 DoS(운영값)', align: 'right',
     render: (row) => row.targetDosDays === null ? <EmptyValue reasonCode="TARGET_DOS_UNSET" /> : <>{row.targetDosDays}<span className="muted"> 일</span></>,
@@ -45,16 +60,29 @@ const policyColumns: Column<ItemPolicy>[] = [
   },
   { key: 'packSize', label: '포장단위', align: 'right', render: (row) => formatQty(row.packSize) ?? <span className="muted">— (저장만)</span> },
   { key: 'minOrderAmount', label: '최소주문금액', align: 'right', render: (row) => formatQty(row.minOrderAmount) ?? <span className="muted">— (저장만)</span> },
-];
+  ];
+}
 
 export default async function ItemPoliciesPage() {
   const current = await requireAnyPermission(...WORK_ROUTE_PERMISSIONS['/procurement-plans/item-policies']);
   const permissions = await getPermissions();
 
-  const [{ rows: policies, error: policyError }, { rows: revisions, error: revisionError }] = await Promise.all([
+  const [
+    { rows: policies, error: policyError },
+    { rows: revisions, error: revisionError },
+    practiceItemIds,
+    { status: practiceStatus },
+  ] = await Promise.all([
     getItemPolicies(),
     getItemPolicyRevisions(),
+    getPracticeItemIds(),
+    getPracticeDataStatus(),
   ]);
+
+  const showPractice =
+    practiceStatus !== null &&
+    practiceStatus.hasPracticeData &&
+    policies.some((row) => practiceItemIds.has(row.itemId));
 
   return (
     <section className="analysis-page">
@@ -64,6 +92,7 @@ export default async function ItemPoliciesPage() {
         description="목표 DoS · 배정 방식 · 목표재고 · 단가 · MOQ 변경안을 제출하고, SCM팀장 승인 전까지는 기존 운영값을 그대로 씁니다."
       />
       <div className="analysis-content">
+        {showPractice && practiceStatus !== null ? <PracticeDataBanner status={practiceStatus} /> : null}
         {permissions.has('ITEM_POLICY_EDIT') ? (
           <Panel title="품목 정책 변경 요청" description="제출과 동시에 SCM팀장에게 승인을 요청합니다. 승인 또는 반려는 승인함(/approvals)에서 처리합니다.">
             <ItemPolicyChangeForm />
@@ -77,7 +106,7 @@ export default async function ItemPoliciesPage() {
               <p className="muted">{policyError}</p>
             </>
           ) : (
-            <DataTable columns={policyColumns} rows={policies} rowKey={(row) => row.itemId} empty="품목 정책이 없습니다." />
+            <DataTable columns={policyColumns(practiceItemIds)} rows={policies} rowKey={(row) => row.itemId} empty="품목 정책이 없습니다." />
           )}
         </Panel>
 

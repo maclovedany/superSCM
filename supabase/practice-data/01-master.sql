@@ -115,27 +115,33 @@ begin
       'KR:' || v_holiday.calendar_date::text, v_holiday.holiday_name);
   end loop;
 
-  -- 2026-01 ~ 2027-12 를 준비됨으로 표시합니다. 실습 계획월이 실데이터 상황에 따라 2027년으로
-  -- 밀릴 수 있어(04-usage-history.sql 참고) 넉넉히 표시합니다. 2027년은 공휴일을 아직 넣지
-  -- 않았으므로 주말만 보정됩니다 — 그 사실을 note에 적어 둡니다.
+  -- ★ fix round 1 — 공휴일을 실제로 넣은 **2026년만** 준비됨으로 표시합니다. 이전 판에서는 실습
+  --   계획월이 2027년으로 밀릴 경우를 대비해 2027년까지 준비됨으로 표시했는데, 2027 공휴일을
+  --   넣지 않은 채 준비됨으로 두면 영업일 보정이 주말만 보고 **공휴일을 평일로 취급**합니다.
+  --   그것은 "공휴일 자료가 없는 국가는 추정하지 않는다"(Task 10b 판정 1)를 정면으로 어깁니다.
+  --   준비 표시를 하지 않으면 Task 10b가 CALENDAR_NOT_READY로 정직하게 멈춥니다.
+  --
+  --   ⚠️ 04-usage-history.sql이 고른 실습 기간이 2026년을 벗어나면, 그 해 공휴일을 관리자 화면
+  --   (/admin/master)에서 넣고 그 달을 준비됨으로 표시해야 발주 일정이 계산됩니다. 넣기 전까지는
+  --   일정이 CALENDAR_NOT_READY로 보이는 것이 정상입니다(추정보다 낫습니다).
   for v_month in
     select gs::date as month_start
-      from generate_series('2026-01-01'::date, '2027-12-01'::date, interval '1 month') gs
+      from generate_series('2026-01-01'::date, '2026-12-01'::date, interval '1 month') gs
   loop
     perform core.set_calendar_month_ready('KR',
       extract(year from v_month.month_start)::int, extract(month from v_month.month_start)::int, true,
-      '[실습용 ' || v_label || '] 실습 기간 달력 준비 표시'
-        || case when extract(year from v_month.month_start) = 2027 then ' (2027 공휴일 미입력 — 주말만 보정)' else '' end);
+      '[실습용 ' || v_label || '] 2026년 공휴일 입력 완료');
     perform core.register_practice_object(v_label, 'CALENDAR_READINESS',
       'KR:' || to_char(v_month.month_start, 'YYYY-MM'), null);
   end loop;
 
-  raise notice '마스터 준비 완료 — 법인 5 · 공급처 5 · 공휴일 19 · 달력 준비 24개월';
+  raise notice '마스터 준비 완료 — 법인 5 · 공급처 5 · 2026 공휴일 19일 · 달력 준비 2026년 12개월';
+  raise notice '★ 실습 기간이 2026년을 벗어나면 그 해 공휴일을 /admin/master 에서 넣고 준비됨으로 표시하세요';
 end $$;
 
 -- 확인
 select * from analytics.v_master_readiness;
--- 기대: n_prep_days_unset 0 · n_suppliers 5 · n_departure_rules 5 · n_calendar_months_ready 24
+-- 기대: n_prep_days_unset 0 · n_suppliers 5 · n_departure_rules 5 · n_calendar_months_ready 12
 
 select supplier_id, supplier_name, entity_id, lead_time_days, n_departure_rules, reason_code
   from analytics.v_supplier order by supplier_id;

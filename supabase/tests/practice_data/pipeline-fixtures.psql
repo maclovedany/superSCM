@@ -1,0 +1,232 @@
+-- 실습 데이터 **실제 경로** 검증 fixture — 로컬 임시 DB(scm_test_*) 전용.
+--
+-- ★★ fix round 1 (I1) — fixtures.psql은 upload_batch를 status='IMPORTED'로 직접 넣고 item_policy도
+--    직접 넣습니다. 그래서 core.commit_import_batch 매핑 · Task 9a 승인 흐름 ·
+--    core.procurement_forecast_source_status → VERIFIED 가 **한 번도 실행되지 않았습니다.**
+--    03-item-policies.sql의 권한 버그(C1)가 구조적으로 보이지 않았던 이유입니다.
+--
+--    이 fixture는 supabase/practice-data/*.sql이 실제로 밟는 경로를 그대로 밟습니다.
+--      upload_batch + import_staging → core.commit_import_batch   (품목 · 사용 이력 · 재고)
+--      core.request_item_policy_change → core.decide_approval      (9a 승인 흐름, 요청자 ≠ 승인자)
+--      core.run_baseline_forecast → core.run_backtest              (지문이 SUCCESS 시점에 찍힘)
+--      core.build_procurement_plan → confirm → approve → build_procurement_schedule
+--      core.record_actual_receipt_date                             (사람이 한 입력)
+--
+--    ★ 1부와 **다른 임시 DB**에서 돈다(run-all.sh). 한 DB에서 돌렸더니, 1부가 일부러 남긴 행
+--      (제거하지 못한 실습 품목 PRCT003 · 실데이터 대역 REALT001)의 품목 정책이 이 2부의 발주계획
+--      확정을 막았다 — Task 9b의 확정은 정책이 있는 **모든** 품목에 대해 전부-아니면-전무이기
+--      때문이다(UNIT_PRICE_UNSET · TARGET_DOS_UNSET, 2품목 × 6개월 = 12라인). 그 행을 지우면 1부가
+--      증명한 "지우지 못한 것은 남는다"를 무르게 되므로, 지우는 대신 DB를 나눴다.
+
+\set ON_ERROR_STOP 1
+\ir guard.psql
+-- 공통 헬퍼(practice_test 스키마 · 사용자 · dim_item 대역)는 1부와 공유한다.
+\ir helpers.psql
+
+-- 기준선 — 이 단계에서 살아 있어야 할 실데이터.
+insert into practice_test.baseline (name, n) values
+  ('pipe_dim_item',       (select count(*) from raw.dim_item)),
+  ('pipe_usage_legacy',   (select count(*) from raw.usage_history where batch_id is null))
+on conflict (name) do update set n = excluded.n;
+
+do $$
+declare
+  v_admin   uuid := '00000000-0000-4000-8000-000000000501';
+  v_planner uuid := '00000000-0000-4000-8000-000000000502';
+  v_lead    uuid := '00000000-0000-4000-8000-000000000503';
+  v_label   text := 'TEST-PIPE';
+  v_prev_setting uuid;
+  v_prep    jsonb;
+  v_batch_item uuid := gen_random_uuid();
+  v_batch_usage uuid := gen_random_uuid();
+  v_batch_inv uuid := gen_random_uuid();
+  v_setting uuid;
+  v_item text;
+  v_seq int;
+  v_revision uuid;
+  v_approval uuid;
+  v_run uuid;
+  v_backtest uuid;
+  v_status text;
+  v_message text;
+  v_plan uuid;
+  v_confirm jsonb;
+  v_schedule_id uuid;
+  v_month date;
+begin
+  perform practice_test.as_user(v_admin);
+
+  select setting_id into v_prev_setting from core.forecast_setting where active order by updated_at desc limit 1;
+  select coalesce(jsonb_object_agg(entity_id, prep_days), '{}'::jsonb) into v_prep from core.supply_entity;
+
+  perform core.open_practice_dataset(v_label, '실제 경로 검증용 실습 묶음',
+    jsonb_build_object('supply_entity_prep_days', v_prep, 'previous_forecast_setting_id', v_prev_setting));
+
+  -- ── 마스터 — 일정 계산에 필요한 값 ───────────────────────────────
+  perform core.upsert_supply_entity('JP', '일본', 'JP', 7, true, null, null, '실습', '[실습용] 파이프라인 검증');
+  perform core.register_practice_object(v_label, 'SUPPLY_ENTITY', 'JP', '준비기간만 변경');
+
+  perform core.upsert_supplier('PIPE-SUP', '파이프라인 검증 공급처', 'JP', 20, true, null, null, '실습', '[실습용] 파이프라인 검증');
+  perform core.register_practice_object(v_label, 'SUPPLIER', 'PIPE-SUP', null);
+
+  -- 매주 화요일 출항(weekday=2). 활성 규칙이 정확히 하나여야 DEPARTURE_RULE_AMBIGUOUS가 안 난다.
+  perform core.register_practice_object(v_label, 'SUPPLIER_DEPARTURE',
+    core.set_supplier_departure_rule(null, 'PIPE-SUP', 2, null, null, null, null, null, '[실습용] 검증')::text, null);
+
+  -- 발주일 · 입고일이 걸치는 달을 준비됨으로 표시한다(공휴일 1건 포함).
+  perform core.add_business_holiday('KR', '2027-01-01', '신정', '[실습용] 검증');
+  perform core.register_practice_object(v_label, 'BUSINESS_CALENDAR', 'KR:2027-01-01', '신정');
+  for v_month in select gs::date from generate_series('2026-10-01'::date, '2027-04-01'::date, interval '1 month') gs loop
+    perform core.set_calendar_month_ready('KR', extract(year from v_month)::int, extract(month from v_month)::int,
+      true, '[실습용] 검증');
+    perform core.register_practice_object(v_label, 'CALENDAR_READINESS', 'KR:' || to_char(v_month, 'YYYY-MM'), null);
+  end loop;
+
+  -- ── 1. 품목 마스터를 STEP 4 경로로 적재 ──────────────────────────
+  insert into core.upload_batch (batch_id, file_name, import_type, import_mode, total_rows, success_rows,
+                                 warning_rows, error_rows, status, uploaded_by)
+  values (v_batch_item, '[실습용 TEST-PIPE] items.csv', 'item_master', 'append', 4, 4, 0, 0, 'VALIDATED', v_admin);
+
+  insert into core.import_staging (batch_id, row_number, original_data, mapped_data, validation_status)
+  select v_batch_item, s.seq + 1,
+         jsonb_build_object('item_id', 'PIPE00' || s.seq),
+         jsonb_build_object(
+           'item_id', 'PIPE00' || s.seq, 'item_name', '파이프라인 품목 ' || s.seq,
+           'item_type', '소모품', 'unit', 'EA', 'supplier_id', 'PIPE-SUP',
+           'source_record_id', 'PIPE-ITEM-' || s.seq),
+         'SUCCESS'
+    from generate_series(1, 4) as s(seq);
+
+  perform core.commit_import_batch(v_batch_item);
+  perform core.register_practice_object(v_label, 'UPLOAD_BATCH', v_batch_item::text, '품목 마스터');
+
+  for v_seq in 1..4 loop
+    v_item := 'PIPE00' || v_seq;
+    perform core.register_practice_object(v_label, 'ITEM', v_item, 'seq:' || v_seq);
+
+    -- core.item_policy의 최초 행만 직접 넣는다(authenticated는 INSERT할 수 없다 — 운영과 같다).
+    insert into core.item_policy (item_id, item_grade, service_level) values (v_item, 'A', 0.95)
+    on conflict (item_id) do nothing;
+    perform core.register_practice_object(v_label, 'ITEM_POLICY', v_item, 'seq:' || v_seq);
+
+    -- ★ 운영값은 9a 승인 흐름으로만 넣는다. PIPE001만 MOQ 50(올림 검증용).
+    perform practice_test.as_user(v_planner);
+    v_revision := core.request_item_policy_change(
+      v_item, 30, 'AUTO', 100 * v_seq, 1000, case when v_seq = 1 then 50 else null end, null, null,
+      '[실습용] 파이프라인 검증');
+    perform practice_test.as_user(v_admin);
+    perform core.register_practice_object(v_label, 'ITEM_POLICY_REVISION', v_revision::text, 'seq:' || v_seq);
+
+    select approval_id into v_approval from core.item_policy_revision where revision_id = v_revision;
+    perform practice_test.as_user(v_lead);
+    perform core.decide_approval(v_approval, 'APPROVED', '[실습용] 검증 승인');
+    perform practice_test.as_user(v_admin);
+  end loop;
+
+  -- ── 2. 사용 이력 12개월을 STEP 4 경로로 적재 ─────────────────────
+  insert into core.upload_batch (batch_id, file_name, import_type, import_mode, total_rows, success_rows,
+                                 warning_rows, error_rows, status, uploaded_by)
+  values (v_batch_usage, '[실습용 TEST-PIPE] usage.csv', 'usage_history', 'append', 48, 48, 0, 0, 'VALIDATED', v_admin);
+
+  insert into core.import_staging (batch_id, row_number, original_data, mapped_data, validation_status)
+  select v_batch_usage, row_number() over () + 1,
+         jsonb_build_object('item_id', i.item_id),
+         jsonb_build_object(
+           'usage_id', 'PIPE-' || i.item_id || '-' || to_char(m.d, 'YYYYMM'),
+           'item_id', i.item_id,
+           'use_date', m.d,
+           -- 0인 달이 없어야 수요 유형이 SMOOTH/ERRATIC이 되고 SQL Baseline 모델이 적용된다.
+           'qty', (100 + 10 * i.seq + (extract(month from m.d)::int % 3) * 5)::numeric,
+           'warehouse', 'MAIN',
+           'source_record_id', 'PIPE-U-' || i.item_id || '-' || to_char(m.d, 'YYYYMM')),
+         'SUCCESS'
+    from (select 'PIPE00' || s as item_id, s as seq from generate_series(1, 4) s) i
+   cross join (select (generate_series('2026-01-15'::date, '2026-12-15'::date, interval '1 month'))::date as d) m;
+
+  perform core.commit_import_batch(v_batch_usage);
+  perform core.register_practice_object(v_label, 'UPLOAD_BATCH', v_batch_usage::text, '사용 이력');
+
+  -- ── 3. 재고를 STEP 4 경로로 적재(기준월 2027-01 안의 스냅샷) ─────
+  insert into core.upload_batch (batch_id, file_name, import_type, import_mode, total_rows, success_rows,
+                                 warning_rows, error_rows, status, uploaded_by)
+  values (v_batch_inv, '[실습용 TEST-PIPE] inventory.csv', 'inventory', 'append', 4, 4, 0, 0, 'VALIDATED', v_admin);
+
+  -- ★ 시작재고를 일부러 낮게 둔다. 발주 일정(Task 10b)은 **1개월차 · final_order_qty > 0** 라인만
+  --   일정화하므로, 재고가 넉넉하면 1개월차 발주량이 전부 0이 되어 일정이 한 건도 안 생긴다.
+  --   (dos_required = 수요 + 목표DoS × 6개월합 ÷ 180 − 시작재고 → 재고가 크면 0으로 clamp된다.)
+  insert into core.import_staging (batch_id, row_number, original_data, mapped_data, validation_status)
+  select v_batch_inv, s.seq + 1,
+         jsonb_build_object('item_id', 'PIPE00' || s.seq),
+         jsonb_build_object(
+           'item_id', 'PIPE00' || s.seq, 'current_stock', (50 + 10 * s.seq)::numeric,
+           'warehouse', 'MAIN', 'warehouse_code', 'MAIN', 'inventory_status', '정상',
+           'snapshot_at', '2027-01-15T09:00:00+09:00', 'reference_date', '2027-01-15',
+           'safety_stock', null, 'source_record_id', 'PIPE-INV-' || s.seq),
+         'SUCCESS'
+    from generate_series(1, 4) as s(seq);
+
+  perform core.commit_import_batch(v_batch_inv);
+  perform core.register_practice_object(v_label, 'UPLOAD_BATCH', v_batch_inv::text, '재고 스냅샷');
+
+  -- ── 4. 학습/검증 기간 ────────────────────────────────────────────
+  update core.forecast_setting set active = false, updated_at = now() where active;
+  insert into core.forecast_setting (active, train_start, train_end, test_start, test_end, granularity,
+                                     forecast_horizon, champion_metric, reference_model_id)
+  values (true, '2026-01-01', '2026-09-30', '2026-10-01', '2026-12-31', 'MONTH', 9, 'WAPE', 'WMA_3M')
+  returning setting_id into v_setting;
+  perform core.register_practice_object(v_label, 'FORECAST_SETTING', v_setting::text, null);
+
+  -- ── 5. Forecast · Backtest — 실제 실행 함수 ──────────────────────
+  v_run := core.run_baseline_forecast('[실습용 TEST-PIPE] baseline');
+  select status, message into v_status, v_message from core.forecast_run where run_id = v_run;
+  if v_status <> 'SUCCESS' then
+    raise exception 'Forecast 실행 실패(%): %', v_status, coalesce(v_message, '(없음)');
+  end if;
+  perform core.register_practice_object(v_label, 'FORECAST_RUN', v_run::text, null);
+
+  v_backtest := core.run_backtest(v_run);
+  select status, message into v_status, v_message from core.backtest_run where backtest_run_id = v_backtest;
+  if v_status <> 'SUCCESS' then
+    raise exception 'Backtest 실행 실패(%): %', v_status, coalesce(v_message, '(없음)');
+  end if;
+  perform core.register_practice_object(v_label, 'BACKTEST_RUN', v_backtest::text, null);
+
+  -- ── 6. 발주계획 생성 → 확정 → 승인 ──────────────────────────────
+  perform practice_test.as_user(v_planner);
+  v_plan := core.build_procurement_plan('2027-01-01', v_run);
+  perform practice_test.as_user(v_admin);
+  perform core.register_practice_object(v_label, 'PROCUREMENT_PLAN', v_plan::text, null);
+
+  perform practice_test.as_user(v_planner);
+  v_confirm := core.confirm_procurement_plan(v_plan);
+  if v_confirm ->> 'status' <> 'PENDING_APPROVAL' then
+    raise exception '발주계획 확정이 막혔습니다: %', jsonb_pretty(v_confirm);
+  end if;
+
+  perform practice_test.as_user(v_lead);
+  perform core.decide_approval((v_confirm ->> 'approval_id')::uuid, 'APPROVED', '[실습용] 검증 승인');
+
+  -- ── 7. 발주 일정 · 실제 입고일(사람이 한 입력) ───────────────────
+  perform practice_test.as_user(v_planner);
+  perform core.build_procurement_schedule(v_plan);
+
+  select s.schedule_id into v_schedule_id
+    from core.procurement_schedule s
+   where s.plan_id = v_plan and s.calculation_status = 'SCHEDULED'
+   limit 1;
+  if v_schedule_id is null then
+    -- 실패했을 때 "무엇이 없어서"인지 바로 보이게 한다. 제외 사유(SUPPLIER_UNSET ·
+    -- DEPARTURE_RULE_UNSET · PREP_DAYS_UNSET · CALENDAR_NOT_READY)와, 애초에 일정화 대상인
+    -- 1개월차 발주량>0 라인이 몇 개였는지를 함께 보고한다(0이면 재고가 너무 많은 것이다).
+    raise exception '계산된(SCHEDULED) 발주 일정이 없습니다 — 일정화 대상(1개월차 · 발주량>0) %건 · 제외 사유 %',
+      (select count(*) from core.procurement_plan_line
+        where plan_id = v_plan and month_no = 1 and final_order_qty > 0),
+      coalesce((select string_agg(distinct coalesce(reason_code, '(사유 없음)'), ', ')
+                  from core.procurement_schedule where plan_id = v_plan), '(일정 행 자체가 없음)');
+  end if;
+  perform core.record_actual_receipt_date(v_schedule_id, '2027-02-01', '[실습용] 검증 입력');
+
+  perform practice_test.as_user(v_admin);
+end $$;
+
+select 'pipeline fixtures ok';

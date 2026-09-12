@@ -26,13 +26,22 @@ declare
   v_plan_month date;
   v_snapshot timestamptz;
   v_rows integer;
+  v_normal integer;
 begin
   select user_id into v_admin from core.app_user
    where email = 'insightdany@naver.com' and active and role = 'ADMIN';
   if v_admin is null then
-    raise exception '실습 관리자 계정을 찾을 수 없습니다.';
+    raise exception '실습 관리자(ADMIN) 계정을 찾을 수 없습니다.';
   end if;
   perform set_config('request.jwt.claim.sub', v_admin::text, false);
+
+  -- ── 순서 가드(fix round 1 · I2) ──────────────────────────────────
+  if not exists (select 1 from core.practice_dataset where label = v_label and active) then
+    raise exception '열려 있는 실습 묶음(%)이 없습니다. 00-open-dataset.sql을 먼저 실행하세요.', v_label;
+  end if;
+  if not exists (select 1 from core.practice_object where object_kind = 'ITEM') then
+    raise exception '등기된 실습 품목이 없습니다. 02-items.sql을 먼저 실행하세요.';
+  end if;
 
   select (date_trunc('month', test_end) + interval '1 month')::date into v_plan_month
     from core.forecast_setting where active;
@@ -51,25 +60,32 @@ begin
   create temporary table practice_stock on commit drop as
   -- 정상 재고 — seq 1~10
   select o.object_key as item_id,
-         split_part(o.note, ':', 2)::int as seq,
+         substring(o.note from 'seq:([0-9]+)')::int as seq,
          '정상'::text as inventory_status,
          'MAIN'::text as warehouse_code,
-         -- 품목마다 다른 수준: 일부는 넉넉하고 일부는 부족해서 발주량 차이가 눈에 보입니다.
-         (200 + 130 * split_part(o.note, ':', 2)::int)::numeric as qty
+         -- 품목마다 다른 수준이되 **1개월차 발주량이 0이 되지 않도록** 낮게 잡습니다.
+         -- ★ 발주 일정(Task 10b)은 1개월차 · final_order_qty > 0 라인만 일정화합니다. 재고가
+         --   넉넉하면 dos_required = 수요 + 목표DoS × 6개월합 ÷ 180 − 시작재고가 0으로 clamp되어
+         --   발주량이 0이 되고, 그러면 "발주 일정" 화면에 보여 줄 것이 하나도 없습니다.
+         --   (이전 값 200 + 130×seq 로는 10품목 중 3품목만 1개월차 발주가 생겼습니다.)
+         (120 + 30 * substring(o.note from 'seq:([0-9]+)')::int)::numeric as qty
     from core.practice_object o
-   where o.object_kind = 'ITEM' and split_part(o.note, ':', 2)::int <= 10
+   where o.object_kind = 'ITEM' and substring(o.note from 'seq:([0-9]+)')::int <= 10
   union all
   -- 검사 대기 — seq 1. 정상 창고재고에서 제외되는 것을 보여줍니다.
-  select o.object_key, split_part(o.note, ':', 2)::int, '검사대기', 'MAIN', 80::numeric
+  select o.object_key, substring(o.note from 'seq:([0-9]+)')::int, '검사대기', 'MAIN', 80::numeric
     from core.practice_object o
-   where o.object_kind = 'ITEM' and split_part(o.note, ':', 2)::int = 1
+   where o.object_kind = 'ITEM' and substring(o.note from 'seq:([0-9]+)')::int = 1
   union all
   -- ★ 분류 불가 — seq 11. 등록되지 않은 상태 텍스트라 어느 범위에도 매핑되지 않습니다.
-  select o.object_key, split_part(o.note, ':', 2)::int, '기타보관', 'MAIN', 450::numeric
+  select o.object_key, substring(o.note from 'seq:([0-9]+)')::int, '기타보관', 'MAIN', 450::numeric
     from core.practice_object o
-   where o.object_kind = 'ITEM' and split_part(o.note, ':', 2)::int = 11;
+   where o.object_kind = 'ITEM' and substring(o.note from 'seq:([0-9]+)')::int = 11;
 
   select count(*) into v_rows from practice_stock;
+  if v_rows = 0 then
+    raise exception '만들어진 재고 행이 0개입니다 — 실습 품목 등기(note의 seq)를 확인하세요.';
+  end if;
 
   insert into core.upload_batch (batch_id, file_name, import_type, import_mode, total_rows, success_rows,
                                  warning_rows, error_rows, status, uploaded_by, uploaded_at)
@@ -96,7 +112,12 @@ begin
   perform core.commit_import_batch(v_batch);
   perform core.register_practice_object(v_label, 'UPLOAD_BATCH', v_batch::text, '재고 스냅샷 적재');
 
-  raise notice '재고 %행 적재 완료 — 기준월 % · 스냅샷 %', v_rows, to_char(v_plan_month, 'YYYY-MM'), v_snapshot;
+  select count(*) into v_normal
+    from core.stock_balance sb
+    join core.practice_object o on o.object_kind = 'ITEM' and o.object_key = sb.item_id;
+
+  raise notice '재고 %행 적재 완료 — 기준월 % · 스냅샷 % · 정상 분류 %품목(분류 불가 1품목은 제외됨)',
+    v_rows, to_char(v_plan_month, 'YYYY-MM'), v_snapshot, v_normal;
 end $$;
 
 -- ── 확인 ────────────────────────────────────────────────────────────
@@ -104,9 +125,9 @@ end $$;
 select sb.item_id, sb.snapshot_qty, sb.normal_qty, sb.snapshot_at
   from core.stock_balance sb
   join core.practice_object o on o.object_kind = 'ITEM' and o.object_key = sb.item_id
- order by split_part(o.note, ':', 2)::int;
+ order by substring(o.note from 'seq:([0-9]+)')::int;
 -- 기대: 10행(seq 1~10). seq 11은 분류 불가라 이 표에 **올라오지 않습니다.**
---       seq 1은 검사대기 80을 뺀 정상분만 있어야 합니다(330, 80 아님).
+--       seq 1은 검사대기 80을 뺀 정상분만 있어야 합니다(150, 230 아님).
 
 select plan_month, count(*) as items, sum(normal_qty) as total_qty
   from core.month_end_inventory_snapshot
@@ -116,6 +137,6 @@ select plan_month, count(*) as items, sum(normal_qty) as total_qty
 -- seq 11 품목이 재고 화면에서 사유 코드로 보이는지 (SCM 계정으로 조회해야 행이 나옵니다)
 select o.object_key as item_id, o.note
   from core.practice_object o
- where o.object_kind = 'ITEM' and split_part(o.note, ':', 2)::int = 11;
+ where o.object_kind = 'ITEM' and substring(o.note from 'seq:([0-9]+)')::int = 11;
 -- 이 품목은 analytics.v_available_stock에서 normal_warehouse_qty null +
 -- reason_code = 'INVENTORY_SCOPE_UNCLASSIFIED' 로 보여야 합니다(0이 아닙니다).

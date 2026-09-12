@@ -57,7 +57,14 @@ begin
        and btrim(d.item_code) <> ''
   )
   select c.item_code, c.item_id, c.item_name,
-         row_number() over (order by c.item_code) as seq
+         row_number() over (order by c.item_code) as seq,
+         -- ★ fix round 1 (I4) — 실습용으로 **부여한** 품목구분입니다. dim_item의 실제 분류가
+         --   core.item_visibility_rule(용지 · 카드리더기 · 소모품)과 매핑되지 않아, 마케팅부 ·
+         --   서비스부 화면에도 무언가 보이도록 나눠 넣습니다. 실제 품목 속성이 아니므로 아래에서
+         --   등기부 note에 함께 적어 /admin/practice-data 화면에 그대로 드러나게 합니다.
+         case when row_number() over (order by c.item_code) <= 2 then '용지'
+              when row_number() over (order by c.item_code) <= 4 then '카드리더기'
+              else '소모품' end as assigned_item_type
     from candidate c
    where not exists (
      select 1 from raw.item_master im
@@ -84,10 +91,8 @@ begin
          jsonb_build_object(
            'item_id',   p.item_id,
            'item_name', p.item_name,
-           -- 실습용으로 부여한 조회 범위 분류(위 머리말 참고)
-           'item_type', case when p.seq <= 2 then '용지'
-                             when p.seq <= 4 then '카드리더기'
-                             else '소모품' end,
+           -- 실습용으로 부여한 조회 범위 분류(위 머리말 · practice_pick 주석 참고)
+           'item_type', p.assigned_item_type,
            'unit', 'EA',
            -- 품목 → 공급처 매핑. Task 10b가 core.v_item_master.supplier_id로 발주 일정을 만든다.
            'supplier_id', case (p.seq - 1) % 5
@@ -102,9 +107,18 @@ begin
   perform core.commit_import_batch(v_batch);
   perform core.register_practice_object(v_label, 'UPLOAD_BATCH', v_batch::text, '품목 마스터 적재');
 
-  -- ── 3. 등기 — seq를 note에 남겨 뒤 스크립트가 역할을 알아본다 ────
-  for v_item in select item_id, seq from practice_pick order by seq loop
-    perform core.register_practice_object(v_label, 'ITEM', v_item.item_id, 'seq:' || v_item.seq);
+  -- ── 3. 등기 — seq와 "부여한 품목구분"을 note에 남긴다 ────────────
+  -- ★ note는 `seq:<번호>`로 시작합니다. 뒤 스크립트는 substring(note from 'seq:([0-9]+)')로 읽으므로
+  --   뒤에 설명을 덧붙여도 안전합니다(split_part로 자르던 이전 판은 설명을 붙이면 깨졌습니다).
+  -- ★ 부여한 품목구분을 여기 적어 /admin/practice-data 화면에서 "이 분류는 실습용으로 붙인 값"임이
+  --   SQL 주석이 아니라 화면에 드러나게 합니다(fix round 1 · I4).
+  for v_item in select item_id, seq, assigned_item_type from practice_pick order by seq loop
+    perform core.register_practice_object(
+      v_label, 'ITEM', v_item.item_id,
+      'seq:' || v_item.seq
+        || ' · 품목구분 ' || v_item.assigned_item_type || '(실습용으로 부여, dim_item의 실제 분류 아님)'
+        || case when v_item.seq = 11 then ' · 재고 분류 불가 시연 전용(사용 이력 · 정책 없음)' else '' end
+    );
   end loop;
 
   raise notice '실습 품목 11개 적재 완료(batch %) — seq 11은 재고 분류 불가 시연용', v_batch;
@@ -115,7 +129,7 @@ select o.object_key as item_id, o.note, im.item_name, im.item_type, im.supplier_
   from core.practice_object o
   join core.v_item_master im on im.item_id = o.object_key
  where o.object_kind = 'ITEM'
- order by split_part(o.note, ':', 2)::int;
+ order by substring(o.note from 'seq:([0-9]+)')::int;
 -- 기대: 11행. supplier_id가 PRC-SUP-* 5곳에 고르게 배분되어 있어야 합니다.
 
 select count(*) as dim_item_unchanged from raw.dim_item;

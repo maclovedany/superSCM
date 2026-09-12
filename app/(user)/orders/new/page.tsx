@@ -1,13 +1,29 @@
+// 주문 등록 — Task 5
+//
+// ★ Task 15 fix round 1 (C2-3) — 이 화면의 주문 가능 수량(ATP)은 실습 재고에서 그대로 나온다.
+//   영업담당자가 그 숫자를 보고 주문을 만들므로, 실습 품목이 섞여 있으면 반드시 알려야 한다.
+
 import PageHeader from '@/components/shell/page-header';
 import OrderCreateForm from '@/components/orders/order-form';
+import PracticeDataBanner from '@/components/ui/practice-banner';
 import { requirePermission } from '@/lib/auth';
 import { getOrderAvailableStock } from '@/lib/inventory/repository';
+import { getPracticeDataStatus, getPracticeItemIds } from '@/lib/practice/repository';
 
 export const dynamic = 'force-dynamic';
 
 export default async function NewOrderPage() {
   await requirePermission('ORDER_CREATE');
-  const { rows, error } = await getOrderAvailableStock();
+  const [{ rows, error }, practiceItemIds, { status: practiceStatus }] = await Promise.all([
+    getOrderAvailableStock(),
+    getPracticeItemIds(),
+    getPracticeDataStatus(),
+  ]);
+
+  const showPractice =
+    practiceStatus !== null &&
+    practiceStatus.hasPracticeData &&
+    rows.some((row) => practiceItemIds.has(row.itemId));
 
   return (
     <section className="analysis-page">
@@ -17,6 +33,7 @@ export default async function NewOrderPage() {
         description="고객과 품목 · 수량을 입력해 작성 중 주문을 만듭니다. 재고는 검토 요청 때 배정됩니다."
       />
       <div className="analysis-content">
+        {showPractice && practiceStatus !== null ? <PracticeDataBanner status={practiceStatus} /> : null}
         {error ? (
           <div className="card">
             <p className="text-danger">품목과 주문 가능 수량을 조회하지 못했습니다.</p>
