@@ -384,3 +384,16 @@ Resend 도메인 `send.upflash.co.kr` verified (리전 ap-northeast-1). DKIM 은
 - 함수를 다시 배포할 때는 저장소 루트에서 실행해야 `supabase/config.toml` 의
   `[functions.notify] verify_jwt = false` 가 적용됩니다. 이 설정이 빠지면 게이트웨이가
   pg_net 요청을 401 로 막고, 함수 코드는 실행조차 되지 않습니다.
+
+### 첫 자동 실행 확인 (2026-09-12 KST 12:20)
+
+예약 3건이 10분 경계에 모두 실행됐습니다.
+
+| 작업 | 결과 | 비고 |
+|---|---|---|
+| `stage1-notify` | succeeded | pg_net 응답 HTTP 200, 본문 `{"claimed":0,"succeeded":0,"failed":0,"skipped":0,"finishErrors":[]}` |
+| `stage1-demand-reminders` | succeeded | 처리 대상 없음(취합 주기 미개설) |
+| `stage1-expire-allocations` | succeeded | 처리 대상 없음(임시배정 없음) |
+
+pg_cron → pg_net → Edge Function → DB 전 구간이 연결된 것을 확인했습니다.
+업무 데이터가 쌓이면 같은 경로로 앱 내 알림과 이메일이 발송됩니다.
