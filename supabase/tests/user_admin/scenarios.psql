@@ -12,6 +12,9 @@
 --   S11 재작성 — 비활성화까지 마친 계정이어야 업무 이력 검사(C1 · M5)까지 도달한다
 --   S12 재작성 — 완전 삭제 전에 먼저 비활성화하는 정상 흐름
 --   S16 신설 — app_user_blocking_tables는 authenticated에 직접 열려 있지 않다(M2)
+-- fix round 2 반영:
+--   S1 admin_record_auth_delete_failure의 비관리자 거절도 함께 스윕(M3 후속 지적)
+--   S17 신설 — admin_record_auth_delete_failure가 남기는 감사 행 내용을 확인(회귀 보호 없음 지적)
 \set ON_ERROR_STOP 1
 \ir guard.psql
 \pset tuples_only on
@@ -40,6 +43,10 @@ select user_admin_test.expect_error(
 select user_admin_test.expect_error(
   $f$select core.admin_delete_app_user_profile('00000000-0000-4000-8000-000000000504', '사유')$f$,
   '관리자 권한이 필요합니다', 'S1 USER는 완전 삭제를 할 수 없다'
+);
+select user_admin_test.expect_error(
+  $f$select core.admin_record_auth_delete_failure('00000000-0000-4000-8000-000000000504', 'ua-clean@example.test', 'network error')$f$,
+  '관리자 권한이 필요합니다', 'S1 USER는 Auth 삭제 실패 기록을 남길 수 없다'
 );
 reset role;
 
@@ -252,3 +259,25 @@ select user_admin_test.expect_error(
   'permission denied', 'S16 ADMIN도 app_user_blocking_tables를 RPC로 직접 부를 수 없다(내부 헬퍼, admin_delete_app_user_profile 안에서만 쓴다)'
 );
 reset role;
+
+
+\echo '== S17 admin_record_auth_delete_failure — 감사 로그에 실패 흔적이 남는다(fix round 1 · I5, 회귀 보호 추가) =='
+set role authenticated;
+select user_admin_test.as_user(:'admin1') \g /dev/null
+select core.admin_record_auth_delete_failure(:'user1', 'ua-user1@example.test', 'network error during deleteUser');
+reset role;
+select user_admin_test.check(
+  (select action = 'USER_AUTH_DELETE_FAILED' and target_type = 'app_user' and target_id = :'user1'
+     from core.audit_log where target_type = 'app_user' and target_id = :'user1' order by id desc limit 1),
+  'S17 action·target_type·target_id가 올바르게 남는다'
+);
+select user_admin_test.check(
+  (select before ->> 'email' = 'ua-user1@example.test'
+     from core.audit_log where target_type = 'app_user' and target_id = :'user1' and action = 'USER_AUTH_DELETE_FAILED' order by id desc limit 1),
+  'S17 before에 대상 이메일이 남는다(프로필이 이미 삭제된 뒤라 유일한 단서)'
+);
+select user_admin_test.check(
+  (select after ->> 'error' = 'network error during deleteUser'
+     from core.audit_log where target_type = 'app_user' and target_id = :'user1' and action = 'USER_AUTH_DELETE_FAILED' order by id desc limit 1),
+  'S17 after에 실패 사유가 그대로 남는다'
+);

@@ -139,8 +139,13 @@ begin
         when 'model_version' then 'Forecast 모델'
         when 'backtest_run' then 'Backtest 실행'
         when 'champion_model_selection' then 'Champion 모델 선정'
-        when 'agent_conversation' then 'AI 비서 대화'
-        when 'agent_message' then 'AI 비서 대화'
+        -- fix round 2: agent_conversation/agent_message가 같은 라벨이면 둘 다 걸렸을 때
+        -- "AI 비서 대화, AI 비서 대화"로 중복 표시된다 — 구분되는 라벨을 준다. 운영 DB에
+        -- 남아 있는 레거시 표(core.agent_conversation_legacy_202609092017)도 매핑해 원시
+        -- 이름이 그대로 노출되지 않게 한다.
+        when 'agent_conversation' then 'AI 비서 대화 세션'
+        when 'agent_message' then 'AI 비서 대화 기록'
+        when 'agent_conversation_legacy_202609092017' then 'AI 비서 대화(이전 버전)'
         when 'approval_request' then '승인 요청'
         when 'approval_event' then '승인 이력'
         when 'notification_outbox' then '알림 발송 대기열'
@@ -191,6 +196,13 @@ comment on function core.app_user_blocking_tables(uuid) is
 --   USER_PROFILE_UPDATED로 남았다). 서버(actions.ts)가 "방금 Auth 계정을 만든 직후 확정
 --   호출인지"를 p_created로 명시한다 — v_before가 진짜 null인 방어적 상황(트리거가 어떤
 --   이유로 행을 못 만든 경우)도 여전히 USER_CREATED로 남긴다.
+-- ★ fix round 2 — 8인자였던 옛 시그니처(p_created 없음)를 먼저 지운다. 이 프로젝트 운영
+--   DB에는 옛 버전이 적용된 적이 없어 지금은 문제가 안 되지만, create or replace는 인자
+--   개수가 다르면 새 오버로드를 "추가"할 뿐 옛 것을 지우지 않는다 — 이 파일만 보고 어떤
+--   환경에 적용해도(예: 이 파일을 두 번 이상 손으로 재구성해 옛 8인자 버전이 먼저 걸린
+--   스크래치 DB) 두 오버로드가 공존해 위치 인자 호출이 "function ... is not unique"로
+--   깨지지 않도록 명시적으로 정리한다.
+drop function if exists core.admin_upsert_app_user_profile(uuid, text, text, text, text, text, boolean, text);
 create or replace function core.admin_upsert_app_user_profile(
   p_user_id uuid,
   p_email text,

@@ -2,10 +2,11 @@
 
 `supabase/migrations/20260912000300_stage1_user_admin.sql`의 계정 생성 확정·편집
 (`core.admin_upsert_app_user_profile`) · 활성/비활성 전환(`core.admin_set_app_user_active`) ·
-완전 삭제(`core.admin_delete_app_user_profile`) · 업무 이력 참조 확인
-(`core.app_user_blocking_tables`)을 **로컬 PostgreSQL 임시 DB**에서 실제로 실행해 확인하는
-테스트 전용 스크립트입니다. 마이그레이션이 아니며, Supabase(원격) 프로젝트에는 절대 실행하지
-않습니다. 구조는 `supabase/tests/master_edit`(Task 10a)와 같습니다.
+완전 삭제(`core.admin_delete_app_user_profile`) · 업무 이력 참조 확인(내부 헬퍼
+`core.app_user_blocking_tables`) · Auth 삭제 실패 기록(`core.admin_record_auth_delete_failure`)을
+**로컬 PostgreSQL 임시 DB**에서 실제로 실행해 확인하는 테스트 전용 스크립트입니다.
+마이그레이션이 아니며, Supabase(원격) 프로젝트에는 절대 실행하지 않습니다. 구조는
+`supabase/tests/master_edit`(Task 10a)와 같습니다.
 
 ## 이 스위트가 검증하지 않는 것 — Auth Admin API
 
@@ -46,8 +47,8 @@ PGOPTIONS="-c timezone=America/Los_Angeles" bash supabase/tests/user_admin/run-a
 | `run-all.sh` | 전체 실행과 요약, 종료 시 임시 DB 삭제(`trap`) |
 | `bootstrap.sh` | 클러스터 역할 확인 → `createdb` → `auth-stub.psql` → `schema-dump/2026-09-11.sql` → STEP 4 · 7 정책 선삭제 → 전체 마이그레이션(0300은 자기 순서 자리에서 곧바로 한 번 더 적용 — 재실행 안전성) |
 | `lib.sh` · `guard.psql` · `auth-stub.psql` | 다른 스위트와 동일(로컬 대상 확인 · 안전장치 · 최소 auth 스텁) |
-| `fixtures.psql` | ADMIN 2명 · USER 1명 · 업무 이력 없는 계정 1명 · `core.audit_log`에 이력이 있는 계정 1명 · "auth.users만 있고 프로필 없음" 상태를 만든 계정 1명, 검증 헬퍼 스키마 `user_admin_test` |
-| `scenarios.psql` | S1 ADMIN 아니면 4개 함수 모두 거절 · S2 입력 검증 · S3 신규 프로필 확정(USER_CREATED) · S4 기존 계정 편집(USER_PROFILE_UPDATED) · S5 자기 자신 강등 거절 · S6 자기 자신 비활성화 거절(두 함수 모두) · S7 정상 비활성화·재활성화 · S8 사유 없음·대상 없음 거절 · S9 완전 삭제 자기 자신 거절 · S10 업무 이력(audit_log) 있으면 완전 삭제 거절 · S11 이력 없는 계정은 프로필만 삭제되고 auth.users는 남는다 · S12 job_role·department 직접 UPDATE는 GRANT가 없어 거절 · S13 CHECK 제약(RLS 우회해도) · S14 idempotent 재호출 · S15 직접 INSERT·DELETE 거절 |
+| `fixtures.psql` | ADMIN 2명 · USER 1명 · 업무 이력 없는 계정 1명 · `core.audit_log`에 이력이 있는 계정 1명 · "auth.users insert 트리거가 만든 기본 행이 그대로 있는" 신규 계정 1명 · "프로필 행이 아예 없는" 방어적 분기용 계정 1명, 검증 헬퍼 스키마 `user_admin_test`. 모든 계정에 `auth.identities` 행도 함께 넣는다(fix round 1 · C1 참고). |
+| `scenarios.psql` | S1 ADMIN 아니면 4개 명령 함수 + `admin_record_auth_delete_failure` 모두 거절 · S2 입력 검증 · S3 신규 프로필 확정 — 트리거 기본 행 위에 `p_created=true`로 upsert하는 운영 경로(USER_CREATED) + 행이 정말 없는 방어적 분기 · S4 기존 계정 편집(USER_PROFILE_UPDATED) · S5 자기 자신 강등 거절 · S6 자기 자신 비활성화 거절(두 함수 모두) · S7 정상 비활성화·재활성화 · S8 사유 없음·대상 없음 거절 · S9 완전 삭제 자기 자신 거절 · S10 활성 상태인 계정은 완전 삭제 거절(비활성화 먼저 요구) · S11 비활성화까지 마쳐도 업무 이력(감사 로그)이 있으면 완전 삭제 거절 + 한국어 라벨 · S12 비활성화 후 이력 없는 계정은 삭제되고 `auth.users`는 남는다 · S13 job_role·department 직접 UPDATE는 GRANT가 없어 거절 · S14 CHECK 제약(RLS 우회해도) · S15 idempotent 재호출 · S16 직접 INSERT·DELETE·내부 헬퍼(`app_user_blocking_tables`) RPC 직접 호출 거절 · S17 `admin_record_auth_delete_failure`가 남기는 감사 행(action·target·before 이메일·after 사유) 확인 |
 
 ## 안전장치
 
@@ -57,9 +58,20 @@ PGOPTIONS="-c timezone=America/Los_Angeles" bash supabase/tests/user_admin/run-a
 
 ## 알아 둘 것 — 완전 삭제의 참조 확인 범위
 
-`core.app_user_blocking_tables()`는 `auth.users(id)`를 참조하는 **모든 단일 컬럼 FK**를
-`pg_constraint`에서 훑습니다(표 이름을 나열하지 않습니다). S10은 일부러 업무 도메인 표(주문·
-배정 등, fixture로 채우기 번거로운 복잡한 FK 체인) 대신 `core.audit_log.actor`(가장 채우기 쉬운
-참조)로 "참조가 하나라도 있으면 거절된다"는 것만 검증합니다 — `ON DELETE SET NULL`이라 DB
-자신은 삭제를 막지 않는데도 이 함수는 막아야 한다는 것이 핵심입니다(주석 참고). 실제 배포
-DB에서 새 업무 표가 늘어도 이 함수는 표 이름을 다시 나열할 필요가 없습니다.
+`core.app_user_blocking_tables()`는 `auth.users(id)`를 참조하는 **모든 단일 컬럼 FK 중
+core·public·analytics 스키마에 있는 것만**(fix round 1 · C1) `pg_constraint`에서 훑습니다(표
+이름을 나열하지 않습니다 — `auth`·`storage`·`vault` 등 플랫폼 인프라 표는 제외합니다). S11은
+일부러 업무 도메인 표(주문·배정 등, fixture로 채우기 번거로운 복잡한 FK 체인) 대신
+`core.audit_log.actor`(가장 채우기 쉬운 참조)로 "참조가 하나라도 있으면 거절된다"는 것만
+검증합니다 — `ON DELETE SET NULL`이라 DB 자신은 삭제를 막지 않는데도 이 함수는 막아야 한다는
+것이 핵심입니다(주석 참고). 실제 배포 DB에서 새 업무 표가 늘어도(단, `auth.users(id)`를 직접
+참조하고 `core` 스키마에 있어야 한다 — `SCHEMA.md` 참고) 이 함수는 표 이름을 다시 나열할
+필요가 없습니다. 거절 문구의 한국어 라벨(예: `감사 로그`)이 매핑에 없는 표는 원래 이름으로
+안전하게 대체됩니다(fix round 1 · M5).
+
+## 알아 둘 것 — 완전 삭제는 비활성화된 계정만 대상이다
+
+fix round 1 · I4로 `core.admin_delete_app_user_profile`은 대상이 `active = false`일 때만
+업무 이력 검사로 넘어갑니다(경쟁 상태를 트랜잭션이 아니라 정책으로 막습니다). 그래서
+S11·S12는 삭제를 시도하기 전에 먼저 `admin_set_app_user_active(..., false, ...)`를 호출합니다
+— 활성 계정으로 바로 삭제를 시도하는 경로는 S10이 따로 검증합니다.
