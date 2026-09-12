@@ -78,6 +78,7 @@ test('analytics.v_stock_reference_source_status 행을 배너 상태로 옮긴�
       open_po_reason_code: 'OPEN_PO_SOURCE_UNVERIFIED',
       in_transit_sourced_rows: 0,
       in_transit_unsourced_rows: 2864,
+      in_transit_has_import_path: false,
       in_transit_reason_code: 'IN_TRANSIT_NO_IMPORT_PATH',
     }),
     {
@@ -87,36 +88,67 @@ test('analytics.v_stock_reference_source_status 행을 배너 상태로 옮긴�
       openPoReasonCode: 'OPEN_PO_SOURCE_UNVERIFIED',
       inTransitSourcedRows: 0,
       inTransitUnsourcedRows: 2864,
+      inTransitHasImportPath: false,
       inTransitReasonCode: 'IN_TRANSIT_NO_IMPORT_PATH',
     },
   );
   assert.equal(normalizeStockReferenceSourceStatus(null), null);
 });
 
-test('참고 열 배너 문구는 Open PO 출처 미확인·파싱 불가·이동 중 적재 경로 없음을 구분해서 안내한다', () => {
+test('리뷰 라운드 3 — 이동 중 사유는 구조 조건(적재 경로 없음)과 데이터 조건(출처 미확인)을 별개로 옮긴다', () => {
+  const noPath = normalizeStockReferenceSourceStatus({
+    in_transit_sourced_rows: 0,
+    in_transit_unsourced_rows: 2864,
+    in_transit_has_import_path: false,
+    in_transit_reason_code: 'IN_TRANSIT_NO_IMPORT_PATH',
+  })!;
+  assert.equal(noPath.inTransitHasImportPath, false);
+  assert.equal(noPath.inTransitReasonCode, 'IN_TRANSIT_NO_IMPORT_PATH');
+
+  const unverified = normalizeStockReferenceSourceStatus({
+    in_transit_sourced_rows: 3,
+    in_transit_unsourced_rows: 5,
+    in_transit_has_import_path: true,
+    in_transit_reason_code: 'IN_TRANSIT_SOURCE_UNVERIFIED',
+  })!;
+  assert.equal(unverified.inTransitHasImportPath, true);
+  assert.equal(unverified.inTransitReasonCode, 'IN_TRANSIT_SOURCE_UNVERIFIED');
+});
+
+test('참고 열 배너 문구는 Open PO 출처 미확인·파싱 불가·이동 중 적재 경로 없음·이동 중 출처 미확인을 구분해서 안내한다', () => {
   const openPoUnverified = {
     openPoSourcedRows: 0, openPoUnsourcedRows: 92, openPoUnparseableItems: 0, openPoReasonCode: 'OPEN_PO_SOURCE_UNVERIFIED',
-    inTransitSourcedRows: 10, inTransitUnsourcedRows: 0, inTransitReasonCode: null,
+    inTransitSourcedRows: 10, inTransitUnsourcedRows: 0, inTransitHasImportPath: true, inTransitReasonCode: null,
   };
   assert.match(stockReferenceStatusBannerMessage(openPoUnverified), /출처가 확인되지 않은/);
 
   const openPoUnparseable = {
     openPoSourcedRows: 10, openPoUnsourcedRows: 0, openPoUnparseableItems: 1, openPoReasonCode: 'OPEN_PO_QTY_UNPARSEABLE',
-    inTransitSourcedRows: 10, inTransitUnsourcedRows: 0, inTransitReasonCode: null,
+    inTransitSourcedRows: 10, inTransitUnsourcedRows: 0, inTransitHasImportPath: true, inTransitReasonCode: null,
   };
   assert.match(stockReferenceStatusBannerMessage(openPoUnparseable), /숫자로 읽을 수 없어/);
 
-  const inTransitOnly = {
+  const inTransitNoPath = {
     openPoSourcedRows: 10, openPoUnsourcedRows: 0, openPoUnparseableItems: 0, openPoReasonCode: null,
-    inTransitSourcedRows: 0, inTransitUnsourcedRows: 2864, inTransitReasonCode: 'IN_TRANSIT_NO_IMPORT_PATH',
+    inTransitSourcedRows: 0, inTransitUnsourcedRows: 2864, inTransitHasImportPath: false, inTransitReasonCode: 'IN_TRANSIT_NO_IMPORT_PATH',
   };
-  assert.match(stockReferenceStatusBannerMessage(inTransitOnly), /IMPORT하는 방법이 없어/);
+  assert.match(stockReferenceStatusBannerMessage(inTransitNoPath), /IMPORT하는 방법이 없어/);
+
+  const inTransitUnverified = {
+    openPoSourcedRows: 10, openPoUnsourcedRows: 0, openPoUnparseableItems: 0, openPoReasonCode: null,
+    inTransitSourcedRows: 3, inTransitUnsourcedRows: 5, inTransitHasImportPath: true, inTransitReasonCode: 'IN_TRANSIT_SOURCE_UNVERIFIED',
+  };
+  const unverifiedMessage = stockReferenceStatusBannerMessage(inTransitUnverified);
+  assert.match(unverifiedMessage, /출처가 확인되지 않은/);
+  assert.doesNotMatch(unverifiedMessage, /IMPORT하는 방법이 없어/);
 
   const both = {
     openPoSourcedRows: 0, openPoUnsourcedRows: 92, openPoUnparseableItems: 0, openPoReasonCode: 'OPEN_PO_SOURCE_UNVERIFIED',
-    inTransitSourcedRows: 0, inTransitUnsourcedRows: 2864, inTransitReasonCode: 'IN_TRANSIT_NO_IMPORT_PATH',
+    inTransitSourcedRows: 0, inTransitUnsourcedRows: 2864, inTransitHasImportPath: false, inTransitReasonCode: 'IN_TRANSIT_NO_IMPORT_PATH',
   };
-  assert.match(stockReferenceStatusBannerMessage(both), /IMPORT된 원천이 없어/);
+  const bothMessage = stockReferenceStatusBannerMessage(both);
+  assert.match(bothMessage, /출처가 확인되지 않은/);
+  assert.match(bothMessage, /IMPORT하는 방법이 없어/);
 });
 
 test('분류할 수 없는 행은 0이 아니라 null과 사유 코드를 유지한다', () => {

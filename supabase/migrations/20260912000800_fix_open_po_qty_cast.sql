@@ -157,6 +157,10 @@ comment on function core.parse_lenient_numeric(text) is
 revoke all on function core.parse_lenient_numeric(text) from public, anon;
 grant execute on function core.parse_lenient_numeric(text) to authenticated;
 
+-- ★ 리뷰 라운드 3 — supabase/realdata/03b-missing-objects.sql의 core.v_stock_on_hand(§4-3
+--   참고)가 이 함수를 쓰는데 03b가 이 마이그레이션보다 먼저 적용되므로, 03b 안에도 이
+--   정의를 그대로 복제해 두었다. **이 함수를 고칠 때는 그 복제본도 함께 고친다.**
+
 -- 적재 경로 전용 — core.parse_lenient_numeric과 같은 방식으로 콤마·공백은 받아들이되,
 -- 그래도 파싱할 수 없으면 명확한 한국어 예외를 던진다. 이 배치가 지금 막 적재하려는
 -- 행에만 적용된다(과거에 쌓인 raw 전체를 매번 다시 읽는 화면 경로와 다르다) — 조용히
@@ -614,6 +618,13 @@ revoke all on core.v_inbound_qty from anon, public;
 -- ★ authenticated는 raw 테이블에 직접 GRANT가 없으므로(SCHEMA.md), security_invoker 뷰가
 --   raw를 직접 참조하면 permission denied가 난다(error.md #22). core.v_open_po_qty와 같은
 --   자리에 소유자 권한 core 뷰를 먼저 두고, analytics 뷰는 그 결과만 읽는다.
+-- ★★ core.import_target_table은 배포 DB에서 REVOKE ALL ... FROM PUBLIC 상태다(원래
+--   호출자가 전부 SECURITY DEFINER 함수 내부뿐이라 문제가 없었다 — commit_import_batch가
+--   자기 소유자 권한으로 부른다). 이 뷰는 SECURITY DEFINER가 아닌 평범한 뷰라 함수 호출의
+--   EXECUTE 권한이 조회자 기준으로 검사된다 — 로컬 스크래치 DB에서 직접 겪었다
+--   (`permission denied for function import_target_table`). authenticated에 명시적으로
+--   내준다(순수 SQL 매핑 함수라 안전하다 — 부작용도 raw 접근도 없다).
+grant execute on function core.import_target_table(text) to authenticated;
 
 create or replace view core.v_stock_reference_source_status as
 with po as (
@@ -649,6 +660,17 @@ ship as (
     count(*) filter (where f.batch_id is null) as unsourced_rows
   from core.v_fact_shipment f
   where f.status = 'IN_TRANSIT'
+),
+ship_import_path as (
+  -- ★★ 리뷰 라운드 3 — 구조 조건(적재 경로가 있는가)과 데이터 조건(출처 있는 행이
+  --   있는가)을 각각 다른 근거로 따로 판정한다. 이전 정의는 "출처 있는 행이 0건"이라는
+  --   데이터 사실만으로 "적재 경로가 없다"는 구조적 주장을 냈다 — shipment 적재 경로가
+  --   생기고도 아직 업로드가 없으면 배너가 거짓으로 "경로가 없다"고 말하고, 반대로
+  --   경로가 생기자마자(데이터 유무와 무관하게) 그 사유가 조용히 사라지는 문제였다.
+  --   core.import_target_table이 'shipment' 종류를 아는지는 데이터와 완전히 무관한
+  --   구조적 사실이다 — core.commit_import_batch가 실제로 커밋할 수 있는 import_type
+  --   목록과 같은 기준(STEP 4 원본)이다.
+  select core.import_target_table('shipment') is not null as has_import_path
 )
 select
   po.sourced_rows + gr.sourced_rows as open_po_sourced_rows,
@@ -660,17 +682,24 @@ select
   end as open_po_reason_code,
   ship.sourced_rows as in_transit_sourced_rows,
   ship.unsourced_rows as in_transit_unsourced_rows,
-  case when ship.unsourced_rows > 0 then 'IN_TRANSIT_NO_IMPORT_PATH' end as in_transit_reason_code
-from po, gr, unparseable, ship;
+  ship_import_path.has_import_path as in_transit_has_import_path,
+  case
+    when not ship_import_path.has_import_path and ship.unsourced_rows > 0 then 'IN_TRANSIT_NO_IMPORT_PATH'
+    when ship_import_path.has_import_path and ship.unsourced_rows > 0 then 'IN_TRANSIT_SOURCE_UNVERIFIED'
+  end as in_transit_reason_code
+from po, gr, unparseable, ship, ship_import_path;
 
 comment on view core.v_stock_reference_source_status is
   '보정(2026-09-12) — Open PO·이동 중(참고) 두 열의 출처/파싱 상태를 화면 전체 기준 한 줄로
   요약한다(품목별 아님). open_po_reason_code: OPEN_PO_SOURCE_UNVERIFIED(출처 없는 행이 기여,
   파싱 사유보다 우선) > OPEN_PO_QTY_UNPARSEABLE(출처는 있으나 파싱 불가) > null(정상).
-  in_transit_reason_code: IN_TRANSIT_NO_IMPORT_PATH — raw.shipment_log.batch_id를 채우는
-  적재 경로가 아직 없어(Open PO의 "아직 IMPORT 안 됨"과 다르다) 구조적으로 항상 비어 있다.
-  소유자 권한으로 raw를 직접 읽는다 — analytics.v_stock_reference_source_status가
-  권한 필터를 얹어 감싼다';
+  in_transit_reason_code는 구조 조건(in_transit_has_import_path — core.import_target_table
+  이 shipment 종류를 아는가, 데이터와 무관)과 데이터 조건(in_transit_unsourced_rows —
+  batch_id 없는 행이 있는가)을 각각의 근거로 따로 판정해 조합한다: 적재 경로가 없는데
+  출처 없는 행이 있으면 IN_TRANSIT_NO_IMPORT_PATH(구조적으로 영구히 채울 수 없다),
+  적재 경로는 있는데 출처 없는 행이 있으면 IN_TRANSIT_SOURCE_UNVERIFIED(Open PO의
+  "아직 IMPORT 안 됨"과 같다), 둘 다 없으면 null(정상). 소유자 권한으로 raw를 직접
+  읽는다 — analytics.v_stock_reference_source_status가 권한 필터를 얹어 감싼다';
 
 grant select on core.v_stock_reference_source_status to authenticated;
 revoke all on core.v_stock_reference_source_status from anon, public;
@@ -705,6 +734,18 @@ revoke all on analytics.v_stock_reference_source_status from anon, public;
 --   current_stock 그대로) analytics.v_stockout_risk를 넓히지 않고도 크래시만 없앨 수
 --   있습니다 — 그 뷰는 이미 coalesce(current_stock, 0)으로 0 대체를 하고 있고(기존 동작,
 --   이 마이그레이션이 만들지 않았습니다), 그 동작 자체는 건드리지 않습니다.
+-- ★★ 정본은 supabase/realdata/03b-missing-objects.sql이다(core.v_fact_shipment·
+--   core.v_inbound_qty와 같은 이유 — 4-1절 참고). 그 파일도 이번에 같은 게이트를 갖도록
+--   함께 고쳤다(CREATE VIEW → CREATE OR REPLACE VIEW 포함). **이 뷰를 다시 고칠 때는
+--   두 파일을 항상 함께 고친다.**
+-- ★★★ 리뷰 라운드 3 — 03b는 이 마이그레이션보다 먼저 적용되므로(realdata → migrations
+--   순서) core.parse_lenient_numeric도 §1의 정의를 03b 안에 그대로 복제해 두었다(없으면
+--   03b 단독 적용 시 이 뷰 생성 자체가 "function ... does not exist"로 막힌다). 03b·
+--   scratch DB에 01-schema.sql + 03b를 적용하고 다시 03b를 적용해(이중 적용) 세 뷰
+--   (v_fact_shipment·v_inbound_qty·v_stock_on_hand) 모두 게이트가 남는지 확인했다 —
+--   plain CREATE TABLE/CREATE VIEW 21건은 "already exists"로 실패하고(조용히 되돌아가지
+--   않는다), CREATE OR REPLACE VIEW 세 곳만 오류 없이 재실행되며 게이트를 그대로 유지했다.
+--   §1의 core.parse_lenient_numeric을 고칠 때는 이 복제본도 함께 고친다.
 
 create or replace view core.v_stock_on_hand as
 select
@@ -757,7 +798,11 @@ revoke all on core.v_stock_on_hand from anon, public;
 -- (d) 화면 배너가 읽을 상태 뷰 확인 — STOCK_VIEW_ALL 권한 계정으로 실행.
 -- select * from analytics.v_stock_reference_source_status;
 -- 기대(배포 DB): open_po_unsourced_rows > 0 · open_po_reason_code = 'OPEN_PO_SOURCE_UNVERIFIED',
---       in_transit_unsourced_rows > 0 · in_transit_reason_code = 'IN_TRANSIT_NO_IMPORT_PATH'
+--       in_transit_unsourced_rows > 0 · in_transit_has_import_path = false ·
+--       in_transit_reason_code = 'IN_TRANSIT_NO_IMPORT_PATH'(core.import_target_table이
+--       아직 'shipment' 종류를 모르기 때문 — 구조 조건. shipment 적재 경로가 생기면
+--       in_transit_has_import_path가 true로 바뀌고, 그래도 업로드가 없으면
+--       in_transit_reason_code는 IN_TRANSIT_SOURCE_UNVERIFIED로 바뀐다)
 --       (측정값: raw.purchase_order 92 · raw.goods_receipt 81 · raw.shipment_log 2864 전부
 --       batch_id null, IN_TRANSIT 117행 · 수량 합 12,137).
 
@@ -779,7 +824,8 @@ revoke all on core.v_stock_on_hand from anon, public;
 -- select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace
 --  where n.nspname = 'analytics' and c.relname = 'v_available_stock';
 -- \d analytics.v_available_stock
--- 기대: 기존 12개 열 그대로(추가된 열 없음)
+-- 기대: 기존 13개 열 그대로(추가된 열 없음 — migration_rerun 스위트가 이 열 수를
+--       사후 조건으로 고정 확인한다)
 
 -- (g) raw 텍스트 → numeric 캐스트 전수 참조 확인(정규식이 아니라 실제 grep 결과 — 저장소
 -- 전체 supabase/migrations · supabase/realdata에서 Korean 텍스트 컬럼을 ::numeric으로

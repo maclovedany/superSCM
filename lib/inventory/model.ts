@@ -109,9 +109,15 @@ export function normalizeAvailableStockRow(row: Record<string, unknown>): Availa
  *   이 저장소가 이미 practice-banner에 쓰는 것과 같은 패턴으로 한 번만 안내합니다.
  * ★ openPoReasonCode: 'OPEN_PO_SOURCE_UNVERIFIED'(출처 없는 행이 기여 — 파싱 사유보다 우선)
  *   | 'OPEN_PO_QTY_UNPARSEABLE'(출처는 있으나 파싱 불가) | null(정상).
- * ★ inTransitReasonCode: 'IN_TRANSIT_NO_IMPORT_PATH' — raw.shipment_log.batch_id를 채우는
- *   적재 경로가 아직 없어(Open PO의 "아직 IMPORT 안 됨"과 다르다) 구조적으로 항상 비어 있음
- *   | null(정상).
+ * ★ 2026-09-12 리뷰 라운드 3 보정 — inTransitReasonCode를 구조 조건과 데이터 조건으로
+ *   나눕니다. 이 프로젝트의 주제가 "말할 수 없는 것을 말하지 않기"인데, 라벨이 자기가 알 수
+ *   없는 것을 주장하면 그 주제를 정면으로 어깁니다:
+ *   - inTransitHasImportPath: core.import_target_table이 'shipment' 종류의 적재 경로를
+ *     아는지(구조 조건, 데이터와 무관하게 항상 같은 값).
+ *   - 'IN_TRANSIT_NO_IMPORT_PATH' — 적재 경로 자체가 없음(!inTransitHasImportPath).
+ *   - 'IN_TRANSIT_SOURCE_UNVERIFIED' — 적재 경로는 있으나 raw.shipment_log.batch_id가 없는
+ *     (출처 미확인) 행이 기여함(inTransitHasImportPath && unsourced_rows > 0).
+ *   - null(정상).
  */
 export type StockReferenceSourceStatus = {
   openPoSourcedRows: number;
@@ -120,6 +126,7 @@ export type StockReferenceSourceStatus = {
   openPoReasonCode: string | null;
   inTransitSourcedRows: number;
   inTransitUnsourcedRows: number;
+  inTransitHasImportPath: boolean;
   inTransitReasonCode: string | null;
 };
 
@@ -132,22 +139,34 @@ export function normalizeStockReferenceSourceStatus(row: Record<string, unknown>
     openPoReasonCode: text(row, ['open_po_reason_code']),
     inTransitSourcedRows: numberValue(row, ['in_transit_sourced_rows']) ?? 0,
     inTransitUnsourcedRows: numberValue(row, ['in_transit_unsourced_rows']) ?? 0,
+    inTransitHasImportPath: value(row, ['in_transit_has_import_path']) === true,
     inTransitReasonCode: text(row, ['in_transit_reason_code']),
   };
 }
 
 export const STOCK_REFERENCE_STATUS_BANNER_TITLE = '참고 열(Open PO·이동 중) 안내';
 
+function openPoMessage(reasonCode: string): string {
+  return reasonCode === 'OPEN_PO_QTY_UNPARSEABLE'
+    ? '일부 발주·입고 데이터를 숫자로 읽을 수 없어 Open PO 참고 열이 비어 있습니다. 원본 데이터를 확인해 주세요.'
+    : '출처가 확인되지 않은(정식 업로드 경로를 거치지 않은) 발주·입고 데이터가 있어 Open PO 참고 열이 비어 있습니다 — 지어낸 숫자를 보여주지 않기 위해서입니다. 정식 업로드로 발주 데이터가 들어오면 채워집니다.';
+}
+
+// ★ 리뷰 라운드 3 — 구조 조건(적재 경로 자체가 없음)과 데이터 조건(경로는 있지만 아직 출처
+//   있는 데이터가 없음)을 반드시 다른 문구로 말한다. 하나로 합치면, 경로가 생긴 뒤에도
+//   "경로가 없다"는 이제 거짓인 문장을 계속 보여주게 된다.
+function inTransitMessage(reasonCode: string): string {
+  return reasonCode === 'IN_TRANSIT_NO_IMPORT_PATH'
+    ? '이동 중(참고) 열은 아직 시스템에 선적 데이터를 IMPORT하는 방법이 없어 표시할 수 없습니다.'
+    : '출처가 확인되지 않은(정식 업로드 경로를 거치지 않은) 선적 데이터가 있어 이동 중(참고) 열이 비어 있습니다 — 지어낸 숫자를 보여주지 않기 위해서입니다. 정식 업로드로 선적 데이터가 들어오면 채워집니다.';
+}
+
 export function stockReferenceStatusBannerMessage(status: StockReferenceSourceStatus): string {
-  const openPoBlocked = status.openPoReasonCode !== null;
-  const inTransitBlocked = status.inTransitReasonCode !== null;
-  if (openPoBlocked && inTransitBlocked) {
-    return '참고 열(Open PO·입고예정)은 IMPORT된 원천이 없어 표시할 수 없습니다 — 지어낸 숫자를 보여주지 않기 위해서입니다. 정식 업로드로 발주·입고 데이터가 들어오면 Open PO부터 채워집니다.';
+  const { openPoReasonCode, inTransitReasonCode } = status;
+  if (openPoReasonCode !== null && inTransitReasonCode !== null) {
+    return `${openPoMessage(openPoReasonCode)} ${inTransitMessage(inTransitReasonCode)}`;
   }
-  if (openPoBlocked) {
-    return status.openPoReasonCode === 'OPEN_PO_QTY_UNPARSEABLE'
-      ? '일부 발주·입고 데이터를 숫자로 읽을 수 없어 Open PO 참고 열이 비어 있습니다. 원본 데이터를 확인해 주세요.'
-      : '출처가 확인되지 않은(정식 업로드 경로를 거치지 않은) 발주·입고 데이터가 있어 Open PO 참고 열이 비어 있습니다 — 지어낸 숫자를 보여주지 않기 위해서입니다. 정식 업로드로 발주 데이터가 들어오면 채워집니다.';
-  }
-  return '이동 중(참고) 열은 아직 시스템에 선적 데이터를 IMPORT하는 방법이 없어 표시할 수 없습니다.';
+  if (openPoReasonCode !== null) return openPoMessage(openPoReasonCode);
+  if (inTransitReasonCode !== null) return inTransitMessage(inTransitReasonCode);
+  return '';
 }

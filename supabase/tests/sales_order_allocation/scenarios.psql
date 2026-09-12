@@ -910,6 +910,8 @@ select order_test.check((select in_transit_qty = 120 from analytics.v_available_
   'S15 (h) analytics.v_available_stock에서도 출처 있는 이동 중 수량이 그대로 나온다(120)');
 select order_test.check((select in_transit_qty is null from analytics.v_available_stock where item_id = 'ITEMT61'),
   'S15 (h) 출처 없는 이동 중 수량은 analytics.v_available_stock에서도 null이다(더미 340이 보이지 않는다)');
+select order_test.check((select in_transit_has_import_path = false from analytics.v_stock_reference_source_status),
+  'S15 (h) 리뷰 라운드 3 — 구조 조건(적재 경로 존재)을 데이터와 별개로 보고한다(core.import_target_table이 아직 shipment 종류를 모른다)');
 select order_test.check((select in_transit_reason_code = 'IN_TRANSIT_NO_IMPORT_PATH' from analytics.v_stock_reference_source_status),
   'S15 (h) 상태 뷰가 이동 중(참고) 열의 사유(IN_TRANSIT_NO_IMPORT_PATH — 적재 경로 자체가 없음, Open PO의 "아직 IMPORT 안 됨"과 다르다)를 Open PO와 별개로 보고한다');
 reset role;

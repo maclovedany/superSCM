@@ -294,10 +294,60 @@ CREATE TABLE raw.inventory (
     source_record_id text
 );
 
+-- ── core.parse_lenient_numeric ─────────────────────────
+-- ★ 2026-09-12 보정(Task 16, 리뷰 라운드 3) — core.v_stock_on_hand(바로 아래)가 이 함수를
+--   씁니다. 정본은 supabase/migrations/20260912000800_fix_open_po_qty_cast.sql §1이고
+--   여기 있는 것은 그 정의를 그대로 복제한 것입니다 — 실행 순서상 이 파일(01-schema.sql
+--   다음, 04-core-views.sql 앞)이 그 마이그레이션보다 먼저 적용되므로(realdata → migrations),
+--   여기서 만들지 않으면 새 환경 첫 설치에서 "function core.parse_lenient_numeric(text)
+--   does not exist"로 core.v_stock_on_hand 생성 자체가 막힙니다. 전체를 순서대로 적용하면
+--   마이그레이션의 정의가 나중에 같은 내용으로 다시 만들 뿐이라 안전합니다(같은 함수,
+--   같은 동작) — **이 함수를 고칠 때는 그 마이그레이션의 같은 정의도 함께 고친다.**
+CREATE OR REPLACE FUNCTION core.parse_lenient_numeric(p_raw text)
+RETURNS numeric
+LANGUAGE plpgsql
+IMMUTABLE
+SET search_path = pg_temp
+AS $$
+DECLARE
+  v_cleaned text;
+BEGIN
+  IF p_raw IS NULL THEN
+    RETURN NULL;
+  END IF;
+
+  v_cleaned := btrim(replace(p_raw, ',', ''));
+  IF v_cleaned = '' THEN
+    RETURN NULL;
+  END IF;
+
+  RETURN v_cleaned::numeric;
+EXCEPTION
+  WHEN OTHERS THEN
+    RETURN NULL;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION core.parse_lenient_numeric(text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION core.parse_lenient_numeric(text) TO authenticated;
+
 -- ── core.v_stock_on_hand ─────────────────────────
-CREATE VIEW core.v_stock_on_hand AS
- SELECT upper(regexp_replace("품목코드", '[\s\-_]'::text, ''::text, 'g'::text)) AS item_id,
-    sum((NULLIF("현재고", ''::text))::numeric) AS current_stock
+-- ★ 2026-09-12 보정(Task 16, supabase/migrations/20260912000800_fix_open_po_qty_cast.sql) —
+--   core.v_fact_shipment·core.v_inbound_qty와 같은 이유로 이 정의도 정본(이 파일)에서
+--   출처 게이트를 갖는다. **이 뷰를 고칠 때는 그 마이그레이션의 같은 정의도 함께 고친다.**
+--   이 파일을 단독 재실행하는 것이 문서화된 복구 절차이므로, 정본에 게이트가 없으면
+--   단독 재실행 시 그 결과(raw.inventory."현재고"에 콤마 등 파싱 불가 값이 생기면
+--   analytics.v_stockout_risk 전체가 22P02로 막히는 잠재 결함 — 지금은 발현되지 않았다,
+--   같은 마이그레이션 §4-3 참고)가 다시 무방비 상태로 돌아간다.
+CREATE OR REPLACE VIEW core.v_stock_on_hand AS
+ SELECT
+    upper(regexp_replace("품목코드", '[\s\-_]'::text, ''::text, 'g'::text)) AS item_id,
+    CASE WHEN bool_or(batch_id IS NULL)
+           OR bool_or("현재고" IS NOT NULL AND btrim("현재고") <> ''
+                      AND core.parse_lenient_numeric("현재고") IS NULL)
+         THEN NULL
+         ELSE sum(core.parse_lenient_numeric("현재고")) FILTER (WHERE batch_id IS NOT NULL)
+    END AS current_stock
    FROM raw.inventory
   GROUP BY (upper(regexp_replace("품목코드", '[\s\-_]'::text, ''::text, 'g'::text)));
 
