@@ -8,6 +8,7 @@
 
 \set planner1 '00000000-0000-4000-8000-000000000901'
 \set marketing1 '00000000-0000-4000-8000-000000000902'
+\set inactive1 '00000000-0000-4000-8000-000000000903'
 
 
 -- fix round 1(팀장 판정, 리뷰 §3-b/B-5) — 세 뷰 전부 권한 게이트를 뺐다(기존
@@ -197,3 +198,20 @@ select
 reset role;
 select chart_test.check(:'s12_ok', 'S12 2026-12은 6년 전 3개 행을 트레일링으로 세지 않는다 — 관측치 0개, INSUFFICIENT_TRAILING_HISTORY(터무니없는 배수 아님)');
 select chart_test.check(:'s12_qty_ok', 'S12 qty 자체는 999 그대로');
+
+
+-- fix round 1 2차 정정(팀장 최종 판정) — v_demand_series만 security_invoker가 실제로 막는 것이
+-- 있음을 직접 증명한다(core.forecast_result의 forecast_result_active_select 정책,
+-- core.is_active_user() 기준). inactive1은 core.app_user.active = false다 — is_active_user()가
+-- false를 돌려주므로 그 정책 아래서는 core.forecast_result가 0행이어야 한다. actual_qty는
+-- core.v_demand_actual_monthly(definer 우회 계층)를 거치므로 활성 여부와 무관하게 보인다 —
+-- 그래서 실적과 예측을 분리해서 확인한다(실적은 보이고 예측만 막혀야 invoker가 실제로 일하는
+-- 것이다).
+\echo '== S13 security_invoker가 실제로 막는다 — 비활성 계정은 v_demand_series에서 예측만 못 본다 =='
+set role authenticated;
+select chart_test.as_user(:'inactive1') \g /dev/null
+select count(*) as s13_predicted_rows from analytics.v_demand_series where predicted_qty is not null \gset
+select count(*) as s13_actual_rows from analytics.v_demand_series where actual_qty is not null \gset
+reset role;
+select chart_test.check(:'s13_predicted_rows' = '0', 'S13 비활성 계정은 예측(core.forecast_result 경유)을 0행만 본다 — is_active_user() RLS가 호출자 기준으로 적용된다(security_invoker의 효과)');
+select chart_test.check(:'s13_actual_rows' > '0', 'S13 실적(core.v_demand_actual_monthly, definer 우회 계층 경유)은 활성 여부와 무관하게 그대로 보인다 — invoker가 core.forecast_result에만 선택적으로 작동함을 대조로 확인');

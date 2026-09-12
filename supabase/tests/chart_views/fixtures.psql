@@ -21,20 +21,24 @@ end $$;
 
 grant execute on all functions in schema chart_test to anon, authenticated;
 
--- ══ 사용자 — SCM 품목담당자(STOCK_VIEW_ALL 있음) · 마케팅(없음) ═══════════════
+-- ══ 사용자 — SCM 품목담당자(STOCK_VIEW_ALL 있음) · 마케팅(없음) · 비활성 계정 ═══
 -- fix round 1(팀장 판정) — 세 뷰 모두 권한 게이트를 뺐다(기존 v_shipment_trend·v_forecast_result·
--- v_champion_model과 같은 자세). 그래서 이 두 사용자는 더는 "권한 있음 vs 없음"을 가르지
--- 않는다 — 오히려 "권한과 무관하게 둘 다 본다"를 증명하는 데 쓴다(S1·S1b).
+-- v_champion_model과 같은 자세). 그래서 planner1·marketing1은 더는 "권한 있음 vs 없음"을
+-- 가르지 않는다 — 오히려 "권한과 무관하게 둘 다 본다"를 증명하는 데 쓴다(S1·S1b).
+-- fix round 1 2차 정정(팀장 최종 판정) — inactive1은 v_demand_series만 security_invoker가
+-- 필요한 이유(core.forecast_result의 is_active_user() 정책)를 직접 증명하는 전용 계정이다(S13).
 insert into auth.users (id, email) values
   ('00000000-0000-4000-8000-000000000901', 'chart-planner1@example.test'),
-  ('00000000-0000-4000-8000-000000000902', 'chart-marketing1@example.test')
+  ('00000000-0000-4000-8000-000000000902', 'chart-marketing1@example.test'),
+  ('00000000-0000-4000-8000-000000000903', 'chart-inactive1@example.test')
 on conflict (id) do nothing;
 
 insert into core.app_user (user_id, email, name, department, role, active, job_role) values
   ('00000000-0000-4000-8000-000000000901', 'chart-planner1@example.test', 'SCM품목담당1', 'SCM', 'USER', true, 'SCM_PLANNER'),
-  ('00000000-0000-4000-8000-000000000902', 'chart-marketing1@example.test', '마케팅1', 'MARKETING', 'USER', true, 'MARKETING')
+  ('00000000-0000-4000-8000-000000000902', 'chart-marketing1@example.test', '마케팅1', 'MARKETING', 'USER', true, 'MARKETING'),
+  ('00000000-0000-4000-8000-000000000903', 'chart-inactive1@example.test', '퇴사자1', 'SCM', 'USER', false, 'SCM_PLANNER')
 on conflict (user_id) do update
-  set job_role = excluded.job_role, department = excluded.department, role = excluded.role, name = excluded.name, active = true;
+  set job_role = excluded.job_role, department = excluded.department, role = excluded.role, name = excluded.name, active = excluded.active;
 
 
 -- ══ 1. 수요 시계열(analytics.v_demand_series) fixture ═══════════════════════
