@@ -109,20 +109,36 @@ revoke all on core.v_demand_actual_monthly from anon;
 -- Run이 하나뿐이라 겹치지 않지만, 조건을 느슨하게 두면 다음 Run부터 조용히 틀린 값을 합칠 위험이
 -- 있다).
 --
+-- ★★ fix round 2(팀장 정정) — 사유 코드는 "행이 없다"를 주장하지 않는다. **"이 호출자의
+-- 시야 안에서는 행이 보이지 않는다"만 주장한다.** 이 뷰는 security_invoker = true라 아래
+-- core.forecast_result·core.champion_model_selection 조회에 호출자의 RLS가 그대로 걸린다 —
+-- 비활성 계정처럼 RLS가 행을 가리는 호출자에게는 "행이 실제로 없는 경우"와 "행은 있지만
+-- 안 보이는 경우"가 이 뷰 안에서 **구별되지 않는다**(안 보이는 것을 셀 수는 없다 — 조인
+-- 성사 여부로 판정해도 RLS가 이미 그 행을 지운 뒤라 조인 자체가 실패한다). 그래서 아래
+-- PERIOD_NOT_FORECASTED 같은 사유 코드는 "예측이 없다"가 아니라 "이 호출자에게는 예측이
+-- 보이지 않는다"로 읽어야 한다 — 이 한계는 고칠 수 있는 버그가 아니라 RLS 기반 뷰의 구조적
+-- 성질이라, S13(scenarios.psql)이 비활성 계정에서 실제로 이 사유 코드가 뜨는 것을 알려진
+-- 상태로 고정해 둔다(놀라움이 아니라 문서화된 동작).
+--
 -- 사유 코드 3개 — 값 하나가 비는 이유마다 서로 다른 사실만 주장한다(구조적 조건과 데이터 조건을
--- 섞지 않는다):
---   actual_reason_code    NO_ACTUAL_USAGE          이 (품목,월)에 출처 확인된 실적이 없다
---   predicted_reason_code NO_CHAMPION_SELECTION    이 품목은 Backtest·Champion 선정 자체를 받은 적이 없다
+-- 섞지 않는다. 위 문단대로 "호출자 시야 안의 사실"이라는 단서가 항상 붙는다):
+--   actual_reason_code    NO_ACTUAL_USAGE          이 (품목,월)에 출처 확인된 실적이 호출자
+--                                                   시야에 없다
+--   predicted_reason_code NO_CHAMPION_SELECTION    이 품목은 Backtest·Champion 선정 자체를 받은
+--                                                   적이 호출자 시야에 없다
 --                          NO_CHAMPION_MODEL        Backtest는 됐지만 유효 후보가 없었다(core.run_backtest의
 --                                                   NO_VALID_CANDIDATE — champion_model_id가 null)
 --                          PERIOD_NOT_FORECASTED    Champion 모델은 있지만 이 기간엔 그 모델의
---                                                   core.forecast_result 행 자체가 없다(조인 실패
---                                                   기준 — fix round 1, 리뷰어 지적. predicted_qty
---                                                   is not null로 판정하면 "행은 있는데 값만
---                                                   null"인 경우(predicted_qty·p80·p90 모두
---                                                   nullable, 20260828000500:70-73) "예측 행이
---                                                   없다"는 틀린 문장을 낸다 — 사유코드는 자기가
---                                                   알 수 있는 것만 주장해야 한다)
+--                                                   core.forecast_result 행이 호출자 시야에
+--                                                   없다(조인 실패 기준 — fix round 1, 리뷰어
+--                                                   지적. predicted_qty is not null로 판정하면
+--                                                   "행은 있는데 값만 null"인 경우(predicted_qty·
+--                                                   p80·p90 모두 nullable, 20260828000500:70-73)
+--                                                   "예측 행이 없다"는 틀린 문장을 낸다 — 사유코드는
+--                                                   자기가 알 수 있는 것만 주장해야 한다). RLS가
+--                                                   행을 가린 경우도 이 코드로 나온다(위 문단) —
+--                                                   "행이 없다"와 "안 보인다"를 이 뷰는 구별하지
+--                                                   못한다
 --   band_reason_code      predicted_qty가 없으면 predicted_reason_code를 그대로 물려받는다(예측이
 --                          없는데 밴드만 있을 수 없다 — v_inventory_performance의 계단식 사유코드와
 --                          같은 원칙). predicted_qty는 있는데 p80·p90 중 하나라도 없으면

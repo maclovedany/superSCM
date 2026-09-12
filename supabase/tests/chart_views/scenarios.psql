@@ -221,3 +221,21 @@ select count(*) as s13_actual_rows from analytics.v_demand_series where actual_q
 reset role;
 select chart_test.check(:'s13_predicted_rows' = '0', 'S13 비활성 계정은 예측(core.forecast_result 경유)을 0행만 본다 — is_active_user() RLS가 호출자 기준으로 적용된다(security_invoker의 효과)');
 select chart_test.check(:'s13_actual_rows' > '0', 'S13 실적(core.v_demand_actual_monthly, definer 우회 계층 경유)은 활성 여부와 무관하게 그대로 보인다 — invoker가 core.forecast_result에만 선택적으로 작동함을 대조로 확인');
+
+
+-- fix round 2(팀장 정정) — "조인 성사 여부로 판정"(②)만으로는 부족하다: RLS가 행을 가리면
+-- 조인 자체가 성사되지 않으므로, 이 뷰는 "행이 실제로 없다"와 "행은 있지만 이 호출자에게
+-- 안 보인다"를 구별할 수 없다(안 보이는 것을 셀 수는 없다 — 구조적 한계, 고칠 수 있는 버그가
+-- 아니다). CHDEM01은 planner1(활성)에게는 2026-07에 진짜 예측 행(predicted_qty=100)이 보인다
+-- (S2) — 같은 행을 inactive1(비활성)으로 조회하면 core.forecast_result의 RLS가 가려
+-- has_forecast_row가 false가 되고, champion은 여전히 보이므로(analytics.v_champion_model은
+-- definer라 활성 여부와 무관) PERIOD_NOT_FORECASTED로 떨어진다 — "예측이 없다"가 아니라
+-- "이 호출자에게는 예측이 안 보인다"는 뜻이다. 이걸 놀라움이 아니라 알려진 상태로 고정한다.
+\echo '== S13b RLS로 가려진 행은 PERIOD_NOT_FORECASTED로 보인다(알려진 한계, 버그 아님) =='
+set role authenticated;
+select chart_test.as_user(:'inactive1') \g /dev/null
+select
+  coalesce((select predicted_qty is null and predicted_reason_code = 'PERIOD_NOT_FORECASTED'
+     from analytics.v_demand_series where item_id = 'CHDEM01' and period = '2026-07-01'), false) as s13b_ok \gset
+reset role;
+select chart_test.check(:'s13b_ok', 'S13b CHDEM01의 2026-07 예측은 planner1(활성)에게는 실재(S2)하지만, inactive1에게는 RLS로 가려져 PERIOD_NOT_FORECASTED로 보인다 — 뷰가 "행 없음"과 "안 보임"을 구별 못 하는 구조적 한계를 알려진 상태로 고정');
