@@ -84,12 +84,13 @@ on conflict (job_role, permission_code) do nothing;
 --   T9B03  Flex 클램프(부서 합의 수량) · 승인된 수급회의 추가 수요
 --   T9B04  목표 DoS 미설정(처음) → 미승인 값 → 승인
 
-insert into raw.item_master ("품목코드", "품목명", "품목구분") values
-  ('T9B01', 'T9B MOQ 품목', '소모품'),
-  ('T9B02', 'T9B MOQ 미설정 품목', '소모품'),
-  ('T9B03', 'T9B Flex 품목', '소모품'),
-  ('T9B04', 'T9B 목표 DoS 품목', '소모품'),
-  ('T9B05', 'T9B Champion 없는 품목(롤백 시나리오 전용)', '소모품');
+-- ★ 2026-09-12(Task 17) — core.v_item_master 출처 게이트. batch_id를 채워 "출처 있는" 행으로 만든다.
+insert into raw.item_master ("품목코드", "품목명", "품목구분", batch_id) values
+  ('T9B01', 'T9B MOQ 품목', '소모품', gen_random_uuid()),
+  ('T9B02', 'T9B MOQ 미설정 품목', '소모품', gen_random_uuid()),
+  ('T9B03', 'T9B Flex 품목', '소모품', gen_random_uuid()),
+  ('T9B04', 'T9B 목표 DoS 품목', '소모품', gen_random_uuid()),
+  ('T9B05', 'T9B Champion 없는 품목(롤백 시나리오 전용)', '소모품', gen_random_uuid());
 
 insert into core.item_policy (item_id, item_grade, service_level) values
   ('T9B01', 'A', 0.95), ('T9B02', 'A', 0.95), ('T9B03', 'A', 0.95), ('T9B04', 'A', 0.95)

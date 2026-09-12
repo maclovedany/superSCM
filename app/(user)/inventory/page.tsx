@@ -1,10 +1,16 @@
 import PageHeader from '@/components/shell/page-header';
+import ItemMasterStatusBanner from '@/components/inventory/item-master-status-banner';
 import StockReferenceStatusBanner from '@/components/inventory/stock-reference-status-banner';
 import OrderAvailableTable from '@/components/inventory/order-available-table';
 import StockTable from '@/components/inventory/stock-table';
 import PracticeDataBanner from '@/components/ui/practice-banner';
 import { getPermissions, requireAnyPermission } from '@/lib/auth';
-import { getAvailableStock, getOrderAvailableStock, getStockReferenceSourceStatus } from '@/lib/inventory/repository';
+import {
+  getAvailableStock,
+  getItemMasterSourceStatus,
+  getOrderAvailableStock,
+  getStockReferenceSourceStatus,
+} from '@/lib/inventory/repository';
 import { WORK_ROUTE_PERMISSIONS } from '@/lib/permission';
 import { getPracticeDataStatus, getPracticeItemIds } from '@/lib/practice/repository';
 import type { PracticeDataStatus } from '@/lib/practice/model';
@@ -77,11 +83,12 @@ export default async function InventoryPage() {
     );
   }
 
-  const [{ rows, error }, practiceItemIds, { status }, referenceStatus] = await Promise.all([
+  const [{ rows, error }, practiceItemIds, { status }, referenceStatus, itemMasterStatus] = await Promise.all([
     getAvailableStock(),
     getPracticeItemIds(),
     getPracticeDataStatus(),
     getStockReferenceSourceStatus(),
+    getItemMasterSourceStatus(),
   ]);
   const practice = practiceBannerFor(rows, practiceItemIds, status);
   // ★ 2026-09-12 보정 — 지금 보이는 행 중에 실제로 Open PO나 이동 중 수량이 비어 있는 것이
@@ -89,6 +96,11 @@ export default async function InventoryPage() {
   //   나오므로, 무조건 띄우면 거짓 경고가 될 수 있다).
   const showReferenceBanner =
     referenceStatus !== null && rows.some((row) => row.openPoQty === null || row.inTransitQty === null);
+  // ★ 2026-09-12(Task 17) — 품목 목록 자체(core.v_item_master)가 출처 게이트로 줄어든 것은
+  //   행 단위 조건과 무관하게 전역 사실이다(이 화면에 보이는 32→11 같은 축소가 rows 안에서는
+  //   아예 드러나지 않는다 — 빠진 품목은 애초에 rows에 없다). status가 있으면(0행이 아니면)
+  //   그대로 띄운다.
+  const showItemMasterBanner = itemMasterStatus !== null;
 
   return (
     <section className="analysis-page">
@@ -99,6 +111,7 @@ export default async function InventoryPage() {
       />
       <div className="analysis-content">
         {practice ? <PracticeDataBanner status={practice} /> : null}
+        {showItemMasterBanner && itemMasterStatus ? <ItemMasterStatusBanner status={itemMasterStatus} /> : null}
         {showReferenceBanner && referenceStatus ? <StockReferenceStatusBanner status={referenceStatus} /> : null}
         {error ? (
           <div className="card">

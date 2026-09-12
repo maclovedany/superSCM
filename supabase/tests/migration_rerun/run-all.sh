@@ -110,7 +110,12 @@ with expected(label, actual, want) as (
     ('analytics.v_available_stock 열 수(재정의하지 않음)',
        (select count(*) from information_schema.columns where table_schema = 'analytics' and table_name = 'v_available_stock'), 13),
     ('core.v_inbound_qty 열 수(사유 열 추가 금지)',
-       (select count(*) from information_schema.columns where table_schema = 'core' and table_name = 'v_inbound_qty'), 4)
+       (select count(*) from information_schema.columns where table_schema = 'core' and table_name = 'v_inbound_qty'), 4),
+    -- Task 17(20260912000900) — 출처 게이트를 걸면서도 열은 추가하지 않기로 한 판정을 재실행 뒤에도 지킨다.
+    ('core.v_item_master 열 수(사유 열 추가 금지)',
+       (select count(*) from information_schema.columns where table_schema = 'core' and table_name = 'v_item_master'), 6),
+    ('analytics.v_item_master_source_status 열 수(새 상태 객체)',
+       (select count(*) from information_schema.columns where table_schema = 'analytics' and table_name = 'v_item_master_source_status'), 3)
 )
 select case when actual = want then 'PASS: ' else 'FAIL: ' end
        || label || ' (' || actual::text || ' · 기대 ' || want::text || ')'
@@ -135,13 +140,20 @@ select case when body like '%,2)) filter%' then 'PASS: ' else 'FAIL: ' end
        || 'core.run_backtest의 RMSE FILTER가 sqrt가 아니라 avg에 붙어 있다'
   from (select pg_get_functiondef(p.oid) as body from pg_proc p
           join pg_namespace n on n.oid = p.pronamespace
-         where n.nspname = 'core' and p.proname = 'run_backtest') f;
+         where n.nspname = 'core' and p.proname = 'run_backtest') f
+union all
+-- Task 17(20260912000900) — 두 번째 적용 뒤에도 core.v_item_master 정의가 출처 게이트(gated)를
+-- 유지하는지 뷰 정의 텍스트로 직접 확인한다(열 수만으로는 "좁은 정의가 조용히 넓은 정의로
+-- 덮였는지"를 알 수 없다 — 열 구성은 같아도 WHERE 절이 빠진 옛 정의로 되돌아갈 수 있다).
+select case when def like '%batch_id IS NOT NULL%' then 'PASS: ' else 'FAIL: ' end
+       || 'core.v_item_master 정의가 두 번째 적용 뒤에도 출처 게이트(batch_id IS NOT NULL)를 유지한다'
+  from (select pg_get_viewdef('core.v_item_master'::regclass, true) as def) v;
 SQL
 POST_PASS=$(grep -c '^PASS: ' "$LOG_DIR/postconditions.log" || true)
 POST_FAIL=$(grep -c '^FAIL: ' "$LOG_DIR/postconditions.log" || true)
 echo "사후 조건: PASS $POST_PASS · FAIL/ERROR $POST_FAIL"
 sed 's/^/  /' "$LOG_DIR/postconditions.log"
-if [ "$POST_PASS" -ne 12 ] || [ "$POST_FAIL" -ne 0 ]; then
+if [ "$POST_PASS" -ne 15 ] || [ "$POST_FAIL" -ne 0 ]; then
   STATUS=1
 fi
 

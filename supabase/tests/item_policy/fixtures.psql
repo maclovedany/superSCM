@@ -63,11 +63,12 @@ insert into core.role_permission (job_role, permission_code) values
   ('T9_DUAL_ROLE', 'ITEM_POLICY_APPROVE')
 on conflict (job_role, permission_code) do nothing;
 
-insert into raw.item_master ("품목코드", "품목명", "품목구분") values
-  ('ITEMT901', 'T9 정상 품목', '소모품'),
-  ('ITEMT902', 'T9 정상 품목 2', '소모품'),
-  ('ITEMT903', 'T9 정상 품목 3(셀프승인 검증 전용)', '소모품'),
-  ('ITEMT904', 'T9 정상 품목 4(승인·취소 동시성 검증 전용)', '소모품')
+-- ★ 2026-09-12(Task 17) — core.v_item_master 출처 게이트. batch_id를 채워 "출처 있는" 행으로 만든다.
+insert into raw.item_master ("품목코드", "품목명", "품목구분", batch_id) values
+  ('ITEMT901', 'T9 정상 품목', '소모품', gen_random_uuid()),
+  ('ITEMT902', 'T9 정상 품목 2', '소모품', gen_random_uuid()),
+  ('ITEMT903', 'T9 정상 품목 3(셀프승인 검증 전용)', '소모품', gen_random_uuid()),
+  ('ITEMT904', 'T9 정상 품목 4(승인·취소 동시성 검증 전용)', '소모품', gen_random_uuid())
 on conflict do nothing;
 
 -- core.item_policy는 Task 1(20260911000300)부터 authenticated의 직접 INSERT가 막혀 있다 — 운영에서도

@@ -58,12 +58,13 @@ on conflict (user_id) do update
 --   ITEMT1203  분류는 되지만(core.stock_balance 행 있음) 검증 대상 달(2026-09)에는 스냅샷이 없음 → MONTH_END_SNAPSHOT_MISSING
 --   ITEMT1204  core.apply_month_end_inventory_snapshot_from_batch 함수 자체(raw.inventory → 분류 → upsert) 검증 전용
 --   ITEMT1205  월 경계 timezone 검증 전용(세션 timezone과 무관하게 'Asia/Seoul' 벽시계로 달을 정하는지)
-insert into raw.item_master ("품목코드", "품목명", "품목구분") values
-  ('ITEMT1201', 'T12 미분류 품목', '소모품'),
-  ('ITEMT1202', 'T12 승인 흐름 품목', '소모품'),
-  ('ITEMT1203', 'T12 이달 스냅샷 없음', '소모품'),
-  ('ITEMT1204', 'T12 배치 함수 검증', '소모품'),
-  ('ITEMT1205', 'T12 월 경계 timezone 검증', '소모품')
+-- ★ 2026-09-12(Task 17) — core.v_item_master 출처 게이트. batch_id를 채워 "출처 있는" 행으로 만든다.
+insert into raw.item_master ("품목코드", "품목명", "품목구분", batch_id) values
+  ('ITEMT1201', 'T12 미분류 품목', '소모품', gen_random_uuid()),
+  ('ITEMT1202', 'T12 승인 흐름 품목', '소모품', gen_random_uuid()),
+  ('ITEMT1203', 'T12 이달 스냅샷 없음', '소모품', gen_random_uuid()),
+  ('ITEMT1204', 'T12 배치 함수 검증', '소모품', gen_random_uuid()),
+  ('ITEMT1205', 'T12 월 경계 timezone 검증', '소모품', gen_random_uuid())
 on conflict do nothing;
 
 insert into core.item_policy (item_id, moq, pack_size, item_grade, service_level) values

@@ -143,30 +143,35 @@ insert into core.role_permission (job_role, permission_code) values
   ('T5_DUAL', 'ALLOC_MANUAL'), ('T5_DUAL', 'ALLOC_PRIORITY_APPROVE')
 on conflict do nothing;
 
-insert into raw.item_master ("품목코드", "품목명", "품목구분") values
-  ('ITEMT01', 'T5 동시 60', '소모품'),
-  ('ITEMT02', 'T5 부분·대기', '소모품'),
-  ('ITEMT03', 'T5 확정·취소', '소모품'),
-  ('ITEMT04', 'T5 수동·승인', '소모품'),
-  ('ITEMT06', 'T5 우선순위·취소', '소모품'),
-  ('ITEMC01', 'T5 동시 10건 게이트', '소모품'),
-  ('ITEMC02', 'T5 다른 품목', '소모품'),
-  ('ITEMC03', 'T5 동시 10건 버스트', '소모품'),
-  ('ITEMU01', 'T5 미분류', '소모품'),
-  ('ITEMT07', 'T5 주문 취소', '소모품'),
-  ('ITEMT08', 'T5 확보 주문 취소', '소모품'),
-  ('ITEMT09', 'T5 확정 주문 취소 거절', '소모품'),
-  ('ITEMT10', 'T5 만료 시각 이후 차단', '소모품'),
-  ('ITEMT11', 'T5 만료 뒤 FIRM만 남은 주문 확정', '소모품'),
-  ('ITEMT20', 'T6 만료 경계·재실행', '소모품'),
-  ('ITEMT21', 'T6 만료 뒤 FIRM 유지', '소모품'),
-  ('ITEMT22', 'T6 배정 0건 WAITING_FULL 만료', '소모품'),
-  ('ITEMT24', 'T6 AUTO 입고 순서 배정', '소모품'),
-  ('ITEMT25', 'T6 MANUAL 입고 처리 필요', '소모품'),
-  ('ITEMT26', 'T6 만료 주문 입고 대기열 건너뜀', '소모품'),
-  ('ITEMCJ01', 'T6 동시성 만료·입고·검토요청', '소모품'),
-  ('ITEMCJ02', 'T6 동시성 만료 실패 격리 A', '소모품'),
-  ('ITEMCJ03', 'T6 동시성 만료 실패 격리 B', '소모품');
+-- ★ 2026-09-12(Task 17) — core.v_item_master가 출처 게이트(raw.item_master.batch_id is not
+--   null)를 받았다. 이 스위트의 품목은 정상 품목을 흉내 내는 것이 목적이므로 batch_id를 채워
+--   "출처 있는" 행으로 만든다(정식 업로드로 들어온 것처럼) — 채우지 않으면 core.v_item_master
+--   에서 걸러져 core.insert_sales_order 등이 전부 ORDER_ITEM_UNKNOWN으로 실패한다. 게이트
+--   자체를 검증하는 fixture는 S16(scenarios.psql)에 따로 둔다.
+insert into raw.item_master ("품목코드", "품목명", "품목구분", batch_id) values
+  ('ITEMT01', 'T5 동시 60', '소모품', gen_random_uuid()),
+  ('ITEMT02', 'T5 부분·대기', '소모품', gen_random_uuid()),
+  ('ITEMT03', 'T5 확정·취소', '소모품', gen_random_uuid()),
+  ('ITEMT04', 'T5 수동·승인', '소모품', gen_random_uuid()),
+  ('ITEMT06', 'T5 우선순위·취소', '소모품', gen_random_uuid()),
+  ('ITEMC01', 'T5 동시 10건 게이트', '소모품', gen_random_uuid()),
+  ('ITEMC02', 'T5 다른 품목', '소모품', gen_random_uuid()),
+  ('ITEMC03', 'T5 동시 10건 버스트', '소모품', gen_random_uuid()),
+  ('ITEMU01', 'T5 미분류', '소모품', gen_random_uuid()),
+  ('ITEMT07', 'T5 주문 취소', '소모품', gen_random_uuid()),
+  ('ITEMT08', 'T5 확보 주문 취소', '소모품', gen_random_uuid()),
+  ('ITEMT09', 'T5 확정 주문 취소 거절', '소모품', gen_random_uuid()),
+  ('ITEMT10', 'T5 만료 시각 이후 차단', '소모품', gen_random_uuid()),
+  ('ITEMT11', 'T5 만료 뒤 FIRM만 남은 주문 확정', '소모품', gen_random_uuid()),
+  ('ITEMT20', 'T6 만료 경계·재실행', '소모품', gen_random_uuid()),
+  ('ITEMT21', 'T6 만료 뒤 FIRM 유지', '소모품', gen_random_uuid()),
+  ('ITEMT22', 'T6 배정 0건 WAITING_FULL 만료', '소모품', gen_random_uuid()),
+  ('ITEMT24', 'T6 AUTO 입고 순서 배정', '소모품', gen_random_uuid()),
+  ('ITEMT25', 'T6 MANUAL 입고 처리 필요', '소모품', gen_random_uuid()),
+  ('ITEMT26', 'T6 만료 주문 입고 대기열 건너뜀', '소모품', gen_random_uuid()),
+  ('ITEMCJ01', 'T6 동시성 만료·입고·검토요청', '소모품', gen_random_uuid()),
+  ('ITEMCJ02', 'T6 동시성 만료 실패 격리 A', '소모품', gen_random_uuid()),
+  ('ITEMCJ03', 'T6 동시성 만료 실패 격리 B', '소모품', gen_random_uuid());
 
 insert into core.stock_balance (item_id, snapshot_qty, normal_qty, snapshot_at) values
   ('ITEMT01', 100, 100, now()),
@@ -202,10 +207,11 @@ insert into core.item_policy (item_id, allocation_mode) values
 on conflict (item_id) do update set allocation_mode = excluded.allocation_mode;
 
 -- 최종 fix 웨이브 — 다품목 문서번호 upsert 적재(S14)와 승인 vs 취소 동시성(C7) 전용 품목.
-insert into raw.item_master ("품목코드", "품목명", "품목구분") values
-  ('ITEMT30', '다품목 입고번호 A', '소모품'),
-  ('ITEMT31', '다품목 입고번호 B', '소모품'),
-  ('ITEMCX01', '승인·취소 동시성', '소모품')
+-- ★ 2026-09-12(Task 17) — 위와 같은 이유로 batch_id를 채운다.
+insert into raw.item_master ("품목코드", "품목명", "품목구분", batch_id) values
+  ('ITEMT30', '다품목 입고번호 A', '소모품', gen_random_uuid()),
+  ('ITEMT31', '다품목 입고번호 B', '소모품', gen_random_uuid()),
+  ('ITEMCX01', '승인·취소 동시성', '소모품', gen_random_uuid())
 on conflict do nothing;
 
 insert into core.stock_balance (item_id, snapshot_qty, normal_qty, snapshot_at) values

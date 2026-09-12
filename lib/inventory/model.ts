@@ -170,3 +170,39 @@ export function stockReferenceStatusBannerMessage(status: StockReferenceSourceSt
   if (inTransitReasonCode !== null) return inTransitMessage(inTransitReasonCode);
   return '';
 }
+
+/**
+ * analytics.v_item_master_source_status 한 행 — core.v_item_master가 출처 없는(batch_id
+ * is null) raw.item_master 행을 걸러낸 지금, 화면에 보이는 품목 수가 실제보다 적을 수 있음을
+ * 안내하기 위한 상태(품목별이 아니라 raw.item_master 전체 기준 한 줄 요약).
+ *
+ * ★ 2026-09-12(Task 17) — v_stock_reference_source_status(참고 열 두 개의 값 상태)와 합치지
+ *   않는다. 이 상태는 "품목 자체가 화면에 보이는가"를 다룬다 — 대상과 사유코드 체계가 달라
+ *   같은 이유로 별도 뷰 + 별도 배너로 둔다(그 뷰에 열을 추가하는 것도 하지 않는다 — 이미 있는
+ *   analytics 뷰를 넓히면 cannot drop columns from view 위험이 생긴다).
+ */
+export type ItemMasterSourceStatus = {
+  itemMasterSourcedRows: number;
+  itemMasterUnsourcedRows: number;
+  itemMasterReasonCode: string | null;
+};
+
+export function normalizeItemMasterSourceStatus(row: Record<string, unknown> | null): ItemMasterSourceStatus | null {
+  if (!row) return null;
+  return {
+    itemMasterSourcedRows: numberValue(row, ['item_master_sourced_rows']) ?? 0,
+    itemMasterUnsourcedRows: numberValue(row, ['item_master_unsourced_rows']) ?? 0,
+    itemMasterReasonCode: text(row, ['item_master_reason_code']),
+  };
+}
+
+export const ITEM_MASTER_STATUS_BANNER_TITLE = '품목 마스터 출처 안내';
+
+export function itemMasterStatusBannerMessage(status: ItemMasterSourceStatus): string {
+  if (status.itemMasterReasonCode === null) return '';
+  return (
+    `출처가 확인되지 않은(정식 업로드 경로를 거치지 않은) 품목 마스터 데이터 ${status.itemMasterUnsourcedRows.toLocaleString('ko-KR')}건은 ` +
+    '이 화면 목록에 표시하지 않습니다 — 지어낸 품목을 실데이터처럼 보여주지 않기 위해서입니다. 정식 업로드나 실습 등록으로 ' +
+    '품목이 들어오면 표시됩니다.'
+  );
+}

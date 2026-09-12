@@ -769,14 +769,18 @@ select order_test.check((select count(*) = 0 from raw.goods_receipt where source
 --       배포 DB는 raw.purchase_order 92행 전부 batch_id가 null이므로, 이 게이트가 없으면
 --       파싱만 고친 결과 더미 20품목이 실제 발주량처럼(합계 28,800) 화면에 보인다 — 이 저장소의
 --       "지어낸 숫자가 실데이터처럼 보이면 안 된다" 원칙 위반이다.
-insert into raw.item_master ("품목코드", "품목명", "품목구분") values
-  ('ITEMT50', 'S15 콤마(출처 있음)', '소모품'),
-  ('ITEMT51', 'S15 공란(출처 있음)', '소모품'),
-  ('ITEMT52', 'S15 정크(출처 있음)', '소모품'),
-  ('ITEMT53', 'S15 정상(출처 있음)', '소모품'),
-  ('ITEMT54', 'S15 정상+정크 혼재(출처 있음)', '소모품'),
-  ('ITEMT55', 'S15 정상(출처 없음)', '소모품'),
-  ('ITEMT56', 'S15 정상+정상 혼재(출처 있음+없음)', '소모품')
+-- ★ 2026-09-12(Task 17) — core.v_item_master 출처 게이트는 raw.purchase_order/goods_receipt의
+--   batch_id(이 절이 검증하는 대상)와 별개다. 이 item_master 행 자체는 "출처 있는" 품목으로
+--   만들어야 analytics.v_available_stock에 나타난다 — 채우지 않으면 core.v_item_master에서
+--   걸러져 아래 (d)의 count=7 단언이 실패한다.
+insert into raw.item_master ("품목코드", "품목명", "품목구분", batch_id) values
+  ('ITEMT50', 'S15 콤마(출처 있음)', '소모품', gen_random_uuid()),
+  ('ITEMT51', 'S15 공란(출처 있음)', '소모품', gen_random_uuid()),
+  ('ITEMT52', 'S15 정크(출처 있음)', '소모품', gen_random_uuid()),
+  ('ITEMT53', 'S15 정상(출처 있음)', '소모품', gen_random_uuid()),
+  ('ITEMT54', 'S15 정상+정크 혼재(출처 있음)', '소모품', gen_random_uuid()),
+  ('ITEMT55', 'S15 정상(출처 없음)', '소모품', gen_random_uuid()),
+  ('ITEMT56', 'S15 정상+정상 혼재(출처 있음+없음)', '소모품', gen_random_uuid())
 on conflict do nothing;
 
 -- ITEMT50~54는 batch_id를 채워 "출처 있는" 행으로 만든다(정식 업로드로 들어온 발주처럼).
@@ -888,9 +892,11 @@ select order_test.check((select count(*) = 0 from raw.goods_receipt where source
 -- (h) 이동 중(참고) 열도 같은 출처 게이트를 받는지 — team-lead 배포 측정(raw.shipment_log
 -- 2,864행 전부 batch_id null, IN_TRANSIT 117행 · 수량 합 12,137)과 같은 결함이 core.v_inbound_qty
 -- 에도 있었다. ITEMT60은 출처 있는 선적, ITEMT61은 출처 없는 선적(배포 더미와 같은 모양)이다.
-insert into raw.item_master ("품목코드", "품목명", "품목구분") values
-  ('ITEMT60', 'S15 이동 중(출처 있음)', '소모품'),
-  ('ITEMT61', 'S15 이동 중(출처 없음)', '소모품')
+-- ★ 2026-09-12(Task 17) — 위와 같은 이유로 batch_id를 채운다(이 두 품목 자체는 item_master
+--   기준으로 "출처 있음" — 선적(raw.shipment_log) 출처 유무는 별개 검증 대상이다).
+insert into raw.item_master ("품목코드", "품목명", "품목구분", batch_id) values
+  ('ITEMT60', 'S15 이동 중(출처 있음)', '소모품', gen_random_uuid()),
+  ('ITEMT61', 'S15 이동 중(출처 없음)', '소모품', gen_random_uuid())
 on conflict do nothing;
 
 insert into raw.shipment_log (shipment_id, item_id, qty, status, batch_id) values
@@ -914,4 +920,74 @@ select order_test.check((select in_transit_has_import_path = false from analytic
   'S15 (h) 리뷰 라운드 3 — 구조 조건(적재 경로 존재)을 데이터와 별개로 보고한다(core.import_target_table이 아직 shipment 종류를 모른다)');
 select order_test.check((select in_transit_reason_code = 'IN_TRANSIT_NO_IMPORT_PATH' from analytics.v_stock_reference_source_status),
   'S15 (h) 상태 뷰가 이동 중(참고) 열의 사유(IN_TRANSIT_NO_IMPORT_PATH — 적재 경로 자체가 없음, Open PO의 "아직 IMPORT 안 됨"과 다르다)를 Open PO와 별개로 보고한다');
+reset role;
+
+\echo '== S16(Task 17) core.v_item_master 출처 게이트 =='
+--
+-- 배포 DB 측정(team-lead): raw.item_master 34행 중 23행이 출처 없는(batch_id null) 5회차
+-- 더미였고, DISTINCT ON 중복 제거 뒤 32품목 중 21품목이 raw.dim_item에도 실습 등록에도 없는
+-- 무표식 더미였다. core.v_item_master는 이제 raw.item_master.batch_id is not null인 행만
+-- 담는다. ITEMG01은 출처 있는(정식 업로드처럼 batch_id를 채운) 품목, ITEMG02는 출처 없는
+-- (5회차 더미와 같은 모양) 품목이다.
+insert into raw.item_master ("품목코드", "품목명", "품목구분", batch_id) values
+  ('ITEMG01', 'T17 출처 있는 품목', '소모품', gen_random_uuid()),
+  ('ITEMG02', 'T17 출처 없는 품목(게이트 대상)', '소모품', null)
+on conflict do nothing;
+
+insert into core.stock_balance (item_id, snapshot_qty, normal_qty, snapshot_at) values
+  ('ITEMG01', 100, 100, now())
+on conflict (item_id) do update
+  set snapshot_qty = excluded.snapshot_qty, normal_qty = excluded.normal_qty, snapshot_at = excluded.snapshot_at;
+
+-- (a) select *(컬럼 프루닝을 이기는 형태, docs/stage1-판정기록.md Task 16 판정과 같은 이유)로
+-- 게이트가 실제로 걸리는지 확인한다 — count(*)만 세는 필터드 쿼리는 옛 정의에서도 플래너가
+-- 서브쿼리 조건 자체를 가지치기해 우연히 통과할 수 있다.
+select order_test.check(
+  (select count(*) from (select * from core.v_item_master) t where item_id = 'ITEMG01') = 1,
+  'S16 (a) 출처 있는 품목(ITEMG01)은 core.v_item_master 전체 열 조회에 나타난다');
+select order_test.check(
+  (select count(*) from (select * from core.v_item_master) t where item_id = 'ITEMG02') = 0,
+  'S16 (a) 출처 없는 품목(ITEMG02)은 core.v_item_master 전체 열 조회에서 걸러진다(출처 게이트)');
+
+-- (b) 출처 없는 품목으로는 새 주문을 만들 수 없다 — 회귀가 아니라 올바른 방향의 강화다
+-- (배포 DB에서 이 21개 더미 품목을 참조하는 업무 행은 0건이었다 — team-lead 전수조사).
+set role authenticated;
+select order_test.as_user(:'sales1') \g /dev/null
+select order_test.expect_error(
+  $s16$select core.create_sales_order(null, 'S16 고객', '[{"item_id":"ITEMG02","qty":5}]'::jsonb, null)$s16$,
+  'ORDER_ITEM_UNKNOWN',
+  'S16 (b) 출처 없는 품목은 품목 마스터에 없는 품목으로 거절된다(ORDER_ITEM_UNKNOWN)');
+
+-- (c) 출처 있는 품목은 그대로 정상 주문할 수 있다(회귀 없음).
+select core.create_sales_order(null, 'S16 고객', '[{"item_id":"ITEMG01","qty":5}]'::jsonb, null) as g16_order \gset
+select order_test.check(:'g16_order' is not null, 'S16 (c) 출처 있는 품목(ITEMG01)은 정상적으로 주문을 만들 수 있다(회귀 없음)');
+reset role;
+
+-- (d) stock_balance로 뒷받침되는 기존 실품목(ITEMT01)은 이 게이트로 사라지지 않는다.
+select order_test.check(
+  (select count(*) from (select * from core.v_item_master) t where item_id = 'ITEMT01') = 1,
+  'S16 (d) stock_balance 배경 재고가 있는 기존 품목(ITEMT01)은 게이트 뒤에도 core.v_item_master에 그대로 남는다');
+
+-- (e) core.v_item_master_source_status(소유자 권한, raw 직접 조회) — ITEMG02가 unsourced에
+-- 반영되는지 확인한다(이 임시 DB에는 이 스위트가 넣은 모든 품목이 batch_id를 채웠으므로
+-- ITEMG02가 유일한 출처 없는 행이어야 정확히 1이다).
+select order_test.check(
+  (select item_master_unsourced_rows = 1 from core.v_item_master_source_status),
+  'S16 (e) core.v_item_master_source_status가 출처 없는 행 수를 정확히 센다(이 스위트에서는 ITEMG02 1건뿐)');
+select order_test.check(
+  (select item_master_sourced_rows > 0 from core.v_item_master_source_status),
+  'S16 (e) 상태 뷰가 출처 있는 행 수도 함께 보고한다');
+select order_test.check(
+  (select item_master_reason_code = 'ITEM_MASTER_SOURCE_UNVERIFIED' from core.v_item_master_source_status),
+  'S16 (e) 상태 뷰가 사유코드 ITEM_MASTER_SOURCE_UNVERIFIED를 보고한다');
+
+-- (f) 화면 배너가 읽는 analytics.v_item_master_source_status — 재고 상세 권한 계정으로 조회.
+set role authenticated;
+select order_test.as_user(:'planner1') \g /dev/null
+select order_test.check(
+  (select item_master_unsourced_rows = 1 from analytics.v_item_master_source_status),
+  'S16 (f) analytics.v_item_master_source_status가 재고 상세 권한 계정에게 같은 카운트를 보여준다');
+select order_test.check(
+  (select item_master_reason_code = 'ITEM_MASTER_SOURCE_UNVERIFIED' from analytics.v_item_master_source_status),
+  'S16 (f) 화면 배너용 뷰도 같은 사유코드를 보고한다');
 reset role;

@@ -122,17 +122,18 @@ on conflict (country_code, calendar_date) do update set is_business_day = false,
 
 -- ══ 품목 → 공급처 매핑 (raw.item_master, core.v_item_master가 그대로 노출한다) ══
 
-insert into raw.item_master ("품목코드", "품목명", "품목구분", "단위", "사용여부", supplier_id) values
-  ('T10BITM1', 'T10b 품목1(정상)', 'A', 'EA', 'Y', 'SUP-T10B-1'),
-  ('T10BITM2', 'T10b 품목2(공급처 매핑 없음)', 'A', 'EA', 'Y', null),
-  ('T10BITM3', 'T10b 품목3(출항일 규칙 없음)', 'A', 'EA', 'Y', 'SUP-T10B-2'),
-  ('T10BITM4', 'T10b 품목4(출항일 규칙 중복)', 'A', 'EA', 'Y', 'SUP-T10B-3'),
-  ('T10BITM5', 'T10b 품목5(공급처 비활성)', 'A', 'EA', 'Y', 'SUP-T10B-4'),
-  ('T10BITM6', 'T10b 품목6(준비기간 미확인 · JP)', 'A', 'EA', 'Y', 'SUP-T10B-JP'),
-  ('T10BITM7', 'T10b 품목7(달력 미준비 · 8월)', 'A', 'EA', 'Y', 'SUP-T10B-1'),
-  ('T10BITM8', 'T10b 품목8(12월 31일 · 연 경계)', 'A', 'EA', 'Y', 'SUP-T10B-7'),
-  ('T10BITM9', 'T10b 품목9(법인2 정상)', 'A', 'EA', 'Y', 'SUP-T10B-6'),
-  ('T10BITM10', 'T10b 품목10(존재하지 않는 공급처 코드)', 'A', 'EA', 'Y', 'SUP-UNKNOWN-CODE');
+-- ★ 2026-09-12(Task 17) — core.v_item_master 출처 게이트. batch_id를 채워 "출처 있는" 행으로 만든다.
+insert into raw.item_master ("품목코드", "품목명", "품목구분", "단위", "사용여부", supplier_id, batch_id) values
+  ('T10BITM1', 'T10b 품목1(정상)', 'A', 'EA', 'Y', 'SUP-T10B-1', gen_random_uuid()),
+  ('T10BITM2', 'T10b 품목2(공급처 매핑 없음)', 'A', 'EA', 'Y', null, gen_random_uuid()),
+  ('T10BITM3', 'T10b 품목3(출항일 규칙 없음)', 'A', 'EA', 'Y', 'SUP-T10B-2', gen_random_uuid()),
+  ('T10BITM4', 'T10b 품목4(출항일 규칙 중복)', 'A', 'EA', 'Y', 'SUP-T10B-3', gen_random_uuid()),
+  ('T10BITM5', 'T10b 품목5(공급처 비활성)', 'A', 'EA', 'Y', 'SUP-T10B-4', gen_random_uuid()),
+  ('T10BITM6', 'T10b 품목6(준비기간 미확인 · JP)', 'A', 'EA', 'Y', 'SUP-T10B-JP', gen_random_uuid()),
+  ('T10BITM7', 'T10b 품목7(달력 미준비 · 8월)', 'A', 'EA', 'Y', 'SUP-T10B-1', gen_random_uuid()),
+  ('T10BITM8', 'T10b 품목8(12월 31일 · 연 경계)', 'A', 'EA', 'Y', 'SUP-T10B-7', gen_random_uuid()),
+  ('T10BITM9', 'T10b 품목9(법인2 정상)', 'A', 'EA', 'Y', 'SUP-T10B-6', gen_random_uuid()),
+  ('T10BITM10', 'T10b 품목10(존재하지 않는 공급처 코드)', 'A', 'EA', 'Y', 'SUP-UNKNOWN-CODE', gen_random_uuid());
 
 -- ══ 승인된 발주계획 — Task 9b 확정 · 승인 함수와 같은 최종 상태를 직접 만든다 ══
 --

@@ -45,6 +45,11 @@
 --   문제가 없지만(위 세 뷰 실측: 오류 없이 재적용됨), **앞으로 세 뷰 중 하나라도 한
 --   파일에서만 열을 넓히면 이 오류가 재발한다** — 그래서 "고칠 때 두 파일을 함께
 --   고친다"는 각 뷰 머리 주석의 지시가 필수적이다.
+-- ★★★★ 2026-09-12 — core.v_item_master도 이 목록에 더한다(supabase/migrations/
+--   20260912000900_gate_item_master_dummy_rows.sql이 출처 게이트로 다시 정의한다). 위 세
+--   뷰보다 얹혀 있는 소비자가 훨씬 많다(뷰 13개 + 함수 14개, 그 마이그레이션 머리 주석 참고) —
+--   DROP ... CASCADE를 이 뷰에 걸면 피해 범위가 세 뷰보다 크다. 같은 원칙: CASCADE 없이 다루고,
+--   이 파일과 그 마이그레이션의 열 구성을 항상 맞춘다.
 
 -- ── raw.usage_history ─────────────────────────
 CREATE TABLE raw.usage_history (
@@ -76,7 +81,18 @@ CREATE TABLE raw.item_master (
 );
 
 -- ── core.v_item_master ─────────────────────────
-CREATE VIEW core.v_item_master AS
+-- ★ 2026-09-12 보정(supabase/migrations/20260912000900_gate_item_master_dummy_rows.sql) —
+--   이 뷰는 이 파일이 정본이다. 적용 순서(realdata → migrations)상 그 마이그레이션의
+--   create or replace가 나중에 이겨 배포 DB는 항상 게이트가 걸린 최종 정의를 쓴다. **이 파일
+--   자체의 정의도 같은 게이트를 가져야 한다** — core.v_fact_shipment·core.v_inbound_qty·
+--   core.v_stock_on_hand와 같은 이유(20260912000800 §4-1·§4-3 머리 주석 참고, "단독 재실행이
+--   문서화된 복구 절차"가 아니라 "realdata 계층이 적용되는 동안 정본이 게이트 없이 유효한 창이
+--   생긴다"는 정정된 근거도 동일하다). raw.item_master 34행 중 23행이 출처 없는(batch_id null)
+--   4~5회차 더미이고, 그중 21개 품목은 raw.dim_item에도 analytics.v_practice_item에도 없는
+--   무표식 더미다 — 게이트 없이 이 정의가 유효한 창에서는 그 21개 품목이 실품목과 섞여
+--   보인다. **이 뷰를 고칠 때는 반드시 그 마이그레이션의 같은 정의도 함께 고친다.** 열 이름 ·
+--   순서 · DISTINCT ON(item_id) · pref 정렬은 원래 정의와 동일 — 열을 더하지 않는다.
+CREATE OR REPLACE VIEW core.v_item_master AS
  SELECT DISTINCT ON (item_id) item_id,
     item_name,
     item_type,
@@ -93,7 +109,8 @@ CREATE VIEW core.v_item_master AS
                     WHEN (item_master."품목코드" = upper(regexp_replace(item_master."품목코드", '[\s\-_]'::text, ''::text, 'g'::text))) THEN 0
                     ELSE 1
                 END AS pref
-           FROM raw.item_master) t
+           FROM raw.item_master
+          WHERE item_master.batch_id IS NOT NULL) t
   ORDER BY item_id, pref;
 
 -- ── raw.shipment_log ─────────────────────────

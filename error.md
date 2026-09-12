@@ -1081,3 +1081,54 @@ plpgsql `for r in select * from 뷰 loop`)만 실제로 22P02를 재현합니다
 디스크 기준으로 통과했지만, 그 통과가 "커밋된 내용도 정상"이라는 뜻은 아니었습니다.
 커밋 직후에는 `git stash` 또는 클린 워크트리에서 `npm run build`를 다시 돌려 **커밋된
 내용 자체**를 검증합니다.
+
+## #34 재고 화면에 출처 없는 5회차 더미 품목 21개가 표식 없이 실품목과 섞여 있었다
+
+**증상.** 재고 화면 기준 뷰 `core.v_item_master`(`raw.item_master` 34행을 DISTINCT ON으로
+추린 것)가 32품목을 보여줬는데, 그중 21품목은 진짜 품목마스터(`raw.dim_item`, 93,868행)에도
+실습 등록(`analytics.v_practice_item`)에도 없는 4~5회차 더미였습니다. 아무 표식도 없어
+`core.stock_balance`에 없는 "미분류(INVENTORY_SCOPE_UNCLASSIFIED)" 품목으로만 보였을 뿐,
+진짜 품목이 아니라는 사실 자체가 화면 어디에도 드러나지 않았습니다.
+
+**원인.** `raw.item_master`는 `core.commit_import_batch`를 거치는 정식 업로드 경로가 있는
+표라 정상적으로 들어온 행은 `batch_id`가 채워지지만, 4~5회차 수업에서 SQL Editor로 직접
+넣은 더미 행은 `batch_id`가 없습니다(34행 중 23행). `core.v_item_master`는 이 구분을 전혀
+쓰지 않고 `raw.item_master` 전체를 그대로 보여줬습니다 — `core.v_open_po_qty` ·
+`core.v_inbound_qty` · `core.v_stock_on_hand`(#33)가 이미 같은 종류의 결함을 출처 게이트로
+고쳤는데, 품목 마스터 자체에는 그 게이트가 없었습니다. 21개 더미 품목을 참조하는 업무 행은
+core의 item_id 열을 가진 19개 표 전수조사 결과 0건이라(팀장 배포 DB 측정), 게이트를 걸어도
+고아 행이 생기지 않는다는 것도 함께 확인했습니다.
+
+**해결.** `supabase/migrations/20260912000900_gate_item_master_dummy_rows.sql`이
+`core.v_item_master`를 `raw.item_master.batch_id is not null`인 행만으로 다시
+정의합니다(DISTINCT ON·pref 정렬·열 이름/순서는 완전히 동일 — 열을 더하지 않습니다).
+`raw.item_master` 행 자체는 지우지 않습니다 — 정식 재적재나 실습 등록으로 언제든 다시 보일
+수 있습니다. 사유는 `#33`과 같은 패턴으로 새 객체(`core.v_item_master_source_status` +
+`analytics.v_item_master_source_status`, 화면 배너 전용 요약)로 안내합니다 — **기존
+`analytics.v_stock_reference_source_status`에 합치지 않았습니다**: 그 뷰는 "참고 열 값"의
+출처 상태이고 이 뷰는 "품목이 화면에 보이는가" 자체의 출처 상태라 대상과 사유코드 체계가
+다르고, 같은 이유로 이미 있는 analytics 뷰에 열을 추가하는 것도 하지 않았습니다(넓히면
+`cannot drop columns from view`로 재실행이 멈춥니다, #16·#24와 같은 위험). 두 계층
+정본(`supabase/realdata/03b-missing-objects.sql`과 이 마이그레이션)을 `#33`이 세 뷰에
+남긴 것과 같은 교차 참조 주석으로 맞췄습니다.
+
+**테스트 fixture 자체가 이 게이트에 걸렸습니다.** 저장소 전체 테스트 스위트 9개
+(`sales_order_allocation`·`demand_submission`·`inventory_kpi`·`approved_demand`·
+`procurement_plan`·`urgent_order`·`item_policy`·`procurement_schedule` 및
+`sales_order_allocation/scenarios.psql`의 S15)가 `raw.item_master`에 검증용 품목을 넣을 때
+`batch_id`를 채우지 않았습니다 — 게이트를 걸자마자 그 품목들이 전부 `core.v_item_master`에서
+사라져 `core.insert_sales_order` 등의 존재 검증이 `ORDER_ITEM_UNKNOWN`으로 실패했을
+것입니다. 이 fixture들의 목적은 "정상 품목"을 흉내 내는 것이므로 전부 `batch_id`를
+채워 고쳤습니다. 예외는 `supabase/tests/practice_data`의 `REALT001`·`RET001`·`RET002` —
+이 스위트는 "출처 없는 실데이터 대역"을 **의도적으로** 재현하는 것이 목적이고, 그 품목들의
+어떤 검증도 `core.v_item_master`를 거치지 않아 손대지 않았습니다. **fixture를 새로 만들
+때는 그 테스트가 실제로 검증하려는 게 무엇인지 먼저 확인합니다** — 같은 "출처 없음" 모양이라도
+스위트마다 의미(정상 품목 대역 vs 의도적 더미 대역)가 다를 수 있습니다.
+
+**예방.** `core`/`analytics` 뷰가 "출처(batch_id)가 있어야 보인다"는 게이트를 얻을 때마다,
+그 표에 직접 INSERT하는 모든 테스트 fixture를 함께 점검합니다 — `grep -rn "insert into
+raw.<표>" supabase/tests`로 전수 확인하고, 그 fixture의 의도가 "정상 데이터를 흉내 낸다"면
+게이트가 요구하는 열을 채웁니다. `migration_rerun` 스위트에는 열 수 사후조건뿐 아니라
+`pg_get_viewdef`로 게이트 조건(WHERE 절) 자체가 두 번째 적용 뒤에도 남아 있는지 확인하는
+사후조건을 추가했습니다 — 열 수만 보면 "조용히 게이트 없는 옛 정의로 되돌아갔는지"를 알 수
+없습니다.

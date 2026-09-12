@@ -60,9 +60,10 @@ insert into core.role_permission (job_role, permission_code) values
   ('T8_DUAL_ROLE', 'EVENT_ORDER_APPROVE')
 on conflict (job_role, permission_code) do nothing;
 
-insert into raw.item_master ("품목코드", "품목명", "품목구분") values
-  ('ITEMT801', 'T8 정상 품목', '소모품'),
-  ('ITEMT802', 'T8 정상 품목 2', '소모품')
+-- ★ 2026-09-12(Task 17) — core.v_item_master 출처 게이트. batch_id를 채워 "출처 있는" 행으로 만든다.
+insert into raw.item_master ("품목코드", "품목명", "품목구분", batch_id) values
+  ('ITEMT801', 'T8 정상 품목', '소모품', gen_random_uuid()),
+  ('ITEMT802', 'T8 정상 품목 2', '소모품', gen_random_uuid())
 on conflict do nothing;
 
 -- 근거로 쓸 AGREED 부서 제출 줄 — 정상 흐름(제출 → 합의)을 다시 돌리지 않고 fixture로 직접 만든다

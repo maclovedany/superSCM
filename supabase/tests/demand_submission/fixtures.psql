@@ -58,8 +58,12 @@ insert into core.app_user (user_id, email, name, department, role, active, job_r
 on conflict (user_id) do update
   set job_role = excluded.job_role, department = excluded.department, role = excluded.role, name = excluded.name, active = true;
 
-insert into raw.item_master ("품목코드", "품목명", "품목구분") values
-  ('ITEMD01', 'T7 정상 품목', '소모품'),
-  ('ITEMD02', 'T7 정상 품목 2', '소모품');
+-- ★ 2026-09-12(Task 17) — core.v_item_master가 출처 게이트(batch_id is not null)를 받았다.
+--   이 fixture의 품목은 정상 품목을 흉내 내는 것이 목적이므로 batch_id를 채워 "출처 있는" 행으로
+--   만든다(정식 업로드로 들어온 것처럼) — 채우지 않으면 core.v_item_master에서 걸러져 이 스위트의
+--   모든 검증이 ORDER_ITEM_UNKNOWN류 오류로 실패한다.
+insert into raw.item_master ("품목코드", "품목명", "품목구분", batch_id) values
+  ('ITEMD01', 'T7 정상 품목', '소모품', gen_random_uuid()),
+  ('ITEMD02', 'T7 정상 품목 2', '소모품', gen_random_uuid());
 
 select 'fixtures ok';

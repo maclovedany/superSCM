@@ -6,9 +6,11 @@
 import { createSupabaseServerClient } from '../supabase/server';
 import {
   normalizeAvailableStockRow,
+  normalizeItemMasterSourceStatus,
   normalizeOrderAvailableStockRow,
   normalizeStockReferenceSourceStatus,
   type AvailableStockRow,
+  type ItemMasterSourceStatus,
   type OrderAvailableStockRow,
   type StockReferenceSourceStatus,
 } from './model';
@@ -55,6 +57,22 @@ export async function getStockReferenceSourceStatus(): Promise<StockReferenceSou
     const { data, error } = await supabase.schema('analytics').from('v_stock_reference_source_status').select('*').maybeSingle();
     if (error || !data) return null;
     return normalizeStockReferenceSourceStatus(data as Record<string, unknown>);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * core.v_item_master가 출처 없는 품목을 걸러낸 지금, 화면 품목 목록이 실제보다 적을 수 있음을
+ * 안내하기 위한 상태(2026-09-12, Task 17). 조회 권한이 없거나 걸러진 행이 없으면 행이 0개다 —
+ * 그때는 null을 돌려주고 배너를 띄우지 않는다.
+ */
+export async function getItemMasterSourceStatus(): Promise<ItemMasterSourceStatus | null> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase.schema('analytics').from('v_item_master_source_status').select('*').maybeSingle();
+    if (error || !data) return null;
+    return normalizeItemMasterSourceStatus(data as Record<string, unknown>);
   } catch {
     return null;
   }

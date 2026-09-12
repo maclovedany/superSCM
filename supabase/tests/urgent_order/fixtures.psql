@@ -59,9 +59,10 @@ insert into core.app_user (user_id, email, name, department, role, active, job_r
 on conflict (user_id) do update
   set job_role = excluded.job_role, department = excluded.department, role = excluded.role, name = excluded.name, active = true;
 
-insert into raw.item_master ("품목코드", "품목명", "품목구분") values
-  ('URGT001', 'T11 소모품', '소모품'),
-  ('URGT002', 'T11 용지', '용지')
+-- ★ 2026-09-12(Task 17) — core.v_item_master 출처 게이트. batch_id를 채워 "출처 있는" 행으로 만든다.
+insert into raw.item_master ("품목코드", "품목명", "품목구분", batch_id) values
+  ('URGT001', 'T11 소모품', '소모품', gen_random_uuid()),
+  ('URGT002', 'T11 용지', '용지', gen_random_uuid())
 on conflict do nothing;
 
 select 'fixtures ok';

@@ -4,7 +4,9 @@ import test from 'node:test';
 import {
   INVENTORY_VISIBILITY_SCOPES,
   isInventoryVisibilityScope,
+  itemMasterStatusBannerMessage,
   normalizeAvailableStockRow,
+  normalizeItemMasterSourceStatus,
   normalizeOrderAvailableStockRow,
   normalizeStockReferenceSourceStatus,
   stockReferenceStatusBannerMessage,
@@ -149,6 +151,39 @@ test('참고 열 배너 문구는 Open PO 출처 미확인·파싱 불가·이�
   const bothMessage = stockReferenceStatusBannerMessage(both);
   assert.match(bothMessage, /출처가 확인되지 않은/);
   assert.match(bothMessage, /IMPORT하는 방법이 없어/);
+});
+
+test('analytics.v_item_master_source_status 행을 배너 상태로 옮긴다(Task 17)', () => {
+  assert.deepEqual(
+    normalizeItemMasterSourceStatus({
+      item_master_sourced_rows: 11,
+      item_master_unsourced_rows: 23,
+      item_master_reason_code: 'ITEM_MASTER_SOURCE_UNVERIFIED',
+    }),
+    {
+      itemMasterSourcedRows: 11,
+      itemMasterUnsourcedRows: 23,
+      itemMasterReasonCode: 'ITEM_MASTER_SOURCE_UNVERIFIED',
+    },
+  );
+  assert.equal(normalizeItemMasterSourceStatus(null), null);
+
+  const clean = normalizeItemMasterSourceStatus({
+    item_master_sourced_rows: 11,
+    item_master_unsourced_rows: 0,
+    item_master_reason_code: null,
+  })!;
+  assert.equal(clean.itemMasterReasonCode, null);
+});
+
+test('품목 마스터 출처 배너 문구는 걸러진 행 수를 포함하고, 사유가 없으면 빈 문자열이다(Task 17)', () => {
+  const unverified = { itemMasterSourcedRows: 11, itemMasterUnsourcedRows: 23, itemMasterReasonCode: 'ITEM_MASTER_SOURCE_UNVERIFIED' };
+  const message = itemMasterStatusBannerMessage(unverified);
+  assert.match(message, /출처가 확인되지 않은/);
+  assert.match(message, /23건/);
+
+  const clean = { itemMasterSourcedRows: 11, itemMasterUnsourcedRows: 0, itemMasterReasonCode: null };
+  assert.equal(itemMasterStatusBannerMessage(clean), '');
 });
 
 test('분류할 수 없는 행은 0이 아니라 null과 사유 코드를 유지한다', () => {
