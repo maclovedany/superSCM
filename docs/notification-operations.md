@@ -44,10 +44,11 @@ Vercel 서버리스 함수에서 Supabase Edge Function으로 옮긴 것입니�
 적용·시크릿 설정 순서와 배포 직후 스모크 테스트(curl로 200/401 확인)는
 `docs/stage1-supabase-수동적용.md` §7에 있습니다.
 
-**Vercel Cron과 동시에 켜 두지 마세요.** `vercel.json`에는 여전히 세 라우트의 10분 Cron
-설정이 남아 있습니다. Supabase pg_cron 경로를 쓰기로 했다면 Vercel 프로젝트의 Cron을
-끄거나(Vercel 대시보드에서 비활성화, 또는 `vercel.json`에서 해당 항목 제거) 애초에 Cron이
-붙지 않는 배포(Hobby)로 두세요. 두 경로가 동시에 살아 있으면 처리 자체는
+**Vercel Cron과 동시에 켜 두지 마세요.** `vercel.json`에는 더 이상 세 라우트의 Cron 설정이
+없습니다(관리자 계정 관리 작업에서 제거 — Supabase pg_cron이 기본 경로가 된 뒤로 둘 다
+남겨 두면 Vercel 프로젝트가 Pro 이상으로 올라갈 때 두 경로가 동시에 켜져 버리기 때문입니다).
+API 라우트 자체(`app/api/cron/*`)는 그대로 남아 있으므로 필요하면 아래 "대안 경로"의 설정을
+`vercel.json`에 다시 추가할 수 있습니다. 두 경로가 동시에 살아 있으면 처리 자체는
 `for update skip locked`로 안전하지만, 같은 알림 건이 한쪽에서는 영구 실패로, 다른 쪽에서는
 재시도 중으로 기록되는 등 발송 이력이 서로 모순되게 남아 헷갈립니다(예: Vercel 라우트는
 Resend 설정 누락을 영구 실패로 보고, Edge Function은 재시도 대상으로 봅니다 — 아래
@@ -57,11 +58,25 @@ Resend 설정 누락을 영구 실패로 보고, Edge Function은 재시도 대�
 
 `app/api/cron/notifications`(그리고 `/api/cron/allocations`, `/api/cron/demand-submissions`)
 라우트는 그대로 저장소에 남아 있으며, Vercel Pro 이상이거나 같은 주기를 보장하는 외부
-스케줄러가 있는 배포는 이 경로를 대신 쓸 수 있습니다. `vercel.json`의 10분 Cron은
-**Vercel Hobby에서는 지원되지 않습니다.** 둘 중 하나만 켜세요 — 위 "Vercel Cron과 동시에
-켜 두지 마세요"를 참고하세요. `for update skip locked`가 같은 알림을 중복 처리하는 것은
-막아 주지만, 처리 자체가 겹치지 않는다고 해서 두 경로를 함께 운영해도 괜찮다는 뜻은
-아닙니다 — 발송 이력이 경로마다 다르게 남아 운영 판단을 헷갈리게 합니다.
+스케줄러가 있는 배포는 이 경로를 대신 쓸 수 있습니다. 이 경로로 되돌리려면 `vercel.json`에
+아래 `crons` 배열을 다시 추가하세요(**Vercel Hobby에서는 지원되지 않습니다**):
+
+```json
+{
+  "crons": [
+    { "path": "/api/cron/notifications", "schedule": "*/10 * * * *" },
+    { "path": "/api/cron/allocations", "schedule": "*/10 * * * *" },
+    { "path": "/api/cron/demand-submissions", "schedule": "*/10 * * * *" }
+  ]
+}
+```
+
+추가했다면 Supabase pg_cron 쪽 세 작업(`stage1-notify` · `stage1-expire-allocations` ·
+`stage1-demand-reminders`)은 반드시 끄세요(`select cron.unschedule('stage1-notify');` 등) —
+둘 중 하나만 켜세요, 위 "Vercel Cron과 동시에 켜 두지 마세요"를 참고하세요. `for update skip
+locked`가 같은 알림을 중복 처리하는 것은 막아 주지만, 처리 자체가 겹치지 않는다고 해서 두
+경로를 함께 운영해도 괜찮다는 뜻은 아닙니다 — 발송 이력이 경로마다 다르게 남아 운영 판단을
+헷갈리게 합니다.
 
 외부 스케줄러(Vercel Cron 포함)를 사용할 때도 `Authorization: Bearer <CRON_SECRET>` 또는
 `x-cron-secret: <CRON_SECRET>` 헤더를 반드시 전달합니다. Edge Function도 같은 방식(둘 중

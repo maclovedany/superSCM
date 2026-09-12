@@ -1,18 +1,4 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "nextjs",
-  "crons": [
-    {
-      "path": "/api/cron/notifications",
-      "schedule": "*/10 * * * *"
-    },
-    {
-      "path": "/api/cron/allocations",
-      "schedule": "*/10 * * * *"
-    },
-    {
-      "path": "/api/cron/demand-submissions",
-      "schedule": "*/10 * * * *"
-    }
-  ]
+  "framework": "nextjs"
 }
