@@ -153,19 +153,17 @@ union all
 -- 20260912000600(회수 로직판, 최종 정의) 두 곳에 정의가 있다. 0600의 ITEM 존재 검사를
 -- core.v_item_master(출처 게이트 걸린 화면 가시성 뷰)에서 raw.item_master(원본 행) 기준으로
 -- 고쳤다(리뷰 fix round 1 — 안 고치면 게이트된 품목의 실습 표식이 조용히 삭제된다).
--- ★★ 정정(리뷰 fix round 3, team-lead 실측) — 이 자리의 1차 서술은 "0400에도 옛(게이트된
--- 뷰 기준) 정의가 남아 있어 0400을 단독 재적용하면 결함이 되살아난다"고 적었는데, **거짓
--- 이었다.** 0400을 직접 확인하면 object_kind별 존재 검사(`case o.object_kind when 'ITEM'
--- then exists(...)`) 자체가 없다 — 그 설계는 0600에서 처음 도입됐다("fix round 2 (N1)").
--- 0400의 유일한 core.v_item_master 언급은 ITEM 등기 키의 정규화 규칙을 설명하는 **주석**
--- 한 줄(`-- ITEM은 항상 정규화된 품목코드로 저장한다(core.v_item_master.item_id와 같은
--- 규칙)`)이고, 실행되는 코드가 아니다. 즉 0400 단독 재적용은 이 결함을 되살리지 않는다
--- (0400은 이 버그 패턴을 가진 적이 없다). 이 사후조건의 실제 목적은 "0400 재적용 위험
--- 차단"이 아니라, **전체 순서로 다시 적용한 최종 정의가 항상 고쳐진 쪽(raw.item_master
--- 기준)인지 고정하는 것**이다 — 이후 누군가 0600(또는 0600을 대체하는 더 뒷번호 파일)의
--- 이 절을 실수로 되돌리는 회귀를 잡는다. pg_get_functiondef는 plpgsql 함수 본문을 저장된
--- 텍스트 그대로 재구성하므로(뷰처럼 재정규화하지 않는다), 고친 줄의 정확한 문구가 남아
--- 있는지로 확인한다 — 주석이 아니라 실제 실행되는 WHEN 절 텍스트를 짚는다.
+-- ★★ 정정(리뷰 fix round 3, team-lead 실측 확정) — 0400에는 object_kind별 존재 검사
+-- (`case o.object_kind when 'ITEM' then exists(...)`) 형태 자체가 없다 — 그 설계는 0600이
+-- "fix round 2 (N1)"으로 처음 도입했다. 0400에 나오는 유일한 core.v_item_master 문구는
+-- ITEM 등기 키의 정규화 규칙을 설명하는 **주석** 한 줄(실행 코드 아님)이고, 0400의 실제
+-- 정리 로직은 차단 목록(v_blocked) 기반의 더 앞선 설계라 이 게이트 의존 패턴을 애초에
+-- 가진 적이 없다. 그러므로 이 사후조건의 목적은 "0400을 단독으로 다시 적용했을 때의
+-- 위험을 막는 것"이 아니라, **전체 순서로 다시 적용한 최종 정의가 항상 고쳐진 쪽
+-- (raw.item_master 기준)인지 고정하는 것**이다 — 이후 누군가 0600(또는 0600을 대체하는
+-- 더 뒷번호 파일)의 이 절을 실수로 되돌리는 회귀를 잡는다. pg_get_functiondef는 plpgsql
+-- 함수 본문을 저장된 텍스트 그대로 재구성하므로(뷰처럼 재정규화하지 않는다), 고친 줄의
+-- 정확한 문구가 남아 있는지로 확인한다 — 주석이 아니라 실제 실행되는 WHEN 절 텍스트를 짚는다.
 select case when body like '%from raw.item_master m where core.normalize_item_id(m."품목코드") = o.object_key%'
             then 'PASS: ' else 'FAIL: ' end
        || 'core.remove_practice_dataset의 ITEM 존재 검사가 두 번째 적용 뒤에도 raw.item_master 원본 기준(출처 게이트 우회)을 유지한다(core.normalize_item_id 사용 포함)'
