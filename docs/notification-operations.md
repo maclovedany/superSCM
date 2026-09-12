@@ -29,11 +29,29 @@ Vercel 서버리스 함수에서 Supabase Edge Function으로 옮긴 것입니�
    pg_cron이 그 회차에 SQL(= `net.http_post` 제출)을 실행했는지. 여기 `status = 'succeeded'`는
    "HTTP 요청을 큐에 넣는 데 성공했다"는 뜻이지 "Edge Function이 200을 반환했다"는 뜻이 아닙니다.
 3. `select id, status_code, content::text, error_msg, created from net._http_response order by created desc limit 20;` —
-   실제 HTTP 응답. `status_code`가 비어 있고 `error_msg`만 있으면 요청 자체가 실패한 것(URL이
-   null이거나 Edge Function이 죽어 있음)이고, `status_code = 401`이면 Vault의
-   `stage1_notify_secret`과 Edge Function의 `CRON_SECRET`이 다른 것입니다.
+   실제 HTTP 응답. `status_code`가 비어 있고 `error_msg`만 있으면 요청 자체가 실패한 것(예:
+   Vault 시크릿 미설정으로 url이 null이 되어 `net.http_post`가 not-null 제약 위반으로
+   실패 — 이 경우 이 표가 아니라 2번 `cron.job_run_details.return_message`에 원인이 남습니다).
 
-적용·시크릿 설정 순서는 `docs/stage1-supabase-수동적용.md`에 있습니다.
+`status_code = 401`을 보면 **먼저 `supabase/config.toml`의 `[functions.notify]`가
+`verify_jwt = false`로 배포됐는지부터 의심하세요.** 기본값(`true`)으로 배포되면 Supabase
+게이트웨이가 `CRON_SECRET`을 보기도 전에 "JWT가 아니다"라는 이유로 401을 돌려주고, 함수
+코드(`isAuthorizedRequest`)는 실행조차 되지 않습니다 — 이때 Vault의 `stage1_notify_secret`을
+아무리 맞게 고쳐도 401이 그대로입니다(fix round 1 · C1). `verify_jwt`가 확실히 `false`인데도
+401이면 그 다음으로 Vault의 `stage1_notify_secret`과 Edge Function의 `CRON_SECRET`이 같은
+값인지 확인합니다.
+
+적용·시크릿 설정 순서와 배포 직후 스모크 테스트(curl로 200/401 확인)는
+`docs/stage1-supabase-수동적용.md` §7에 있습니다.
+
+**Vercel Cron과 동시에 켜 두지 마세요.** `vercel.json`에는 여전히 세 라우트의 10분 Cron
+설정이 남아 있습니다. Supabase pg_cron 경로를 쓰기로 했다면 Vercel 프로젝트의 Cron을
+끄거나(Vercel 대시보드에서 비활성화, 또는 `vercel.json`에서 해당 항목 제거) 애초에 Cron이
+붙지 않는 배포(Hobby)로 두세요. 두 경로가 동시에 살아 있으면 처리 자체는
+`for update skip locked`로 안전하지만, 같은 알림 건이 한쪽에서는 영구 실패로, 다른 쪽에서는
+재시도 중으로 기록되는 등 발송 이력이 서로 모순되게 남아 헷갈립니다(예: Vercel 라우트는
+Resend 설정 누락을 영구 실패로 보고, Edge Function은 재시도 대상으로 봅니다 — 아래
+"Resend 키를 아직 설정하지 않았을 때" 참고).
 
 ## 대안 경로 — Vercel Cron(유료 플랜)
 
@@ -75,11 +93,15 @@ Edge Function은 Resend 없이도 배포할 수 있습니다. `RESEND_API_KEY`·
 
 주의(시도 횟수 소진) — `APPROVAL_PENDING`·`DEMAND_SUBMISSION_OVERDUE`(반복 템플릿)는 매 10분
 새 알림 행으로 이어지므로 이 실패는 매번 "1회 시도 후 그 회차만 실패"로 끝나고 다음 회차가
-다시 시도합니다. 그 외 단발 템플릿(`APPROVAL_DECIDED`·`TEMP_ALLOCATION_EXPIRY_WARNING` 등)은
-같은 알림 ID로 10분→20분→40분→80분 간격 재시도하며, `max_attempts`(기본 5회)를 다 쓰면
-Resend 키를 그 뒤에 설정해도 그 알림 자체는 재발송되지 않고 `FAILED`로 남습니다(다음에 같은
-이벤트가 다시 발생해야 새 알림이 예약됩니다). 학생 실습처럼 Resend를 아예 쓰지 않는 배포에서는
-이 값을 정상적인 소음으로 보고 넘어가면 됩니다 — IN_APP 알림함은 영향받지 않습니다.
+다시 시도합니다. 그 외 **단발 템플릿**(`APPROVAL_DECIDED`·`TEMP_ALLOCATION_EXPIRY_WARNING` 등)은
+같은 알림 ID로 재시도하는데, **키 없이 운영하면 그 일회성 이메일 알림은 약 2시간 30분
+(1차 시도 직후 10분·30분·70분·150분 누적 시점에 재시도, `max_attempts` 기본 5회를 다 씀)
+후 `FAILED`로 확정되며, 이후 Resend 키를 넣어도 그 알림 자체는 되살아나지 않습니다**(다음에
+같은 업무 이벤트가 다시 발생해야 새 알림이 예약됩니다). 사용자 환경(발신
+`alert@send.upflash.co.kr`, 답장 `contact@upflash.co.kr`, Resend 키 보유)처럼 배포와 같은
+세션에 키를 설정할 계획이면 이 2시간 30분 창은 실제로 생기지 않습니다 — 이 절은 "키를 아예
+설정하지 않고 운영하기로 한" 배포(예: 학생 실습)를 위한 안내입니다. 그런 배포에서는 이 값을
+정상적인 소음으로 보고 넘어가면 됩니다 — IN_APP 알림함은 영향받지 않습니다.
 
 ## 처리 안전장치
 

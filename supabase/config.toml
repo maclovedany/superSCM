@@ -9,3 +9,11 @@ major_version = 17
 
 [studio]
 enabled = true
+
+[functions.notify]
+# 이 함수는 Supabase Auth JWT가 아니라 자체 CRON_SECRET 비교(isAuthorizedRequest)로
+# 인증합니다. verify_jwt 기본값(true)으로 배포하면 게이트웨이가 먼저 JWT를 요구해
+# pg_net이 보내는 `Authorization: Bearer <stage1_notify_secret>`를 401로 거부하고,
+# 함수 코드는 아예 실행되지 않습니다(fix round 1, C1). pg_net은 비동기라 이 401이
+# 화면 어디에도 뜨지 않으므로 반드시 false로 배포해야 합니다.
+verify_jwt = false

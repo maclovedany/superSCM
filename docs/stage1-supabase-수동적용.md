@@ -217,10 +217,24 @@ Claude 가 세션 풀러(5432)로 직접 적용했습니다. 적용 전후 정�
 supabase functions deploy notify --project-ref <project-ref>
 ```
 
-`supabase/functions/notify/index.ts` 하나만 있으면 됩니다(npm 의존성 없음, `jsr:@supabase/supabase-js@2`만
-사용). `--no-verify-jwt`를 붙이지 않습니다 — 이 함수는 Supabase Auth JWT 검증이 아니라 자체
-`CRON_SECRET` 비교로 인증합니다(둘은 별개의 문 — pg_net이 호출할 때 Authorization 헤더를
-Supabase Auth JWT가 아니라 이 CRON_SECRET로 채웁니다).
+`supabase/functions/notify/index.ts`·`core.ts` 두 파일만 있으면 됩니다(npm 의존성 없음,
+`jsr:@supabase/supabase-js`를 정확한 버전으로 고정해 사용). 이 함수는 Supabase Auth JWT 검증이
+아니라 자체 `CRON_SECRET` 비교로 인증합니다 — pg_net이 호출할 때 Authorization 헤더를
+Supabase Auth JWT가 아니라 이 CRON_SECRET로 채우기 때문입니다.
+
+**필수 — `supabase/config.toml`에 다음이 있어야 합니다(이미 저장소에 반영되어 있음, 확인만
+하세요):**
+
+```toml
+[functions.notify]
+verify_jwt = false
+```
+
+이게 없거나 `true`면 배포 즉시 Supabase 게이트웨이가 JWT부터 요구합니다. pg_net이 보내는
+`Authorization: Bearer <stage1_notify_secret>`는 JWT가 아니므로 함수 코드가 실행되기도 전에
+게이트웨이 단계에서 401로 막히고, `isAuthorizedRequest`의 `CRON_SECRET` 비교는 아예 호출되지
+않습니다(fix round 1 · C1). `--no-verify-jwt` CLI 플래그로 매번 넘기는 대신 `config.toml`에
+고정해 두어, 배포 명령을 누가 어떻게 실행해도 같은 설정이 적용되게 했습니다.
 
 ### 7-2. Edge Function 시크릿 설정
 
@@ -236,6 +250,32 @@ supabase secrets set RESEND_REPLY_TO='<실제 수신 가능한 주소, 예: cont
 
 `SUPABASE_URL`·`SUPABASE_SERVICE_ROLE_KEY`는 플랫폼이 자동으로 주입하므로 직접 설정하지
 않습니다.
+
+### 7-2.5. 배포 직후 스모크 테스트 (Vault 시크릿·스케줄을 걸기 전에)
+
+`supabase/migrations/20260912000100_stage1_pg_cron_jobs.sql`을 적용해 10분마다 자동으로
+돌게 하기 **전에**, 지금까지 설정한 `CRON_SECRET`으로 먼저 수동 호출해 봅니다. pg_net은
+비동기라 스케줄을 걸어 두면 실패해도 화면에 아무 것도 뜨지 않으므로, 이 단계를 건너뛰지
+마세요.
+
+```bash
+# 1) 정상 CRON_SECRET(7-2에서 설정한 값)으로 200을 확인합니다(claimed 0건이어도 200이 정상).
+curl -i -X POST \
+  -H "Authorization: Bearer $CRON_SECRET" \
+  "https://<project-ref>.supabase.co/functions/v1/notify"
+
+# 2) 일부러 틀린 값으로 401을 확인합니다(인증이 실제로 걸려 있는지 확인).
+curl -i -X POST \
+  -H "Authorization: Bearer wrong-value" \
+  "https://<project-ref>.supabase.co/functions/v1/notify"
+```
+
+- 1번이 **401**이면 `verify_jwt`가 아직 `true`로 배포된 것입니다(위 7-1 참고) — Vault
+  시크릿이나 `CRON_SECRET` 값을 고치기 전에 `config.toml`과 배포 로그부터 확인하세요.
+- 1번이 200이고 2번도 200이면 인증이 아예 걸려 있지 않은 것입니다(`CRON_SECRET`이 빈
+  문자열이거나 함수 시크릿이 설정되지 않음).
+- 1번이 200, 2번이 401이면 정상입니다 — 이제 7-3의 Vault 시크릿을 만들고 7-4의 마이그레이션을
+  적용해 스케줄을 걸어도 됩니다.
 
 ### 7-3. Vault 시크릿 생성 (SQL Editor, `postgres` 역할)
 
@@ -279,13 +319,21 @@ select status_code, content::text, error_msg, created
 from net._http_response order by created desc limit 5;
 ```
 
-`status_code = 401`이면 7-2의 `CRON_SECRET`과 7-3의 `stage1_notify_secret` 값이 다른 것입니다.
-자세한 디버깅 순서는 `docs/notification-operations.md`를 참고하세요.
+`status_code = 401`이면 **먼저 7-1의 `verify_jwt = false` 배포부터 의심**하세요 — 이게
+원인인 경우가 훨씬 흔합니다(fix round 1 · C1). 그게 아니면 7-2의 `CRON_SECRET`과 7-3의
+`stage1_notify_secret` 값이 다른 것입니다. 자세한 디버깅 순서는
+`docs/notification-operations.md`를 참고하세요.
 
 ### 7-6. 로컬에서 검증하지 못한 것
 
 pg_cron·pg_net·Vault(`supabase_vault`)는 로컬 스크래치 PostgreSQL에 설치할 수 없어(확장
 자체가 없음), 이 저장소의 자동 테스트는 SQL 문법·가드·멱등성만 확인했습니다(스텁 스키마로
-직접 실행해 확인, `lib/notifications/pg-cron-migration.test.ts`). 실제 확장 설치 ·
-스케줄 등록 · Edge Function까지의 HTTP 왕복은 배포 후 위 7-5 확인 쿼리로 컨트롤러가
-직접 검증해야 합니다.
+직접 실행해 확인, `lib/notifications/pg-cron-migration.test.ts`).
+
+Edge Function의 claim → 발송 직전 재검증 → 발송 → finish 루프 자체(순서, `p_retryable` 매핑,
+`p_external_message_id` 전달, `skipped`/`failed` 집계)는 `supabase/functions/notify/core.ts`로
+분리해 `lib/notifications/edge-notify.test.ts`가 Node에서 **실제로 실행**해 검증합니다(fix
+round 1 · I6). 검증되지 않은 것은 그 루프를 감싸는 Deno/Supabase 인프라 쪽입니다 — 실제
+`verify_jwt` 게이트 동작, `jsr:@supabase/supabase-js` 임포트, `Deno.serve`/`Deno.env`,
+pg_cron·pg_net·Vault 확장 자체입니다. 이건 로컬에 Deno·해당 확장이 없어 실행해 볼 수
+없었고, 위 7-2.5 스모크 테스트와 7-5 확인 쿼리로 컨트롤러가 배포 후 직접 검증해야 합니다.

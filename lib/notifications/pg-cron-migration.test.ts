@@ -61,3 +61,54 @@ test('적용 후 확인 쿼리에 cron.job·cron.job_run_details·net._http_resp
   assert.match(sql, /from cron\.job_run_details/);
   assert.match(sql, /from net\._http_response/);
 });
+
+// fix round 1 · I3 — §6의 확인 쿼리는 마이그레이션 실행 중 자동으로 함께 돌면 안 됩니다.
+// vault 확장이 없거나 권한이 없으면 세 작업이 이미 등록된 뒤에 마이그레이션 자체가 실패해
+// 반쪽 상태로 남을 수 있기 때문입니다. §6 구간 전체가 주석인지 줄 단위로 확인합니다.
+test('§6 확인 쿼리는 실행문이 아니라 전부 주석이다(vault 조회 실패가 마이그레이션을 중단시키지 않는다)', () => {
+  const sql = readMigration();
+  const section6 = sql.slice(sql.indexOf('-- ══ 6. 적용 후 확인 쿼리'));
+  const codeLines = section6
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  for (const line of codeLines) {
+    assert.match(line, /^--/, `§6에 주석이 아닌 줄이 있습니다: ${line}`);
+  }
+  // 그 안에 실제로 select문들이 있는지도 확인합니다(그냥 다 지워버린 게 아님).
+  assert.match(section6, /-- select jobname, schedule, active/);
+  assert.match(section6, /-- select name, created_at/);
+  assert.match(section6, /-- select job_run\.jobid/);
+  assert.match(section6, /-- select id, status_code/);
+});
+
+// fix round 1 · I4 — 이전 버전은 "url이 null이면 조용히 넘어가고 net._http_response에도
+// 안 남는다"고 잘못 적었습니다. 실제로는 net.http_request_queue.url이 NOT NULL이라 그
+// 자리에서 시끄럽게 실패하고 cron.job_run_details.return_message에 남습니다.
+test('vault 시크릿 미설정 시 실패 모드 설명이 실제 동작(not-null 위반, job_run_details에 기록)과 일치한다', () => {
+  const sql = readMigration();
+  assert.match(sql, /NOT NULL[\s\S]{0,200}시끄럽게 실패/);
+  assert.match(sql, /not-null 제약 위반[\s\S]{0,200}return_message/);
+  assert.doesNotMatch(sql, /조용히 null을 넘/);
+  assert.doesNotMatch(sql, /기록되지 않고/);
+});
+
+// fix round 1 · C1 — 401을 곧바로 "비밀값 불일치"로 안내하면 JWT 게이트가 원인일 때 엉뚱한
+// 곳을 고치게 됩니다. verify_jwt를 먼저 의심하라는 안내가 있어야 합니다.
+test('401 디버깅 안내는 비밀값 불일치보다 verify_jwt 게이트를 먼저 의심하게 한다', () => {
+  const sql = readMigration();
+  assert.match(sql, /401이면\s*\*\*먼저[\s\S]{0,120}verify_jwt[\s\S]{0,80}의심하세요/);
+  // "먼저" 안내 뒤에야 시크릿 불일치 확인으로 넘어가야 한다(순서가 반대면 안 됨).
+  const verifyJwtIndex = sql.indexOf('verify_jwt가 false로 배포됐는지부터 의심하세요');
+  const secretMismatchIndex = sql.indexOf('stage1_notify_secret과 Edge Function의 CRON_SECRET이 같은 값인지');
+  assert.ok(verifyJwtIndex > 0, 'verify_jwt 우선 안내 문구를 찾지 못했습니다');
+  assert.ok(secretMismatchIndex > verifyJwtIndex, '비밀값 불일치 확인 안내가 verify_jwt 안내보다 먼저 나옵니다');
+});
+
+// fix round 1 · C1 — supabase/config.toml에 verify_jwt = false가 없으면 notify 함수는 기본값
+// true로 배포되어, pg_net이 보내는 CRON_SECRET Bearer 토큰이 Supabase Auth JWT로 검증되지
+// 않는다는 이유로 함수 코드 실행 전에 401로 막힌다.
+test('supabase/config.toml은 notify 함수의 verify_jwt를 false로 명시한다', () => {
+  const toml = readFileSync(new URL('../../supabase/config.toml', import.meta.url), 'utf8');
+  assert.match(toml, /\[functions\.notify\][\s\S]{0,400}verify_jwt\s*=\s*false/);
+});
