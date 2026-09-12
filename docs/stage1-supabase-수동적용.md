@@ -337,3 +337,50 @@ round 1 · I6). 검증되지 않은 것은 그 루프를 감싸는 Deno/Supabase
 `verify_jwt` 게이트 동작, `jsr:@supabase/supabase-js` 임포트, `Deno.serve`/`Deno.env`,
 pg_cron·pg_net·Vault 확장 자체입니다. 이건 로컬에 Deno·해당 확장이 없어 실행해 볼 수
 없었고, 위 7-2.5 스모크 테스트와 7-5 확인 쿼리로 컨트롤러가 배포 후 직접 검증해야 합니다.
+
+## 8. 무료 플랜 스케줄러 적용 기록 — 2026-09-12
+
+Vercel 유료 플랜 없이 10분 주기 작업을 돌리기 위해 Supabase 안에서 처리하도록 바꿨고,
+Claude 가 배포까지 직접 수행했습니다.
+
+### 적용한 것
+
+| 순서 | 작업 | 결과 |
+|---|---|---|
+| 1 | `supabase secrets set` — `CRON_SECRET`·`RESEND_API_KEY`·`RESEND_FROM_EMAIL`·`RESEND_REPLY_TO` | 완료 |
+| 2 | `supabase functions deploy notify` | `index.ts`·`core.ts` 업로드 완료 |
+| 3 | 스모크 테스트 | 올바른 비밀값 200, 틀린 값 401, 헤더 없음 401 |
+| 4 | Vault 비밀값 `stage1_notify_url`·`stage1_notify_secret` | 생성 완료 |
+| 5 | `20260912000100_stage1_pg_cron_jobs.sql` | 적용 완료, 예약 3건 등록 |
+| 6 | 확장 `pg_cron`·`pg_net` | 설치 완료 |
+
+등록된 예약(모두 `*/10 * * * *`, active):
+`stage1-notify` · `stage1-expire-allocations` · `stage1-demand-reminders`
+
+### 배포 중 발견해 고친 결함
+
+**`service_role` 에 `core` 스키마 USAGE 가 없었습니다.** 함수별 `grant execute ... to service_role`
+은 있었지만 스키마 USAGE 가 없어, service key 로 `core` RPC 를 호출하면
+`permission denied for schema core` (HTTP 500) 로 실패했습니다. Vercel Cron 경로도 같은
+키·같은 호출이므로 동일하게 실패했을 것이며, 이 경로를 실제로 호출한 적이 없어 드러나지
+않았을 뿐입니다. 보정: `20260912000200_service_role_schema_usage.sql` (core USAGE 만 부여,
+테이블·뷰 권한은 추가하지 않음).
+
+### 이메일 발송 확인
+
+Resend 도메인 `send.upflash.co.kr` verified (리전 ap-northeast-1). DKIM 은
+`resend._domainkey.send.upflash.co.kr`, 반송·SPF 는 `send.send.upflash.co.kr` 에 있습니다.
+루트 도메인 MX 는 구글 워크스페이스 그대로라 회사 메일에 영향이 없습니다.
+테스트 메일 1 통을 `insightdany@naver.com` 으로 보내 `delivered` 확인했습니다
+(발신 `alert@send.upflash.co.kr`, 답장 `contact@upflash.co.kr`).
+
+### 운영 시 주의
+
+- `vercel.json` 의 크론 3 건과 **동시에 켜 두지 마세요.** 같은 조건을 한쪽은 영구 실패,
+  다른 쪽은 재시도로 기록해 알림 이력이 모순됩니다.
+- 예약이 안 도는 것 같으면 `cron.job_run_details` 를 **먼저** 보고, 그다음
+  `net._http_response` 를 보세요. Vault 비밀값이 없으면 not-null 위반으로 job_run_details
+  에만 남습니다.
+- 함수를 다시 배포할 때는 저장소 루트에서 실행해야 `supabase/config.toml` 의
+  `[functions.notify] verify_jwt = false` 가 적용됩니다. 이 설정이 빠지면 게이트웨이가
+  pg_net 요청을 401 로 막고, 함수 코드는 실행조차 되지 않습니다.

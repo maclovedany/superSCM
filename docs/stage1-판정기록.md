@@ -93,3 +93,12 @@ Important 3: 마이그레이션 파일 순서 전체 재실행이 0850에서 실
 Task 9b: minor (plan-mandated, parked): 목표DoS ≥ 0이면 dos_required ≥ stockout_prevention이라 selection_reason STOCKOUT_PREVENTION이 선택되지 않음 — Ruling: 수량은 정확(월말 음수 방지는 DoS 충족에 포함), 라벨만 의미 약함; 최종 보고에 명시 — 틀리면 라벨 규칙 한 곳.
 Ruling (Task 8 우려 1): 수급회의 입력 권한은 기존 전용 코드 `SUPPLY_MEETING_INPUT`(STEP 19, SCM_PLANNER만 보유) 사용을 수용 — 목적 전용 권한이 이미 존재, 동작 동일 — 틀리면 권한 코드 한 곳.
 Ruling: `docs/데이터-요청목록.md`는 .gitignore 대상(사용자가 기획 문서를 저장소에서 제외한 결정, 커밋 e46075b 계열)이므로 강제 추가하지 않고 로컬 파일로만 갱신 — 틀리면 사용자가 git add -f 한 번.
+
+## 무료 플랜 스케줄러 (2026-09-12 추가)
+
+Ruling: 10분 주기 작업을 Vercel 유료 크론이 아니라 Supabase pg_cron 으로 돌린다 — 수강생이 무료 플랜에서 실습할 수 있어야 한다 — 틀리면 vercel.json 크론으로 되돌리면 된다.
+Ruling: 알림 전달은 pg_cron 이 claim 하지 않고 Edge Function 이 claim→검증→발송→완료를 한 흐름으로 소유한다 — pg_net 은 비동기라 결과를 DB 로 되돌릴 수 없고, 기존 Vercel 라우트가 이미 임대·재시도까지 검증된 순서를 구현하고 있다 — 틀리면 claim 위치만 옮기면 된다.
+Ruling: Resend 키가 없을 때 EMAIL 건은 영구 실패가 아니라 재시도 대상으로 처리한다. 앱 내 알림은 키와 무관하게 완료된다 — 나중에 키를 넣으면 그대로 발송되게 하려는 의도 — 다만 일회성 알림은 10·30·70·150분 재시도 후 약 2시간 30분 만에 FAILED 로 확정되므로 키는 배포와 같은 세션에 넣는다.
+Ruling: `core.finish_notification` 의 max_attempts·백오프 의미는 바꾸지 않는다 — 이미 검증된 DB 계약을 스케줄러 편의로 흔들지 않는다 — 틀리면 문서의 2시간 30분 설명만 수정하면 된다.
+Ruling: 발신 주소가 수신함 없는 하위 도메인이므로 선택적 `RESEND_REPLY_TO` 를 추가해 답장이 contact@upflash.co.kr 로 가게 한다 — 값이 없으면 요청 본문이 이전과 동일하다.
+Ruling: service_role 에는 `core` 스키마 USAGE 만 부여한다 — core 함수가 security definer 라 raw·analytics 접근 권한은 호출자에게 불필요하고, 테이블 직접 접근 권한을 넓히지 않기 위해서다 — 틀리면 필요한 스키마를 추가로 부여하면 된다.
