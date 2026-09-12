@@ -110,6 +110,13 @@ on conflict (id) do nothing;
 --   가상 직책 T5_DUAL(요청 권한 + 승인 권한을 함께 가진 겸직 계정 — 자기 승인 차단 검증용)을
 --   더 이상 넣을 수 없게 됐다. 운영 제약은 그대로 두고, 이 임시 DB(guard.psql로 scm_test_*만
 --   허용됨)에서만 T5_DUAL을 허용하도록 넓힌다.
+-- ★★ 2026-09-12 리뷰 지적(§7) — 이 확대는 범위는 안전하지만 질문을 하나 덮는다: 20260912000300
+--   이후로 "요청 권한 + 승인 권한을 함께 가진 실제 직책"은 운영에서 더 이상 만들 수 없다.
+--   즉 이 아래 S6의 "자기 승인 차단" 시나리오는 운영에서 이미 구조적으로 도달 불가능한 조합을
+--   검증하는 회귀 방지용 테스트로만 남는다(그 조합이 실제로 존재했을 때 자기 승인을 막았다는
+--   과거 동작을 계속 지킨다는 뜻) — 지금 이 직책 조합으로 운영에서 승인 흐름을 타는 사용자는
+--   없다. 픽스처를 실제 도달 가능한 조합으로 바꾸는 대신 이 문서화를 남기는 쪽을 택했다(대안:
+--   화이트리스트에 겸직 가능한 실제 직책을 추가하는 것은 이 스위트가 결정할 범위 밖이다).
 alter table core.app_user drop constraint if exists app_user_job_role_chk;
 alter table core.app_user add constraint app_user_job_role_chk
   check (job_role is null or job_role in ('SALES_REP', 'SCM_PLANNER', 'SCM_LEAD', 'BIZ_DEV', 'MARKETING', 'SERVICE', 'T5_DUAL'));

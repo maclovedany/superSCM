@@ -1,10 +1,10 @@
 import PageHeader from '@/components/shell/page-header';
-import OpenPoStatusBanner from '@/components/inventory/open-po-status-banner';
+import StockReferenceStatusBanner from '@/components/inventory/stock-reference-status-banner';
 import OrderAvailableTable from '@/components/inventory/order-available-table';
 import StockTable from '@/components/inventory/stock-table';
 import PracticeDataBanner from '@/components/ui/practice-banner';
 import { getPermissions, requireAnyPermission } from '@/lib/auth';
-import { getAvailableStock, getOpenPoDataStatus, getOrderAvailableStock } from '@/lib/inventory/repository';
+import { getAvailableStock, getOrderAvailableStock, getStockReferenceSourceStatus } from '@/lib/inventory/repository';
 import { WORK_ROUTE_PERMISSIONS } from '@/lib/permission';
 import { getPracticeDataStatus, getPracticeItemIds } from '@/lib/practice/repository';
 import type { PracticeDataStatus } from '@/lib/practice/model';
@@ -77,17 +77,18 @@ export default async function InventoryPage() {
     );
   }
 
-  const [{ rows, error }, practiceItemIds, { status }, openPoStatus] = await Promise.all([
+  const [{ rows, error }, practiceItemIds, { status }, referenceStatus] = await Promise.all([
     getAvailableStock(),
     getPracticeItemIds(),
     getPracticeDataStatus(),
-    getOpenPoDataStatus(),
+    getStockReferenceSourceStatus(),
   ]);
   const practice = practiceBannerFor(rows, practiceItemIds, status);
-  // ★ 2026-09-12 보정 — 지금 보이는 행 중에 실제로 Open PO가 비어 있는 것이 있을 때만
-  //   띄운다(practiceBannerFor와 같은 이유 — openPoQty null은 데이터가 아예 없는 품목에서도
+  // ★ 2026-09-12 보정 — 지금 보이는 행 중에 실제로 Open PO나 이동 중 수량이 비어 있는 것이
+  //   있을 때만 띄운다(practiceBannerFor와 같은 이유 — null은 데이터가 아예 없는 품목에서도
   //   나오므로, 무조건 띄우면 거짓 경고가 될 수 있다).
-  const showOpenPoBanner = openPoStatus !== null && rows.some((row) => row.openPoQty === null);
+  const showReferenceBanner =
+    referenceStatus !== null && rows.some((row) => row.openPoQty === null || row.inTransitQty === null);
 
   return (
     <section className="analysis-page">
@@ -98,7 +99,7 @@ export default async function InventoryPage() {
       />
       <div className="analysis-content">
         {practice ? <PracticeDataBanner status={practice} /> : null}
-        {showOpenPoBanner && openPoStatus ? <OpenPoStatusBanner status={openPoStatus} /> : null}
+        {showReferenceBanner && referenceStatus ? <StockReferenceStatusBanner status={referenceStatus} /> : null}
         {error ? (
           <div className="card">
             <p className="text-danger">조회에 실패했습니다.</p>

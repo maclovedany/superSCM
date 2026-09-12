@@ -5,9 +5,9 @@ import {
   INVENTORY_VISIBILITY_SCOPES,
   isInventoryVisibilityScope,
   normalizeAvailableStockRow,
-  normalizeOpenPoDataStatus,
   normalizeOrderAvailableStockRow,
-  openPoStatusBannerMessage,
+  normalizeStockReferenceSourceStatus,
+  stockReferenceStatusBannerMessage,
 } from './model.ts';
 
 test('조회 범위는 세 가지 업무 코드만 허용하고, 그 외 값은 GENERAL로 취급한다', () => {
@@ -69,18 +69,54 @@ test('보정(2026-09-12) — Open PO 참고 열이 null이어도 별도 사유 �
   assert.ok(!('openPoReasonCode' in row));
 });
 
-test('analytics.v_open_po_data_status 행을 배너 상태로 옮긴다', () => {
-  assert.deepEqual(normalizeOpenPoDataStatus({ has_unverified_source: true, has_unparseable: false }), {
-    hasUnverifiedSource: true,
-    hasUnparseable: false,
-  });
-  assert.equal(normalizeOpenPoDataStatus(null), null);
+test('analytics.v_stock_reference_source_status 행을 배너 상태로 옮긴다', () => {
+  assert.deepEqual(
+    normalizeStockReferenceSourceStatus({
+      open_po_sourced_rows: 0,
+      open_po_unsourced_rows: 92,
+      open_po_unparseable_items: 0,
+      open_po_reason_code: 'OPEN_PO_SOURCE_UNVERIFIED',
+      in_transit_sourced_rows: 0,
+      in_transit_unsourced_rows: 2864,
+      in_transit_reason_code: 'IN_TRANSIT_NO_IMPORT_PATH',
+    }),
+    {
+      openPoSourcedRows: 0,
+      openPoUnsourcedRows: 92,
+      openPoUnparseableItems: 0,
+      openPoReasonCode: 'OPEN_PO_SOURCE_UNVERIFIED',
+      inTransitSourcedRows: 0,
+      inTransitUnsourcedRows: 2864,
+      inTransitReasonCode: 'IN_TRANSIT_NO_IMPORT_PATH',
+    },
+  );
+  assert.equal(normalizeStockReferenceSourceStatus(null), null);
 });
 
-test('Open PO 배너 문구는 출처 미확인·파싱 불가를 구분해서 안내한다', () => {
-  assert.match(openPoStatusBannerMessage({ hasUnverifiedSource: true, hasUnparseable: false }), /출처가 확인되지 않은/);
-  assert.match(openPoStatusBannerMessage({ hasUnverifiedSource: false, hasUnparseable: true }), /숫자로 읽을 수 없어/);
-  assert.match(openPoStatusBannerMessage({ hasUnverifiedSource: true, hasUnparseable: true }), /함께 있어/);
+test('참고 열 배너 문구는 Open PO 출처 미확인·파싱 불가·이동 중 적재 경로 없음을 구분해서 안내한다', () => {
+  const openPoUnverified = {
+    openPoSourcedRows: 0, openPoUnsourcedRows: 92, openPoUnparseableItems: 0, openPoReasonCode: 'OPEN_PO_SOURCE_UNVERIFIED',
+    inTransitSourcedRows: 10, inTransitUnsourcedRows: 0, inTransitReasonCode: null,
+  };
+  assert.match(stockReferenceStatusBannerMessage(openPoUnverified), /출처가 확인되지 않은/);
+
+  const openPoUnparseable = {
+    openPoSourcedRows: 10, openPoUnsourcedRows: 0, openPoUnparseableItems: 1, openPoReasonCode: 'OPEN_PO_QTY_UNPARSEABLE',
+    inTransitSourcedRows: 10, inTransitUnsourcedRows: 0, inTransitReasonCode: null,
+  };
+  assert.match(stockReferenceStatusBannerMessage(openPoUnparseable), /숫자로 읽을 수 없어/);
+
+  const inTransitOnly = {
+    openPoSourcedRows: 10, openPoUnsourcedRows: 0, openPoUnparseableItems: 0, openPoReasonCode: null,
+    inTransitSourcedRows: 0, inTransitUnsourcedRows: 2864, inTransitReasonCode: 'IN_TRANSIT_NO_IMPORT_PATH',
+  };
+  assert.match(stockReferenceStatusBannerMessage(inTransitOnly), /IMPORT하는 방법이 없어/);
+
+  const both = {
+    openPoSourcedRows: 0, openPoUnsourcedRows: 92, openPoUnparseableItems: 0, openPoReasonCode: 'OPEN_PO_SOURCE_UNVERIFIED',
+    inTransitSourcedRows: 0, inTransitUnsourcedRows: 2864, inTransitReasonCode: 'IN_TRANSIT_NO_IMPORT_PATH',
+  };
+  assert.match(stockReferenceStatusBannerMessage(both), /IMPORT된 원천이 없어/);
 });
 
 test('분류할 수 없는 행은 0이 아니라 null과 사유 코드를 유지한다', () => {

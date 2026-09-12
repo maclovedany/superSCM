@@ -59,11 +59,19 @@ SQL
 # 파일이 같은 오류 문구를 우연히 내거나, 그 파일이 다른 이유로 실패하면 지금까지와 같이 즉시 멈춘다
 # (user_admin/bootstrap.sh의 fix round 1 · M1과 같은 패턴).
 PG_CRON_MIGRATION_NAME="20260912000100_stage1_pg_cron_jobs.sql"
-# ★ TARGET_MIGRATION · TARGET_MIGRATION_2는 전체 적용 뒤 따로 다시 돌리지 않고, 아래에서
-#   자기 순서 자리에 도달한 바로 그 시점에 한 번 더 적용한다(재실행 안전성 확인). 전체 적용이
-#   끝난 뒤에 돌리면, 뒤 마이그레이션(20260912000800)이 analytics.v_available_stock 끝에
-#   덧붙인 open_po_reason_code 열을 TARGET_MIGRATION의 좁은 뷰 정의가 지우려다
-#   "cannot drop columns from view"로 실패한다(error.md #24 — item_policy 스위트와 같은 문제).
+# ★ 2026-09-12 라운드 1 — TARGET_MIGRATION · TARGET_MIGRATION_2를 전체 적용 뒤 따로 재적용하지
+#   않고, 아래에서 자기 순서 자리에 도달한 바로 그 시점에 한 번 더 적용한다. 두 가지 이유가
+#   모두 있다(어느 한쪽이 없어져도 나머지 때문에 이 방식이 필요하다).
+#   1) 뒤 마이그레이션이 이 두 파일이 정의한 뷰의 열을 넓히면, 전체 적용 뒤 재적용 시
+#      "cannot drop columns from view"로 실패한다(error.md #24). 지금은 Task 16이
+#      analytics.v_available_stock·core.v_open_po_qty에 열을 더하지 않으므로 이 사유는
+#      해당하지 않는다.
+#   2) ★ 여전히 유효 — Task 16(20260912000800)이 TARGET_MIGRATION_2(0610)가 정의한
+#      core.apply_stock_receipts_from_batch를 다시 정의한다(관대한 파서 + 배치 거부).
+#      전체 적용 뒤 0610을 따로 재적용하면 0610의 **옛(하드 캐스트) 정의**가 0800의 최종
+#      정의를 덮어써, 이 스위트가 고쳐진 함수가 아니라 옛 함수를 테스트하게 된다 — 실제로
+#      겪었다(S15 (g)가 "select * from ... (콤마 값)"이 아니라 22P02로 실패했다). 자기 순서
+#      자리에서 재적용하면 0800이 항상 마지막에 적용돼 최종 정의가 유지된다.
 for migration in "$REPO"/supabase/migrations/*.sql; do
   name=$(basename "$migration")
   if ! "${PSQL[@]}" -d "$DB" -f "$migration" > "$LOG_DIR/migration-$name.log" 2>&1; then

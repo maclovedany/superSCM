@@ -56,6 +56,13 @@ sed '/^CREATE SCHEMA public;$/d' "$REPO/supabase/schema-dump/2026-09-11.sql" \
 # ★ 다른 스위트의 bootstrap.sh와 달리 STEP 4 · STEP 7 정책을 미리 지우지 않는다 — 그 정책 재생성이
 #   재실행에서 안전한지(drop policy if exists가 있는지)까지 이 스위트가 확인해야 하기 때문이다.
 
+# Task 14(20260912000100)는 pg_cron·pg_net 확장을 요구하는데, 이 두 확장은 Supabase 전용이라
+# 일반 로컬 PostgreSQL(Homebrew postgresql@17)에는 설치돼 있지 않다(error.md #31). 이 스위트는
+# pg_cron과 무관하므로, "정확히 그 파일이 그 이유로만" 실패하면 건너뛰고 계속 진행한다 — 다른
+# 파일이 같은 오류 문구를 우연히 내거나, 그 파일이 다른 이유로 실패하면 지금까지와 같이 즉시
+# 멈춘다(user_admin·sales_order_allocation 스위트의 같은 패턴 — fix round 1 · M1).
+PG_CRON_MIGRATION_NAME="20260912000100_stage1_pg_cron_jobs.sql"
+
 STATUS=0
 for pass in 1 2; do
   OK=0
@@ -65,6 +72,11 @@ for pass in 1 2; do
     if "${PSQL[@]}" -d "$DB" -f "$migration" > "$LOG_DIR/pass$pass-$name.log" 2>&1; then
       OK=$((OK + 1))
     else
+      if [ "$name" = "$PG_CRON_MIGRATION_NAME" ] && grep -qE 'extension "pg_(cron|net)" is not available' "$LOG_DIR/pass$pass-$name.log"; then
+        echo "  건너뜀(로컬에 pg_cron/pg_net 확장 없음, 이 스위트와 무관): $name"
+        OK=$((OK + 1))
+        continue
+      fi
       FAILED=$((FAILED + 1))
       STATUS=1
       echo "  FAIL $name"
@@ -91,7 +103,14 @@ with expected(label, actual, want) as (
     ('analytics.v_inventory_performance 열 수',
        (select count(*) from information_schema.columns where table_schema = 'analytics' and table_name = 'v_inventory_performance'), 13),
     ('core.upload_batch 정책 수',
-       (select count(*) from pg_policies where schemaname = 'core' and tablename = 'upload_batch'), 2)
+       (select count(*) from pg_policies where schemaname = 'core' and tablename = 'upload_batch'), 2),
+    -- Task 16(20260912000800) — 열을 추가하지 않기로 한 판정을 재실행 뒤에도 지킨다.
+    ('core.v_open_po_qty 열 수(사유 열 추가 금지)',
+       (select count(*) from information_schema.columns where table_schema = 'core' and table_name = 'v_open_po_qty'), 2),
+    ('analytics.v_available_stock 열 수(재정의하지 않음)',
+       (select count(*) from information_schema.columns where table_schema = 'analytics' and table_name = 'v_available_stock'), 13),
+    ('core.v_inbound_qty 열 수(사유 열 추가 금지)',
+       (select count(*) from information_schema.columns where table_schema = 'core' and table_name = 'v_inbound_qty'), 4)
 )
 select case when actual = want then 'PASS: ' else 'FAIL: ' end
        || label || ' (' || actual::text || ' · 기대 ' || want::text || ')'
@@ -122,7 +141,7 @@ POST_PASS=$(grep -c '^PASS: ' "$LOG_DIR/postconditions.log" || true)
 POST_FAIL=$(grep -c '^FAIL: ' "$LOG_DIR/postconditions.log" || true)
 echo "사후 조건: PASS $POST_PASS · FAIL/ERROR $POST_FAIL"
 sed 's/^/  /' "$LOG_DIR/postconditions.log"
-if [ "$POST_PASS" -ne 9 ] || [ "$POST_FAIL" -ne 0 ]; then
+if [ "$POST_PASS" -ne 12 ] || [ "$POST_FAIL" -ne 0 ]; then
   STATUS=1
 fi
 

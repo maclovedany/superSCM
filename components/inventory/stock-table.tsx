@@ -56,16 +56,18 @@ const columns: Column<AvailableStockRow>[] = [
     key: 'openPoQty',
     label: 'Open PO (참고)',
     align: 'right',
-    // ★ 2026-09-12 보정 — 사유는 열이 아니라 화면 위 OpenPoStatusBanner가 한 번만 말한다
-    //   (docs/stage1-판정기록.md Task 16 판정 — analytics.v_available_stock에 사유 열을
-    //   더하지 않는다).
-    render: (row) => (row.openPoQty === null ? <span className="muted">—</span> : formatNumber(row.openPoQty, ' EA')),
+    // ★ 2026-09-12 보정 — 품목별 사유는 열로 두지 않는다(analytics.v_available_stock에 사유
+    //   열을 더하지 않는다 — docs/stage1-판정기록.md Task 16 판정). 이 화면 전체에 공통되는
+    //   사유는 StockReferenceStatusBanner가 한 번만 말하지만, 이 칸 자체도 다른 참고 열
+    //   (정상 창고재고 등)과 같은 규칙을 지킨다 — null이면 맨 빈칸이 아니라 사유 코드를
+    //   보인다(파일 머리말 주석). 품목별 정밀 사유가 없으므로 범용 코드를 쓴다.
+    render: (row) => valueOrEmpty(row.openPoQty, null, ' EA'),
   },
   {
     key: 'inTransitQty',
     label: '이동 중 (참고)',
     align: 'right',
-    render: (row) => (row.inTransitQty === null ? <span className="muted">—</span> : formatNumber(row.inTransitQty, ' EA')),
+    render: (row) => valueOrEmpty(row.inTransitQty, null, ' EA'),
   },
   { key: 'snapshotAt', label: '스냅샷 시각', render: (row) => row.snapshotAt ?? <span className="muted">—</span> },
 ];

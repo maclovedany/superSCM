@@ -6,11 +6,11 @@
 import { createSupabaseServerClient } from '../supabase/server';
 import {
   normalizeAvailableStockRow,
-  normalizeOpenPoDataStatus,
   normalizeOrderAvailableStockRow,
+  normalizeStockReferenceSourceStatus,
   type AvailableStockRow,
-  type OpenPoDataStatus,
   type OrderAvailableStockRow,
+  type StockReferenceSourceStatus,
 } from './model';
 
 export async function getAvailableStock(): Promise<{ rows: AvailableStockRow[]; error: string | null }> {
@@ -45,16 +45,16 @@ export async function getOrderAvailableStock(): Promise<{ rows: OrderAvailableSt
 }
 
 /**
- * Open PO 참고 열이 출처 미확인 또는 파싱 불가 데이터에 걸려 있는지 한 번만 안내하기 위한
- * 상태(2026-09-12 보정). 조회 권한이 없거나 걸리는 데이터가 없으면 행이 0개다 — 그때는
- * null을 돌려주고 배너를 띄우지 않는다.
+ * Open PO · 이동 중(참고) 두 열이 출처 미확인 또는 파싱 불가 데이터에 걸려 있는지 한 번만
+ * 안내하기 위한 상태(2026-09-12 보정). 조회 권한이 없거나 걸리는 데이터가 없으면 행이
+ * 0개다 — 그때는 null을 돌려주고 배너를 띄우지 않는다.
  */
-export async function getOpenPoDataStatus(): Promise<OpenPoDataStatus | null> {
+export async function getStockReferenceSourceStatus(): Promise<StockReferenceSourceStatus | null> {
   try {
     const supabase = await createSupabaseServerClient();
-    const { data, error } = await supabase.schema('analytics').from('v_open_po_data_status').select('*').maybeSingle();
+    const { data, error } = await supabase.schema('analytics').from('v_stock_reference_source_status').select('*').maybeSingle();
     if (error || !data) return null;
-    return normalizeOpenPoDataStatus(data as Record<string, unknown>);
+    return normalizeStockReferenceSourceStatus(data as Record<string, unknown>);
   } catch {
     return null;
   }

@@ -62,17 +62,26 @@
 --   대가는 재실행 2회차가 20260911000500·20260911000600에서 멈추는 것이었습니다). 출처
 --   게이트가 걸리면 기존 open_po_qty 열이 그대로 null이 되므로 스키마를 넓힐 필요가
 --   없습니다. 사유는 **새 열이 아니라 새 객체**(허용됨)로 화면 수준에서 한 번만
---   안내합니다 — analytics.v_open_po_data_status(아래 4절) + OpenPoStatusBanner 컴포넌트,
---   이 저장소가 이미 practice-banner에 쓰는 것과 같은 패턴입니다.
+--   안내합니다 — analytics.v_stock_reference_source_status(아래 4-2절) +
+--   StockReferenceStatusBanner 컴포넌트, 이 저장소가 이미 practice-banner에 쓰는 것과
+--   같은 패턴입니다.
+--
+-- ★ 같은 결함이 바로 옆 참고 열에도 있었습니다 — in_transit_qty(이동 중 참고,
+--   core.v_inbound_qty가 채움). 캐스트 크래시는 없습니다(raw.shipment_log.qty는 이미
+--   numeric 타입) — 하지만 team-lead 배포 측정: raw.shipment_log 2,864행 **전부**
+--   batch_id null, IN_TRANSIT 117행·수량 합 12,137이 그대로 화면에 나갑니다. Open PO만
+--   고치면 화면이 살아나는 순간 이 열이 지어낸 12,137을 그대로 노출합니다 — 그래서 같은
+--   출처 게이트를 core.v_inbound_qty에도 적용합니다(4-1절). 게다가 raw.shipment_log.batch_id
+--   는 채우는 적재 경로 자체가 없습니다(commit_import_batch에 shipment 분기가 없고
+--   schema.ts에도 없습니다) — Open PO의 "아직 IMPORT 안 됨"과 달리 "지금 구조로는 영구히
+--   채울 수 없음"이라 별도 사유코드(IN_TRANSIT_NO_IMPORT_PATH)로 구분합니다.
 --
 -- ★ "발주수량 · 입고수량 · 단가" 세 열을 모두 훑었습니다(저장소 전체에서 정규식이 아니라
 --   실제 참조 목록으로 — 아래 6절 확인 쿼리 (g) 참고). raw.purchase_order."단가"는 지금
 --   core/analytics 어떤 뷰·함수도 참조하지 않습니다 — 배포 DB 전수조사에서도 이 열의
---   파싱 불가 행은 0건입니다. core.v_inbound_qty는 이름이 비슷하지만 raw.shipment_log의
---   네이티브 numeric qty 열을 읽습니다(raw.shipment_log.qty 컬럼 타입 자체가 numeric —
---   schema-dump로 확인) — raw 텍스트 캐스트가 전혀 없어 이 보정 대상이 아닙니다.
+--   파싱 불가 행은 0건입니다.
 --
--- ★ 같은 패턴의 두 번째 사고 지점을 찾았습니다 — core.v_stock_on_hand(4~5회차 수업에서
+-- ★ 같은 패턴의 세 번째 사고 지점을 찾았습니다 — core.v_stock_on_hand(4~5회차 수업에서
 --   SQL Editor로 직접 만든 뷰, supabase/realdata/03b-missing-objects.sql에 원본이 있고
 --   2026-09-12 최신 배포 덤프에도 그대로 있습니다)가 raw.inventory."현재고"를 같은 방식
 --   (`sum(nullif(...,'')::numeric)`, 출처 게이트 없음)으로 캐스트하고,
@@ -91,8 +100,10 @@
 -- ★ 이미 적용된 파일(20260911000500 · 20260911000600 · 20260911000610)은 고치지 않습니다.
 --   아래 정의가 core.v_open_po_qty · core.apply_stock_receipts_from_batch ·
 --   core.apply_stock_balance_from_batch · core.apply_month_end_inventory_snapshot_from_batch ·
---   core.v_stock_on_hand의 최종본이 됩니다. analytics.v_available_stock은 여기서 다시
---   정의하지 않습니다 — 20260911000600의 정의가 그대로 최종본이고, core.v_open_po_qty만
+--   core.v_stock_on_hand · core.v_fact_shipment · core.v_inbound_qty의 최종본이 됩니다.
+--   뒤 두 개는 저장소 마이그레이션에 처음 정의됩니다(정본이 지금까지 배포 DB에만 있었습니다
+--   — 4-1절 참고). analytics.v_available_stock은 여기서 다시 정의하지 않습니다 —
+--   20260911000600의 정의가 그대로 최종본이고, core.v_open_po_qty·core.v_inbound_qty만
 --   고쳐도 값이 자동으로 전파됩니다(아래 4절).
 --
 -- 다시 실행해도 안전합니다. 이 마이그레이션은 raw 데이터를 바꾸지 않습니다.
@@ -188,7 +199,7 @@ revoke all on function core.require_lenient_numeric(text, text) from public, ano
 --     b) 출처 없음 — 발주수량·입고수량에 기여하는 행 중 batch_id가 null인 행이 하나라도
 --        있음(파싱 가능 여부와 무관)
 --   빈 값(공란)은 그대로 집계에서 빠집니다 — 기존과 같은 동작입니다. 두 조건을 구분해서
---   보여주는 사유는 4절의 analytics.v_open_po_data_status가 별도로 제공합니다.
+--   보여주는 사유는 4-2절의 analytics.v_stock_reference_source_status가 별도로 제공합니다.
 
 create or replace view core.v_open_po_qty as
 with ordered as (
@@ -233,7 +244,7 @@ comment on view core.v_open_po_qty is
   '보정(2026-09-12) — 품목별 Open PO 참고 수량 = 발주수량 합 - 입고완료(입고일 존재 + '
   'receipt_status=COMPLETED) 합. 출처 없는(batch_id is null) 행이 하나라도 기여하거나, '
   '출처 있는 행 중 파싱 불가한 행이 있으면 부분 합계 대신 null(사유 구분은 '
-  'analytics.v_open_po_data_status 참고 — 이 뷰 자체에는 사유 열을 두지 않는다, '
+  'analytics.v_stock_reference_source_status 참고 — 이 뷰 자체에는 사유 열을 두지 않는다, '
   'docs/stage1-판정기록.md Task 16). 음수는 0으로 clamp한다. 가용재고 계산에는 더하지 '
   '않는 참고 열이다';
 
@@ -483,63 +494,197 @@ revoke all on function core.apply_stock_receipts_from_batch(uuid) from public, a
 --   자체를 전혀 재정의하지 않아 "cannot drop columns from view" 위험도 원천적으로 없습니다.
 
 
--- ══ 4-1. Open PO 상태 안내 — 별도 객체(열이 아니라 새 뷰) ═════════════════
+-- ══ 4-1. 이동 중(참고) 열도 같은 결함 — core.v_fact_shipment · core.v_inbound_qty ═══
 --
--- ★ 화면에 사유를 알려야 하지만 기존 뷰에 열을 더하지 않기로 했으므로(위 3절·머리말 참고),
---   이 저장소가 practice-data에 이미 쓰는 패턴(별도 상태 뷰 + 배너 컴포넌트, error.md #18
---   근처 practice-banner 참고)을 그대로 따라 **새 뷰**를 만듭니다. 이 뷰는 core.v_open_po_qty의
---   판정 조건을 그대로 다시 계산해(같은 술어) 지금 Open PO가 출처 미확인·파싱 불가 데이터에
---   걸려 있는지 화면 전체 기준으로 한 번만 알려줍니다(품목별이 아니라 요약 한 줄). 새 객체이므로
---   나중에 열을 자유롭게 늘릴 수 있습니다 — 앞 마이그레이션과의 재실행 충돌이 없습니다.
+-- ★ team-lead 배포 측정(2026-09-12): raw.shipment_log 2,864행 전부 batch_id가 null이다.
+--   IN_TRANSIT 117행·수량 합 12,137이 core.v_inbound_qty → analytics.v_available_stock.
+--   in_transit_qty로 그대로 나간다 — Open PO와 똑같이 "출처 없는 더미 숫자가 실적처럼
+--   보이는" 결함이다(캐스트 크래시는 없다 — raw.shipment_log.qty가 이미 numeric 타입이라
+--   22P02는 안 나지만, 지어낸 숫자가 화면에 앉는 문제는 동일하다). Open PO만 고치고 이
+--   열을 그대로 두면, 화면을 살리는 순간 Open PO는 정직하게 비고 바로 옆 열은 12,137을
+--   보이는 상태로 배포된다 — 둘 중 어느 쪽보다 나쁘다.
+--
+-- ★ core.v_fact_shipment · core.v_inbound_qty는 저장소 마이그레이션 어디에도 없는
+--   배포 전용 객체다(정본은 supabase/realdata/03b-missing-objects.sql, `CREATE VIEW`이고
+--   `create or replace`가 아니다 — 4~5회차 수업에서 SQL Editor로 직접 만들었다). 이
+--   마이그레이션이 처음으로 이 뷰들을 저장소 마이그레이션에 정의해, 저장소가 배포 상태를
+--   따라잡는다. core.v_fact_shipment는 배포 정의(위 03b 파일 그대로)에 batch_id 열만
+--   끝에 추가한다 — 이 뷰는 지금까지 마이그레이션에 없었으므로 "cannot drop columns"
+--   위험이 없다(추가가 아니라 최초 정의다).
+create or replace view core.v_fact_shipment as
+select
+  shipment_id,
+  upper(regexp_replace(coalesce(po_no, ''), '[\s\-_]', '', 'g')) as po_no,
+  upper(regexp_replace(coalesce(item_id, ''), '[\s\-_]', '', 'g')) as item_id,
+  supplier_id,
+  country,
+  case upper(btrim(transport_mode))
+    when '해상' then 'SEA'
+    when '항공' then 'AIR'
+    else upper(btrim(transport_mode))
+  end as transport_mode,
+  order_date,
+  due_date,
+  supplier_ship_date,
+  port_departure_date,
+  port_arrival_date,
+  customs_clear_date,
+  warehouse_receipt_date,
+  qc_release_date,
+  qty,
+  status,
+  nullif(btrim(coalesce(incident_note, '')), '') as incident_note,
+  (supplier_ship_date - order_date) as seg_order_to_ship,
+  (qc_release_date - supplier_ship_date) as seg_ship_to_receive,
+  (qc_release_date - order_date) as lt_total,
+  case
+    when status = 'IN_TRANSIT' then 'IN_TRANSIT'
+    when order_date is null or qc_release_date is null then 'MISSING_DATE'
+    when qc_release_date < warehouse_receipt_date then 'IMPOSSIBLE_ORDER'
+    when warehouse_receipt_date < order_date then 'IMPOSSIBLE_ORDER'
+    else 'OK'
+  end as quality_flag,
+  batch_id
+from raw.shipment_log s;
 
+comment on view core.v_fact_shipment is
+  '보정(2026-09-12) — 저장소 마이그레이션에 처음 정의(정본이던 supabase/realdata/03b-missing-objects.sql
+  의 배포 전용 정의를 그대로 옮기고 batch_id만 끝에 추가). docs/db-저장소-대조 §6.2가 "발주 계산에
+  재사용하면 안 되고 4~5회차 화면 전용으로 남긴다"고 이미 결론냈는데 analytics.v_available_stock이
+  core.v_inbound_qty를 통해 재사용 중이다 — 이 마이그레이션은 그 구조를 바꾸지 않는다(범위 밖).
+  batch_id를 추가한 것은 출처 게이트(core.v_inbound_qty)를 위해서다';
+
+grant select on core.v_fact_shipment to authenticated;
+revoke all on core.v_fact_shipment from anon, public;
+
+-- ★ raw.shipment_log.batch_id는 열은 있지만(STEP 3) 채우는 적재 경로가 없다 —
+--   core.commit_import_batch의 import_type 분기에 shipment 종류가 없고
+--   lib/import/schema.ts에도 없다. 유일한 기입자는 4~5회차 강의 로더이고 그 로더는 이
+--   열을 채우지 않는다(22열 표에 18개 값만 넣는다). 즉 이 게이트는 Open PO처럼 "아직
+--   IMPORT 안 됨"이 아니라 "지금 구조로는 영구히 채울 수 없음"이다 — 상태 뷰(4-2절)가
+--   이 둘을 다른 사유코드로 구분한다. docs/stage1-supabase-수동적용.md에 안내를 남긴다.
+create or replace view core.v_inbound_qty as
+select
+  f.item_id,
+  case when bool_or(f.batch_id is null) then null
+       else sum(f.qty) filter (where f.batch_id is not null)
+  end as inbound_qty,
+  case when bool_or(f.batch_id is null) then null
+       else count(*) filter (where f.batch_id is not null)
+  end as inbound_shipments,
+  case when bool_or(f.batch_id is null) then null
+       else min(f.order_date + coalesce(
+              (select e.effective_lead_time from core.v_leadtime_effective e where e.supplier_id = f.supplier_id),
+              30
+            )) filter (where f.batch_id is not null)
+  end as earliest_eta
+from core.v_fact_shipment f
+where f.status = 'IN_TRANSIT'
+group by f.item_id;
+
+comment on view core.v_inbound_qty is
+  '보정(2026-09-12) — 열 이름·순서는 배포 정의와 동일(item_id, inbound_qty, inbound_shipments,
+  earliest_eta) — 열을 더하지 않는다. 기여하는 core.v_fact_shipment 행 중 batch_id가 없는
+  행이 하나라도 있으면 그 품목 전체를 null로 낸다(부분합 금지, core.v_open_po_qty와 같은
+  전부-또는-전무 판정). raw.shipment_log에 batch_id를 채우는 적재 경로가 없어 지금은
+  전 품목이 null이다 — 사유는 analytics.v_stock_reference_source_status가 알려준다';
+
+grant select on core.v_inbound_qty to authenticated;
+revoke all on core.v_inbound_qty from anon, public;
+
+
+-- ══ 4-2. 참고 열 상태 안내 — 별도 객체(열이 아니라 새 뷰) ═══════════════════
+--
+-- ★ 화면에 사유를 알려야 하지만 기존 뷰에 열을 더하지 않기로 했으므로(머리말 참고), 이
+--   저장소가 practice-data에 이미 쓰는 패턴(별도 상태 뷰 + 배너 컴포넌트)을 그대로 따라
+--   **새 뷰** 하나로 Open PO · 이동 중(참고) 두 열의 상태를 함께 알린다(품목별이 아니라
+--   화면 전체 기준 한 줄 요약). 새 객체이므로 나중에 열을 자유롭게 늘릴 수 있다.
+-- ★ 사유코드 우선순위 — 출처 게이트가 파싱 사유보다 앞선다. 출처가 없으면 파싱 여부는
+--   따지지 않는다(신뢰하지 않는 행의 파싱 가능 여부는 의미가 없다).
 -- ★ authenticated는 raw 테이블에 직접 GRANT가 없으므로(SCHEMA.md), security_invoker 뷰가
 --   raw를 직접 참조하면 permission denied가 난다(error.md #22). core.v_open_po_qty와 같은
 --   자리에 소유자 권한 core 뷰를 먼저 두고, analytics 뷰는 그 결과만 읽는다.
-create or replace view core.v_open_po_data_status as
-select
-  exists (select 1 from raw.purchase_order p where p.batch_id is null)
-    or exists (
-      select 1 from raw.goods_receipt g
-       where g.batch_id is null and g.receipt_status = 'COMPLETED' and nullif(g."입고일", '') is not null
-    ) as has_unverified_source,
-  exists (
-    select 1 from raw.purchase_order p
+
+create or replace view core.v_stock_reference_source_status as
+with po as (
+  select
+    count(*) filter (where p.batch_id is not null) as sourced_rows,
+    count(*) filter (where p.batch_id is null) as unsourced_rows
+  from raw.purchase_order p
+),
+gr as (
+  select
+    count(*) filter (where g.batch_id is not null) as sourced_rows,
+    count(*) filter (where g.batch_id is null) as unsourced_rows
+  from raw.goods_receipt g
+  where nullif(g."입고일", '') is not null and g.receipt_status = 'COMPLETED'
+),
+unparseable as (
+  -- 출처 있는(batch_id not null) 행 중 콤마를 떼도 숫자가 아닌 품목의 distinct 개수.
+  select count(distinct item_id) as items from (
+    select upper(regexp_replace(p."품목코드", '[\s\-_]', '', 'g')) as item_id
+      from raw.purchase_order p
      where p.batch_id is not null and p."발주수량" is not null and btrim(p."발주수량") <> ''
        and core.parse_lenient_numeric(p."발주수량") is null
-  ) or exists (
-    select 1 from raw.goods_receipt g
-     where g.batch_id is not null and g.receipt_status = 'COMPLETED' and nullif(g."입고일", '') is not null
+    union
+    select upper(regexp_replace(g."품목코드", '[\s\-_]', '', 'g')) as item_id
+      from raw.goods_receipt g
+     where g.batch_id is not null and nullif(g."입고일", '') is not null and g.receipt_status = 'COMPLETED'
        and g."입고수량" is not null and btrim(g."입고수량") <> '' and core.parse_lenient_numeric(g."입고수량") is null
-  ) as has_unparseable;
+  ) x
+),
+ship as (
+  select
+    count(*) filter (where f.batch_id is not null) as sourced_rows,
+    count(*) filter (where f.batch_id is null) as unsourced_rows
+  from core.v_fact_shipment f
+  where f.status = 'IN_TRANSIT'
+)
+select
+  po.sourced_rows + gr.sourced_rows as open_po_sourced_rows,
+  po.unsourced_rows + gr.unsourced_rows as open_po_unsourced_rows,
+  unparseable.items as open_po_unparseable_items,
+  case
+    when po.unsourced_rows + gr.unsourced_rows > 0 then 'OPEN_PO_SOURCE_UNVERIFIED'
+    when unparseable.items > 0 then 'OPEN_PO_QTY_UNPARSEABLE'
+  end as open_po_reason_code,
+  ship.sourced_rows as in_transit_sourced_rows,
+  ship.unsourced_rows as in_transit_unsourced_rows,
+  case when ship.unsourced_rows > 0 then 'IN_TRANSIT_NO_IMPORT_PATH' end as in_transit_reason_code
+from po, gr, unparseable, ship;
 
-comment on view core.v_open_po_data_status is
-  '보정(2026-09-12) — core.v_open_po_qty와 같은 판정 조건으로 Open PO 계산이 지금 출처
-  미확인 또는 파싱 불가 데이터에 걸려 있는지 화면 전체 기준 한 줄로 요약한다. 소유자 권한
-  으로 raw를 직접 읽는다 — analytics.v_open_po_data_status가 권한 필터를 얹어 감싼다';
+comment on view core.v_stock_reference_source_status is
+  '보정(2026-09-12) — Open PO·이동 중(참고) 두 열의 출처/파싱 상태를 화면 전체 기준 한 줄로
+  요약한다(품목별 아님). open_po_reason_code: OPEN_PO_SOURCE_UNVERIFIED(출처 없는 행이 기여,
+  파싱 사유보다 우선) > OPEN_PO_QTY_UNPARSEABLE(출처는 있으나 파싱 불가) > null(정상).
+  in_transit_reason_code: IN_TRANSIT_NO_IMPORT_PATH — raw.shipment_log.batch_id를 채우는
+  적재 경로가 아직 없어(Open PO의 "아직 IMPORT 안 됨"과 다르다) 구조적으로 항상 비어 있다.
+  소유자 권한으로 raw를 직접 읽는다 — analytics.v_stock_reference_source_status가
+  권한 필터를 얹어 감싼다';
 
-grant select on core.v_open_po_data_status to authenticated;
-revoke all on core.v_open_po_data_status from anon, public;
+grant select on core.v_stock_reference_source_status to authenticated;
+revoke all on core.v_stock_reference_source_status from anon, public;
 
-create or replace view analytics.v_open_po_data_status
+create or replace view analytics.v_stock_reference_source_status
 with (security_invoker = true)
 as
-select s.has_unverified_source, s.has_unparseable
-  from core.v_open_po_data_status s
+select s.*
+  from core.v_stock_reference_source_status s
  where core.has_permission('STOCK_VIEW_ALL')
     or core.has_permission('STOCK_VIEW_PAPER')
     or core.has_permission('STOCK_VIEW_SUPPLY');
 
-comment on view analytics.v_open_po_data_status is
-  '보정(2026-09-12) — 화면 배너 전용 요약(품목별이 아님). core.v_open_po_data_status를 재고
-  상세 권한(STOCK_VIEW_ALL·STOCK_VIEW_PAPER·STOCK_VIEW_SUPPLY)으로만 연다. 권한이 없으면
-  0행 — OpenPoStatusBanner는 이 뷰가 0행이면 아무것도 표시하지 않는다. security_invoker로
-  호출자 RLS를 그대로 적용한다';
+comment on view analytics.v_stock_reference_source_status is
+  '보정(2026-09-12) — 화면 배너 전용 요약(품목별이 아님). core.v_stock_reference_source_status를
+  재고 상세 권한(STOCK_VIEW_ALL·STOCK_VIEW_PAPER·STOCK_VIEW_SUPPLY)으로만 연다. 권한이 없으면
+  0행 — StockReferenceStatusBanner는 이 뷰가 0행이면 아무것도 표시하지 않는다.
+  security_invoker로 호출자 RLS를 그대로 적용한다';
 
-grant select on analytics.v_open_po_data_status to authenticated;
-revoke all on analytics.v_open_po_data_status from anon, public;
+grant select on analytics.v_stock_reference_source_status to authenticated;
+revoke all on analytics.v_stock_reference_source_status from anon, public;
 
 
--- ══ 4-2. 두 번째 사고 지점 — core.v_stock_on_hand ═══════════════════
+-- ══ 4-3. 세 번째 사고 지점 — core.v_stock_on_hand ═══════════════════
 --
 -- ★ 이번 지시 범위(발주수량·입고수량·단가, v_available_stock 의존)에는 없지만, 같은
 --   패턴(raw 텍스트를 곧바로 ::numeric, 출처 게이트 없음)의 뷰를 저장소 전체 참조 조사
@@ -600,9 +745,15 @@ revoke all on core.v_stock_on_hand from anon, public;
 -- 기대: 예외 없이 조회되고, open_po_qty is null.
 
 -- (d) 화면 배너가 읽을 상태 뷰 확인 — STOCK_VIEW_ALL 권한 계정으로 실행.
--- select * from analytics.v_open_po_data_status;
--- 기대(배포 DB): has_unverified_source = true(92행 전부 출처 없음), has_unparseable은
---       raw.purchase_order·raw.goods_receipt에 출처 있는 파싱 불가 행이 없으면 false.
+-- select * from analytics.v_stock_reference_source_status;
+-- 기대(배포 DB): open_po_unsourced_rows > 0 · open_po_reason_code = 'OPEN_PO_SOURCE_UNVERIFIED',
+--       in_transit_unsourced_rows > 0 · in_transit_reason_code = 'IN_TRANSIT_NO_IMPORT_PATH'
+--       (측정값: raw.purchase_order 92 · raw.goods_receipt 81 · raw.shipment_log 2864 전부
+--       batch_id null, IN_TRANSIT 117행 · 수량 합 12,137).
+
+-- (d-1) 이동 중(참고) 열도 같은 이유로 null인지 확인.
+-- select item_id, in_transit_qty from analytics.v_available_stock where in_transit_qty is not null;
+-- 기대: 0행(적용 전에는 19품목 · 합계 12,137이 보였다).
 
 -- (e) 파서 자체 동작 확인.
 -- select core.parse_lenient_numeric('1,000');   -- 기대: 1000
@@ -625,9 +776,18 @@ revoke all on core.v_stock_on_hand from anon, public;
 -- 캐스트하는 지점은 정확히 다섯 곳이었고 전부 이 마이그레이션이 다룬다:
 --   core.v_open_po_qty(발주수량·입고수량, 2절) · core.apply_stock_balance_from_batch(현재고, 3-1) ·
 --   core.apply_month_end_inventory_snapshot_from_batch(현재고, 3-2) ·
---   core.apply_stock_receipts_from_batch(입고수량, 3-3) · core.v_stock_on_hand(현재고, 4-2).
--- 단가를 캐스트하는 곳은 0건이었다.
+--   core.apply_stock_receipts_from_batch(입고수량, 3-3) · core.v_stock_on_hand(현재고, 4-3).
+-- 단가를 캐스트하는 곳은 0건이었다. core.v_inbound_qty(raw.shipment_log.qty)는 이미 numeric
+-- 타입이라 캐스트가 없다 — 4-1절의 출처 게이트는 캐스트 문제가 아니라 지어낸 숫자 노출을
+-- 막기 위한 것이다.
 
 -- (h) raw.inventory."현재고"에 실제 파싱 불가 행이 있는지(제 환경에서는 확인 불가 — 요청).
 -- select "품목코드", "현재고" from raw.inventory
 --  where "현재고" is not null and btrim("현재고") !~ '^-?[0-9]+(\.[0-9]+)?$';
+
+-- (i) raw.shipment_log 출처 분포 재확인(team-lead 측정값과 대조).
+-- select count(*) as rows, count(*) filter (where batch_id is null) as no_provenance,
+--        count(*) filter (where status = 'IN_TRANSIT') as in_transit,
+--        sum(qty) filter (where status = 'IN_TRANSIT') as in_transit_qty
+--   from raw.shipment_log;
+-- 기대: 2864 / 2864 / 117 / 12137

@@ -653,3 +653,29 @@ SCM 품목담당자 계정으로 화면에서 직접 만드는 편이 교육 목
 - **다음 기수**에는 라벨 `PRACTICE-2026-09` 을 재사용할 수 없습니다. README 의 `sed` 안내대로
   새 라벨로 바꿔야 합니다.
 - 별도 백업 `backups/usage_history-backup-20260912-1435.sql` 을 수업이 끝날 때까지 보관하세요.
+
+## 12. 이동 중(참고) 열을 살리려면 — 적재 경로가 아직 없습니다 (2026-09-12 메모)
+
+`20260912000800_fix_open_po_qty_cast.sql`이 `core.v_inbound_qty`(→ `/inventory`의 "이동 중
+(참고)" 열)에 Open PO와 같은 출처 게이트를 걸었습니다. 지금 배포 DB는
+`raw.shipment_log` 2,864행 **전부** `batch_id`가 null이라 이 열은 항상 비어 있습니다.
+
+**Open PO와 다른 점** — 발주·입고는 화면 업로드로 `batch_id`를 채울 수 있는 정식 경로가 이미
+있습니다(`core.commit_import_batch`의 `purchase_order`·`goods_receipt` 분기). **선적
+(`raw.shipment_log`)에는 그런 경로가 아예 없습니다** — `core.commit_import_batch`의
+`import_type` 분기에 shipment 종류가 없고, `lib/import/schema.ts`에도 없습니다. `batch_id`
+열 자체는 STEP 3(`20260828000200_step3_data_isolation.sql`)이 만들었지만 채우는 쪽이
+없습니다. 유일한 기입자는 4~5회차 강의 로더이고, 그 로더는 이 열을 채우지 않습니다(22열
+표에 18개 값만 넣습니다).
+
+**이동 중(참고) 열을 실제로 쓰려면** 다음이 먼저 필요합니다.
+
+1. `lib/import/schema.ts`에 `shipment`(또는 유사) import 종류 추가 — 필드 매핑·별칭 정의.
+2. `core.commit_import_batch`(현재 3곳에 정의 — STEP 4 원본 + Task 4·Task 12 확장, 최종본은
+   `20260911001150`)에 shipment 분기 추가 — 다른 종류처럼 `payload`를
+   `raw.shipment_log` 컬럼에 매핑하고 `batch_id`·`source_type`을 채웁니다.
+3. 화면 업로드 UI(`/admin/data-management` 등, 확인 필요)에 shipment 종류를 노출.
+
+이 작업 없이는 이동 중(참고) 열은 구조적으로 계속 비어 있습니다(출처 게이트가 걸려 있는 한
+정상 동작입니다 — 지어낸 숫자를 보여주는 것보다 낫습니다). `docs/데이터-요청목록.md`에도
+같은 요청을 남겼습니다.

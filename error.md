@@ -985,16 +985,35 @@ available`일 때만 그 파일을 건너뛰고 계속 진행하도록 했습니
 **`analytics.v_available_stock`·`core.v_open_po_qty`에는 사유 열을 더하지 않았습니다.**
 1차 수정안은 `open_po_reason_code` 열을 추가했으나, 그렇게 뷰를 넓히면 "전체를 파일명
 순서로 다시 적용"하는 표준 복구 절차의 재실행 확인 단계가 `cannot drop columns from view`
-로 멈춥니다(#24와 같은 현상 — `docs/stage1-판정기록.md` Task 16 판정으로 되돌렸습니다).
-사유는 새 열 대신 **새 객체**(`analytics.v_open_po_data_status`, 화면 배너 전용 요약 한 줄)
-+ `OpenPoStatusBanner` 컴포넌트로 안내합니다 — 이 저장소가 practice-data에 이미 쓰는
-패턴과 같습니다. `analytics.v_available_stock` 자체는 이 보정에서 **전혀 재정의하지
+로 멈춥니다(#24와 같은 현상 — 전용 스위트 `supabase/tests/migration_rerun`이 이 경로를
+직접 확인합니다 — `docs/stage1-판정기록.md` Task 16 판정으로 되돌렸습니다). 사유는 새 열
+대신 **새 객체**(`analytics.v_stock_reference_source_status`, 화면 배너 전용 요약 한 줄)
++ `StockReferenceStatusBanner` 컴포넌트로 안내합니다 — 이 저장소가 practice-data에 이미
+쓰는 패턴과 같습니다. `analytics.v_available_stock` 자체는 이 보정에서 **전혀 재정의하지
 않았습니다** — `core.v_open_po_qty`만 고쳐도 그 뷰가 참조하는 값이 쿼리 시점에 자동으로
 바뀝니다.
 
-같은 패턴(raw 텍스트를 곧바로 `::numeric`, 출처 게이트 없음)의 두 번째 지점
+**바로 옆 참고 열(이동 중)에도 같은 결함이 있었습니다.** `core.v_inbound_qty`(←
+`core.v_fact_shipment` ← `raw.shipment_log`)는 캐스트 크래시는 없지만(`qty`가 이미 numeric
+타입), `raw.shipment_log` 2,864행이 배포 DB에서 **전부** `batch_id` null이라 IN_TRANSIT
+117행·수량 합 12,137이 그대로 `in_transit_qty`에 나갔습니다 — Open PO와 같은 "지어낸
+숫자가 실적처럼 보이는" 결함입니다. 같은 출처 게이트를 적용했고, `raw.shipment_log.batch_id`
+를 채우는 적재 경로 자체가 없어(`core.commit_import_batch`에 shipment 분기가 없습니다)
+지금은 이 열이 구조적으로 항상 비어 있습니다(`docs/stage1-supabase-수동적용.md` §12에
+적재 경로를 만드는 방법을 남겼습니다). `core.v_fact_shipment`·`core.v_inbound_qty`는
+저장소 마이그레이션에 없던 배포 전용 객체였는데, 이 보정이 처음으로 마이그레이션에
+정의합니다(정본이던 `supabase/realdata/03b-missing-objects.sql`의 정의를 그대로 옮겼습니다).
+
+같은 패턴(raw 텍스트를 곧바로 `::numeric`, 출처 게이트 없음)의 세 번째 지점
 (`core.v_stock_on_hand` → `analytics.v_stockout_risk`, `/analysis` 재고 소진 위험 화면)도
 저장소 전체 참조 조사 중 발견해 같은 방식으로 고쳤습니다(이 뷰도 열은 바꾸지 않았습니다).
+
+**테스트는 컬럼 프루닝을 이기는 형태로 써야 합니다.** `count(*)`·필터된 count·품목별 열
+하나만 읽는 쿼리는 고치기 전 정의에서도 플래너가 문제의 캐스트 표현식 자체를 실행 계획에서
+제거해 통과할 수 있습니다 — `select *`(또는 `select count(*) from (select * from 뷰) t`,
+plpgsql `for r in select * from 뷰 loop`)만 실제로 22P02를 재현합니다. 첫 테스트 초안은
+이 함정에 걸려 "고치기 전엔 실패한다"는 증거가 사실은 무관한 스키마 차이(없는 열 참조)
+때문이었습니다 — 실패할 수 없는 테스트였습니다.
 
 **예방.** `raw.*` 텍스트 열을 `::numeric`으로 캐스트하는 새 뷰·함수를 추가할 때는 항상
 `core.parse_lenient_numeric`(읽기)·`core.require_lenient_numeric`(적재)을 거칩니다 — 직접
