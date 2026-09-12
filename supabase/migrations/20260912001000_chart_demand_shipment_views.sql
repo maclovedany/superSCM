@@ -31,30 +31,39 @@
 -- core.permission·core.role_permission·관리자 권한 화면까지 번지는 별도 과제로 남긴다(이번
 -- 범위 밖).
 --
--- ★★ fix round 1 정정, 2차(팀장 최종 판정) — permission 게이트와 security_invoker는 서로 다른
+-- ★★ fix round 1 정정, 3차(팀장 최종 판정) — permission 게이트와 security_invoker는 서로 다른
 -- 것이다. 게이트(where core.has_permission(...))는 "누가 이 뷰를 볼 수 있는가"이고,
--- security_invoker는 "뷰가 누구의 권한으로 기반 테이블을 읽는가"(RLS 적용 주체)다. **이 둘은
--- 셋 다 같은 값일 필요가 없다** — 1차 정정에서 "셋 다 invoker 복구"로 다시 뒤집었던 것도 과했다.
--- 기준은 "이 뷰가 무엇을 직접 읽는가"다:
+-- security_invoker는 "뷰가 누구의 권한으로 기반 테이블을 읽는가"(RLS 적용 주체)다.
 --
---   v_demand_series              → core.forecast_result를 직접 읽는다. 이 표는 RLS on +
+-- 2차 정정에서는 "이 뷰가 지금 무엇을 직접 읽는가"만 보고 v_demand_series에만 invoker를
+-- 남기고 출고 두 뷰는 definer로 되돌렸다. 그 판단은 **현재 비용**만 봤다 — 틀렸다. 기준에
+-- **미래 효과**를 더해야 한다: definer 뷰는 기반 표에 나중에 RLS 정책이 추가돼도 **조용히
+-- 적용되지 않는다.** 지금 raw.fact_shipment에 정책이 0개라 무해해 보이지만, 앞으로 부서·품목
+-- 범위 정책을 얹으면 definer로 둔 뷰만 그 정책에서 아무 오류 없이 빠진다. invoker의 현재
+-- 비용은 0이고(안쪽 core.v_shipment_by_hoc가 definer라 데이터는 그대로 나온다), 미래에 정책이
+-- 실제로 적용되는 이득이 있다 — 비용 0 · 이득 있음이면 선택이 아니다.
+--
+-- **그래서 세 analytics 뷰(v_demand_series·v_shipment_monthly_rollup·v_shipment_monthly_item)
+-- 모두 security_invoker = true다.** 판정 근거는 "이웃과 모양을 맞춘다"가 아니라 "무엇을
+-- 읽는가 + 나중에 정책이 적용되는가"다:
+--
+--   v_demand_series              → core.forecast_result를 직접 읽는다. 이 표는 지금도 RLS on +
 --                                   forecast_result_active_select 정책(core.is_active_user())이
 --                                   **실재한다**(같은 계열로 champion_model_selection·
 --                                   model_version·forecast_run 등 18개 정책, 20260828000500
---                                   §forecast_rls). security_invoker를 빼면 그 정책이
---                                   호출자에게 적용되지 않아 **비활성 계정도 예측 데이터를
---                                   읽게 된다**(실측: 아래 core.v_demand_actual_monthly 절
---                                   참고, invoker 유무에 따라 4행 vs 0행) — 실제로 뚫리는
---                                   구멍이라 security_invoker = true가 **필요**하다.
+--                                   §forecast_rls). invoker를 빼면 그 정책이 호출자에게
+--                                   적용되지 않아 **비활성 계정도 예측 데이터를 읽는다**(실측:
+--                                   아래 §검증 절 참고, invoker 유무에 따라 4행 vs 0행).
 --   v_shipment_monthly_rollup ·  → core.v_shipment_by_hoc(definer)를 거쳐 raw.fact_shipment를
---   v_shipment_monthly_item        읽는다. raw.fact_shipment는 RLS on이지만 정책이 **0개**고
---                                   is_active_user() 정책도 없다 — 우회는 이미 core.v_shipment_by_hoc
---                                   층에서 일어나므로 이 analytics 뷰에 invoker를 붙여도 막히는
---                                   것이 없다(이웃 analytics.v_shipment_trend도 definer). 그래서
---                                   이 둘은 security_invoker를 붙이지 않는다.
+--   v_shipment_monthly_item        읽는다. 지금은 그 표에 정책이 0개라 invoker의 현재 비용이
+--                                   0이지만, 나중에 부서·품목 범위 정책이 raw.fact_shipment에
+--                                   붙으면 이 두 뷰가 definer면 그 정책을 영구히 우회한다.
+--                                   invoker로 미리 맞춰 두면 그 정책이 얹히는 순간 자동으로
+--                                   적용된다 — 비용 0으로 미래를 지킨다.
 --
--- 배포 현황(팀장 실측) — analytics 뷰 71개 중 invoker 33 · definer 38, 기준은 "무엇을 읽는가"지
--- "게이트가 있는가"가 아니다. permission 게이트는 세 뷰 다 계속 없음(§3-b, 위 절 그대로).
+-- 배포 현황(팀장 실측) — analytics 뷰 71개 중 invoker 33 · definer 38가 있지만, 그 갈림은
+-- "게이트가 있는가"가 아니라 "지금·나중에 무엇을 읽는가"다. permission 게이트는 세 뷰 다
+-- 계속 없음(§3-b, 위 절 그대로) — 게이트와 invoker는 독립적으로 판단한다.
 --
 -- ★ 게이트를 뺀다고 core를 노출하는 것은 아니다 — 화면은 여전히 analytics만 읽는다. authenticated
 -- 에게 core 스키마 객체를 직접 조회하게 열어 준 것이 아니다(analytics 권한만 grant했다).
@@ -106,12 +115,26 @@ revoke all on core.v_demand_actual_monthly from anon;
 --   predicted_reason_code NO_CHAMPION_SELECTION    이 품목은 Backtest·Champion 선정 자체를 받은 적이 없다
 --                          NO_CHAMPION_MODEL        Backtest는 됐지만 유효 후보가 없었다(core.run_backtest의
 --                                                   NO_VALID_CANDIDATE — champion_model_id가 null)
---                          PERIOD_NOT_FORECASTED    Champion 모델은 있지만 이 기간엔 그 모델의 예측 행이 없다
+--                          PERIOD_NOT_FORECASTED    Champion 모델은 있지만 이 기간엔 그 모델의
+--                                                   core.forecast_result 행 자체가 없다(조인 실패
+--                                                   기준 — fix round 1, 리뷰어 지적. predicted_qty
+--                                                   is not null로 판정하면 "행은 있는데 값만
+--                                                   null"인 경우(predicted_qty·p80·p90 모두
+--                                                   nullable, 20260828000500:70-73) "예측 행이
+--                                                   없다"는 틀린 문장을 낸다 — 사유코드는 자기가
+--                                                   알 수 있는 것만 주장해야 한다)
 --   band_reason_code      predicted_qty가 없으면 predicted_reason_code를 그대로 물려받는다(예측이
 --                          없는데 밴드만 있을 수 없다 — v_inventory_performance의 계단식 사유코드와
 --                          같은 원칙). predicted_qty는 있는데 p80·p90 중 하나라도 없으면
 --                          BAND_UNAVAILABLE — ★ 이 경우 절대 null을 다른 값으로 채우지 않는다.
 --                          실측 450행 중 180행이 이 경로다.
+--
+-- ★ 잔여 이론적 틈 하나 — core.forecast_result 행이 존재하지만 predicted_qty 자체가 null인
+--   경우(스키마상 가능, 지금 데이터에는 없음)는 조인이 성사되므로 predicted_reason_code가
+--   null(성공)로 나가면서 predicted_qty는 null인 상태가 된다. 이 트랙의 "재현 가능한 null에는
+--   반드시 사유"라는 원칙과 형식적으로 충돌하지만, 팀장 지시(조인 성사 여부로만 판정)를 그대로
+--   따랐다 — 이 경로에 별도 사유 코드(예: PREDICTED_QTY_NULL)를 추가할지는 실제로 이런 행이
+--   생기는지 관측한 뒤 별도로 판단한다(지금 배포 데이터 0건).
 create or replace view analytics.v_demand_series
 with (security_invoker = true)
 as
@@ -145,6 +168,7 @@ joined as (
     f.predicted_qty,
     f.p80,
     f.p90,
+    (f.item_id is not null) as has_forecast_row,
     (c.item_id is not null) as has_champion_row,
     c.champion_model_id
   from periods p
@@ -158,8 +182,12 @@ reasoned as (
     case when j.actual_qty is not null then null
          else 'NO_ACTUAL_USAGE'
     end as actual_reason_code,
+    -- fix round 1(팀장 최종 판정) — "예측 있음"은 predicted_qty is not null이 아니라 조인
+    -- 성사 여부(has_forecast_row)로 판정한다. predicted_qty만으로 판정하면 core.forecast_result
+    -- 행이 있는데 그 값만 null인 경우(스키마상 가능)까지 "그 기간에 예측 행이 없다"는 틀린
+    -- 문장을 낸다 — 사유코드는 자기가 알 수 있는 것(조인 성사 여부)만 주장해야 한다.
     case
-      when j.predicted_qty is not null then null
+      when j.has_forecast_row          then null
       when not j.has_champion_row      then 'NO_CHAMPION_SELECTION'
       when j.champion_model_id is null then 'NO_CHAMPION_MODEL'
       else 'PERIOD_NOT_FORECASTED'
@@ -227,11 +255,13 @@ revoke all on analytics.v_demand_series from anon;
 -- 관측치 부족(INSUFFICIENT_TRAILING_HISTORY)과 기준선 0(TRAILING_AVG_ZERO)은 서로 다른 사실이라
 -- 우선순위를 두지 않고 배타적으로만 낸다(관측치가 3개월 미만이면 평균값 자체를 신뢰할 수 없어
 -- 그 사유가 우선이고, 3개월 이상인데 평균이 0이면 그때만 TRAILING_AVG_ZERO다).
--- security_invoker 없음(정정, 팀장 최종 판정) — core.v_shipment_by_hoc(definer)가 이미
--- raw.fact_shipment(RLS on · 정책 0개, is_active_user() 정책도 없음)를 우회해 읽는다. 이 뷰에
--- invoker를 붙여도 그 아래서 막을 정책이 없어 무해하지만, definer로 두는 쪽이 이웃
--- analytics.v_shipment_trend(definer)와 배선이 같아 더 정직하다.
-create or replace view analytics.v_shipment_monthly_rollup as
+-- security_invoker = true(3차 정정, 팀장 최종 판정) — 지금은 core.v_shipment_by_hoc(definer)가
+-- raw.fact_shipment(RLS on · 정책 0개)를 우회해 읽어 invoker의 현재 비용이 0이지만, 나중에
+-- raw.fact_shipment에 부서·품목 범위 정책이 붙으면 이 뷰가 definer면 그 정책을 영구히 우회한다.
+-- invoker로 미리 맞춰 두면 비용 0으로 그 미래를 지킨다(위 머리 주석 §정정 3차 참고).
+create or replace view analytics.v_shipment_monthly_rollup
+with (security_invoker = true)
+as
 with total_level as (
   select 'TOTAL'::text as level, null::text as item_type, ym, sum(qty) as qty
   from core.v_shipment_by_hoc
@@ -287,17 +317,18 @@ comment on view analytics.v_shipment_monthly_rollup is
   정확히 0이면 TRAILING_AVG_ZERO(둘 다 재현 가능한 null에는 반드시 사유 코드가 딸려 있다). fix
   round 1(팀장 판정) — permission 게이트 없음. 기존 v_shipment_trend와 같은 자세로
   authenticated 전체에 연다(§3-b, 오늘 이미 이 데이터를 보는 화면들과 조회 범위를 맞춘다).
-  security_invoker 없음(정정, 팀장 최종 판정) — core.v_shipment_by_hoc가 이미 definer로
-  raw.fact_shipment(RLS on · 정책 0개)를 우회해 읽어, invoker를 붙여도 막을 정책이 없다.
-  v_demand_series와 달리 이 뷰가 직접 읽는 표에는 is_active_user() 같은 정책이 없다는 것이
-  차이다';
+  security_invoker = true(3차 정정, 팀장 최종 판정) — 지금 raw.fact_shipment에 정책이 없어
+  비용은 0이지만, 나중에 정책이 붙었을 때 이 뷰가 definer로 남아 조용히 우회하지 않도록
+  미리 맞춘다';
 
 grant select on analytics.v_shipment_monthly_rollup to authenticated;
 revoke all on analytics.v_shipment_monthly_rollup from anon;
 
 
--- security_invoker 없음 — v_shipment_monthly_rollup과 같은 이유(위 주석 참고).
-create or replace view analytics.v_shipment_monthly_item as
+-- security_invoker = true — v_shipment_monthly_rollup과 같은 이유(위 주석 참고).
+create or replace view analytics.v_shipment_monthly_item
+with (security_invoker = true)
+as
 select
   h.hoc_item  as item_code,
   h.item_type,
@@ -312,7 +343,8 @@ comment on view analytics.v_shipment_monthly_item is
   eq 필터와 함께만 조회한다. 필터 없는 조회는 화면·저장소 양쪽에서 금지한다(lib 저장소 함수는
   itemCode를 선택 인자가 아니라 필수 인자로 받는다). fix round 1(팀장 판정) — permission 게이트
   없음. 기존 v_shipment_trend와 같은 자세로 authenticated 전체에 연다(§3-b). security_invoker
-  없음(정정, 팀장 최종 판정) — v_shipment_monthly_rollup과 같은 이유';
+  = true(3차 정정, 팀장 최종 판정) — v_shipment_monthly_rollup과 같은 이유(미래 정책 대비,
+  현재 비용 0)';
 
 grant select on analytics.v_shipment_monthly_item to authenticated;
 revoke all on analytics.v_shipment_monthly_item from anon;

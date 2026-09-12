@@ -34,18 +34,24 @@ select chart_test.check(:'s1b_item' = '8', 'S1b 마케팅도 v_shipment_monthly_
 
 -- error.md #26 — null일 수 있는 열은 \gset으로 담지 않는다(null이면 변수가 설정되지 않아 뒤에서
 -- ':'변수'가 리터럴로 남아 구문 오류가 난다). 조건 전체를 서브쿼리 안에서 판정한다(S3~S6과 동일).
+-- fix round 1(리뷰 지적) — 그 서브쿼리 자체가 null을 낼 수 있다(대상 행이 없거나 and 체인 중
+-- 하나가 null이면 결과가 true/false가 아니라 null이다). 그러면 \gset이 변수를 아예 설정하지
+-- 않아, 회귀가 났을 때 chart_test.check의 "FAIL: <설명>" 대신 뒤 줄에서
+-- "syntax error at or near \":\""로 죽어 원인이 로그에 안 남는다(리뷰어가 밴드 회귀 변조로
+-- 재현). 모든 `_ok` 판정을 coalesce(<서브쿼리>, false)로 감싸 항상 true/false만 나오게 한다 —
+-- 그래야 실패해도 chart_test.check가 "FAIL: <설명>"을 정확히 낸다.
 \echo '== S2 실적과 예측(밴드 포함)이 같은 달에 다 있으면 사유 코드 전부 null이고 champion(MA_3M)만 나온다 =='
 set role authenticated;
 select chart_test.as_user(:'planner1') \g /dev/null
 select
-  (select actual_qty = 80 and actual_reason_code is null
-     from analytics.v_demand_series where item_id = 'CHDEM01' and period = '2026-07-01') as s2_actual_ok \gset
+  coalesce((select actual_qty = 80 and actual_reason_code is null
+     from analytics.v_demand_series where item_id = 'CHDEM01' and period = '2026-07-01'), false) as s2_actual_ok \gset
 select
-  (select model_id = 'MA_3M' and predicted_qty = 100 and predicted_reason_code is null
-     from analytics.v_demand_series where item_id = 'CHDEM01' and period = '2026-07-01') as s2_predicted_ok \gset
+  coalesce((select model_id = 'MA_3M' and predicted_qty = 100 and predicted_reason_code is null
+     from analytics.v_demand_series where item_id = 'CHDEM01' and period = '2026-07-01'), false) as s2_predicted_ok \gset
 select
-  (select p80 = 110 and p90 = 120 and band_reason_code is null
-     from analytics.v_demand_series where item_id = 'CHDEM01' and period = '2026-07-01') as s2_band_ok \gset
+  coalesce((select p80 = 110 and p90 = 120 and band_reason_code is null
+     from analytics.v_demand_series where item_id = 'CHDEM01' and period = '2026-07-01'), false) as s2_band_ok \gset
 reset role;
 select chart_test.check(:'s2_actual_ok', 'S2 출처 없는(batch_id null) 행은 합계에서 빠진다(80, 999 아님) + 사유코드 null');
 select chart_test.check(:'s2_predicted_ok', 'S2 champion 모델(MA_3M, 100)만 나온다 — decoy(MA_6M, 999) 아님, 사유코드 null');
@@ -57,8 +63,8 @@ set role authenticated;
 select chart_test.as_user(:'planner1') \g /dev/null
 select count(*) as s3_rows from analytics.v_demand_series where item_id = 'CHDEM02' \gset
 select
-  (select predicted_qty is null and predicted_reason_code = 'NO_CHAMPION_SELECTION'
-     from analytics.v_demand_series where item_id = 'CHDEM02' and period = '2026-07-01') as s3_ok \gset
+  coalesce((select predicted_qty is null and predicted_reason_code = 'NO_CHAMPION_SELECTION'
+     from analytics.v_demand_series where item_id = 'CHDEM02' and period = '2026-07-01'), false) as s3_ok \gset
 reset role;
 select chart_test.check(:'s3_rows' = '1', 'S3 CHDEM02는 실적 달 1행뿐(예측 기간이 없으니 합집합도 1행)');
 select chart_test.check(:'s3_ok', 'S3 predicted_qty null + NO_CHAMPION_SELECTION');
@@ -69,11 +75,11 @@ set role authenticated;
 select chart_test.as_user(:'planner1') \g /dev/null
 select count(*) as s4_rows from analytics.v_demand_series where item_id = 'CHDEM03' \gset
 select
-  (select predicted_qty is null and predicted_reason_code = 'PERIOD_NOT_FORECASTED'
-     from analytics.v_demand_series where item_id = 'CHDEM03' and period = '2026-06-01') as s4_jun_ok \gset
+  coalesce((select predicted_qty is null and predicted_reason_code = 'PERIOD_NOT_FORECASTED'
+     from analytics.v_demand_series where item_id = 'CHDEM03' and period = '2026-06-01'), false) as s4_jun_ok \gset
 select
-  (select actual_qty is null and actual_reason_code = 'NO_ACTUAL_USAGE' and predicted_qty = 50
-     from analytics.v_demand_series where item_id = 'CHDEM03' and period = '2026-08-01') as s4_aug_ok \gset
+  coalesce((select actual_qty is null and actual_reason_code = 'NO_ACTUAL_USAGE' and predicted_qty = 50
+     from analytics.v_demand_series where item_id = 'CHDEM03' and period = '2026-08-01'), false) as s4_aug_ok \gset
 reset role;
 select chart_test.check(:'s4_rows' = '2', 'S4 실적 달 · 예측 달 두 행이 합쳐지지 않고 둘 다 남는다(갭)');
 select chart_test.check(:'s4_jun_ok', 'S4 2026-06은 실적만 있고 예측은 PERIOD_NOT_FORECASTED(champion은 있다)');
@@ -84,9 +90,9 @@ select chart_test.check(:'s4_aug_ok', 'S4 2026-08은 예측만 있고 실적은 
 set role authenticated;
 select chart_test.as_user(:'planner1') \g /dev/null
 select
-  (select predicted_qty is null and predicted_reason_code = 'NO_CHAMPION_MODEL'
+  coalesce((select predicted_qty is null and predicted_reason_code = 'NO_CHAMPION_MODEL'
      and band_reason_code = 'NO_CHAMPION_MODEL'
-     from analytics.v_demand_series where item_id = 'CHDEM04' and period = '2026-07-01') as s5_ok \gset
+     from analytics.v_demand_series where item_id = 'CHDEM04' and period = '2026-07-01'), false) as s5_ok \gset
 reset role;
 select chart_test.check(:'s5_ok', 'S5 predicted_qty null + NO_CHAMPION_MODEL(밴드도 같은 사유를 물려받는다)');
 
@@ -95,9 +101,9 @@ select chart_test.check(:'s5_ok', 'S5 predicted_qty null + NO_CHAMPION_MODEL(밴
 set role authenticated;
 select chart_test.as_user(:'planner1') \g /dev/null
 select
-  (select predicted_qty = 70 and predicted_reason_code is null
+  coalesce((select predicted_qty = 70 and predicted_reason_code is null
      and p80 is null and p90 is null and band_reason_code = 'BAND_UNAVAILABLE'
-     from analytics.v_demand_series where item_id = 'CHDEM05' and period = '2026-07-01') as s6_ok \gset
+     from analytics.v_demand_series where item_id = 'CHDEM05' and period = '2026-07-01'), false) as s6_ok \gset
 reset role;
 select chart_test.check(:'s6_ok', 'S6 predicted_qty는 있고 밴드만 BAND_UNAVAILABLE — predicted_reason_code는 null(예측 자체는 문제 없다)');
 
@@ -112,9 +118,9 @@ select count(*) as s7_type_rows from analytics.v_shipment_monthly_rollup where l
 -- qty는 numeric(18,4)라 텍스트로 \gset해 비교하면 '1040' vs '1040.0000'로 어긋난다 — 숫자 비교는
 -- 서브쿼리 안에서 끝낸다.
 select
-  (select qty = 1090 from analytics.v_shipment_monthly_rollup where level = 'TOTAL' and ym = '2026-07') as s7_total_jul_ok \gset
+  coalesce((select qty = 1090 from analytics.v_shipment_monthly_rollup where level = 'TOTAL' and ym = '2026-07'), false) as s7_total_jul_ok \gset
 select
-  (select qty = 1000 from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'PART' and ym = '2026-07') as s7_part_jul_ok \gset
+  coalesce((select qty = 1000 from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'PART' and ym = '2026-07'), false) as s7_part_jul_ok \gset
 reset role;
 select chart_test.check(:'s7_total_rows' = '12', 'S7 TOTAL 레벨 = {2020-01,02,03} + {2026-01..08} + {2026-12} = 12개월');
 select chart_test.check(:'s7_type_rows' = '22', 'S7 ITEM_TYPE 레벨 = PART 8 + OPTION 3 + SUPPLY 7 + GAP_TYPE 4 = 22행');
@@ -126,14 +132,14 @@ select chart_test.check(:'s7_part_jul_ok', 'S7 2026-07 PART = 1000(스파이크)
 set role authenticated;
 select chart_test.as_user(:'planner1') \g /dev/null
 select
-  (select qty_vs_trailing_6m_avg is null and trend_reason_code = 'INSUFFICIENT_TRAILING_HISTORY'
-     from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'PART' and ym = '2026-01') as s8_early_ok \gset
+  coalesce((select qty_vs_trailing_6m_avg is null and trend_reason_code = 'INSUFFICIENT_TRAILING_HISTORY'
+     from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'PART' and ym = '2026-01'), false) as s8_early_ok \gset
 select
-  (select qty_vs_trailing_6m_avg is null and trend_reason_code = 'INSUFFICIENT_TRAILING_HISTORY'
-     from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'PART' and ym = '2026-02') as s8_early2_ok \gset
+  coalesce((select qty_vs_trailing_6m_avg is null and trend_reason_code = 'INSUFFICIENT_TRAILING_HISTORY'
+     from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'PART' and ym = '2026-02'), false) as s8_early2_ok \gset
 select
-  (select qty_vs_trailing_6m_avg > 5 and trend_reason_code is null
-     from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'PART' and ym = '2026-07') as s8_spike_ok \gset
+  coalesce((select qty_vs_trailing_6m_avg > 5 and trend_reason_code is null
+     from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'PART' and ym = '2026-07'), false) as s8_spike_ok \gset
 reset role;
 select chart_test.check(:'s8_early_ok', 'S8 2026-01(관측치 0개)은 배수 null + INSUFFICIENT_TRAILING_HISTORY');
 select chart_test.check(:'s8_early2_ok', 'S8 2026-02(관측치 1개)도 아직 null + INSUFFICIENT_TRAILING_HISTORY');
@@ -145,7 +151,7 @@ set role authenticated;
 select chart_test.as_user(:'planner1') \g /dev/null
 select count(*) as s9_rows from analytics.v_shipment_monthly_item where item_code = 'CHSHIP01' \gset
 select
-  (select qty = 1000 from analytics.v_shipment_monthly_item where item_code = 'CHSHIP01' and ym = '2026-07') as s9_jul_ok \gset
+  coalesce((select qty = 1000 from analytics.v_shipment_monthly_item where item_code = 'CHSHIP01' and ym = '2026-07'), false) as s9_jul_ok \gset
 reset role;
 select chart_test.check(:'s9_rows' = '8', 'S9 CHSHIP01은 8개월(2026-01~08) 전부 나온다');
 select chart_test.check(:'s9_jul_ok', 'S9 2026-07 수량은 스파이크 값 1000 그대로(스무딩하지 않는다)');
@@ -157,9 +163,9 @@ select chart_test.check(:'s9_jul_ok', 'S9 2026-07 수량은 스파이크 값 100
 set role authenticated;
 select chart_test.as_user(:'planner1') \g /dev/null
 select
-  (select predicted_qty = 90 and predicted_reason_code is null
+  coalesce((select predicted_qty = 90 and predicted_reason_code is null
      and p80 = 95 and p90 is null and band_reason_code = 'BAND_UNAVAILABLE'
-     from analytics.v_demand_series where item_id = 'CHDEM06' and period = '2026-07-01') as s10_ok \gset
+     from analytics.v_demand_series where item_id = 'CHDEM06' and period = '2026-07-01'), false) as s10_ok \gset
 reset role;
 select chart_test.check(:'s10_ok', 'S10 p80=95는 그대로, p90은 null 그대로(p80 값으로 채워지지 않는다) + BAND_UNAVAILABLE');
 
@@ -170,13 +176,13 @@ select chart_test.check(:'s10_ok', 'S10 p80=95는 그대로, p90은 null 그대�
 set role authenticated;
 select chart_test.as_user(:'planner1') \g /dev/null
 select
-  (select qty_vs_trailing_6m_avg is null and trend_reason_code = 'TRAILING_AVG_ZERO'
-     from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'SUPPLY' and ym = '2026-04') as s11_first3_ok \gset
+  coalesce((select qty_vs_trailing_6m_avg is null and trend_reason_code = 'TRAILING_AVG_ZERO'
+     from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'SUPPLY' and ym = '2026-04'), false) as s11_first3_ok \gset
 select
-  (select qty_vs_trailing_6m_avg is null and trend_reason_code = 'TRAILING_AVG_ZERO'
-     from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'SUPPLY' and ym = '2026-07') as s11_spike_ok \gset
+  coalesce((select qty_vs_trailing_6m_avg is null and trend_reason_code = 'TRAILING_AVG_ZERO'
+     from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'SUPPLY' and ym = '2026-07'), false) as s11_spike_ok \gset
 select
-  (select qty = 50 from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'SUPPLY' and ym = '2026-07') as s11_qty_ok \gset
+  coalesce((select qty = 50 from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'SUPPLY' and ym = '2026-07'), false) as s11_qty_ok \gset
 reset role;
 select chart_test.check(:'s11_first3_ok', 'S11 2026-04(관측치 3개, 전부 0)는 배수 null + TRAILING_AVG_ZERO(INSUFFICIENT 아님)');
 select chart_test.check(:'s11_spike_ok', 'S11 2026-07(관측치 6개, 전부 0)도 마찬가지 — 실제 값(50)이 있어도 기준선이 0이면 배수를 낼 수 없다');
@@ -191,10 +197,10 @@ select chart_test.check(:'s11_qty_ok', 'S11 qty 자체는 스무딩 없이 50 �
 set role authenticated;
 select chart_test.as_user(:'planner1') \g /dev/null
 select
-  (select qty_vs_trailing_6m_avg is null and trend_reason_code = 'INSUFFICIENT_TRAILING_HISTORY'
-     from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'GAP_TYPE' and ym = '2026-12') as s12_ok \gset
+  coalesce((select qty_vs_trailing_6m_avg is null and trend_reason_code = 'INSUFFICIENT_TRAILING_HISTORY'
+     from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'GAP_TYPE' and ym = '2026-12'), false) as s12_ok \gset
 select
-  (select qty = 999 from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'GAP_TYPE' and ym = '2026-12') as s12_qty_ok \gset
+  coalesce((select qty = 999 from analytics.v_shipment_monthly_rollup where level = 'ITEM_TYPE' and item_type = 'GAP_TYPE' and ym = '2026-12'), false) as s12_qty_ok \gset
 reset role;
 select chart_test.check(:'s12_ok', 'S12 2026-12은 6년 전 3개 행을 트레일링으로 세지 않는다 — 관측치 0개, INSUFFICIENT_TRAILING_HISTORY(터무니없는 배수 아님)');
 select chart_test.check(:'s12_qty_ok', 'S12 qty 자체는 999 그대로');

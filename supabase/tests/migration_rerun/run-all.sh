@@ -115,7 +115,13 @@ with expected(label, actual, want) as (
     ('core.v_item_master 열 수(사유 열 추가 금지)',
        (select count(*) from information_schema.columns where table_schema = 'core' and table_name = 'v_item_master'), 6),
     ('analytics.v_item_master_source_status 열 수(새 상태 객체)',
-       (select count(*) from information_schema.columns where table_schema = 'analytics' and table_name = 'v_item_master_source_status'), 3)
+       (select count(*) from information_schema.columns where table_schema = 'analytics' and table_name = 'v_item_master_source_status'), 3),
+    -- chart-views fix round 1 4차(팀장 판정) — 나중 create or replace가 열을 조용히 좁히면
+    -- (예: 사유 코드 3개 중 하나를 실수로 빼면) 여기서 잡는다. v_demand_series는 item_id ·
+    -- item_name · period · actual_qty · actual_reason_code · model_id · predicted_qty ·
+    -- predicted_reason_code · p80 · p90 · band_reason_code = 11열.
+    ('analytics.v_demand_series 열 수(사유 코드 3개 포함)',
+       (select count(*) from information_schema.columns where table_schema = 'analytics' and table_name = 'v_demand_series'), 11)
 )
 select case when actual = want then 'PASS: ' else 'FAIL: ' end
        || label || ' (' || actual::text || ' · 기대 ' || want::text || ')'
@@ -187,13 +193,27 @@ select case when proconfig is not null
              then 'PASS: ' else 'FAIL: ' end
        || 'core.remove_practice_dataset가 두 번째 적용 뒤에도 SET search_path를 유지한다'
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
- where n.nspname = 'core' and p.proname = 'remove_practice_dataset';
+ where n.nspname = 'core' and p.proname = 'remove_practice_dataset'
+union all
+-- chart-views fix round 1 3·4차(팀장 최종 판정) — 세 analytics 뷰 모두 security_invoker = true
+-- 여야 한다(v_demand_series는 core.forecast_result의 is_active_user() RLS를 호출자 기준으로
+-- 적용하기 위해 필요, 출고 두 뷰는 지금은 raw.fact_shipment에 정책이 없어 비용이 0이지만
+-- 나중에 정책이 붙었을 때 자동으로 적용되게 하려고 미리 켜 둔다). reloptions 배열에
+-- security_invoker=true가 있는지 직접 확인한다 — 열 수만으로는 이 속성이 조용히 꺼져도
+-- 잡지 못한다(create or replace view가 with (security_invoker = ...) 절을 빠뜨리면 오류
+-- 없이 기본값(false)으로 돌아간다).
+select case when 'security_invoker=true' = any(coalesce(c.reloptions, array[]::text[]))
+            then 'PASS: ' else 'FAIL: ' end
+       || 'analytics.' || v.view_name || ' security_invoker=true를 유지한다'
+  from (values ('v_demand_series'), ('v_shipment_monthly_rollup'), ('v_shipment_monthly_item')) as v(view_name)
+  left join pg_namespace n on n.nspname = 'analytics'
+  left join pg_class c on c.relnamespace = n.oid and c.relname = v.view_name;
 SQL
 POST_PASS=$(grep -c '^PASS: ' "$LOG_DIR/postconditions.log" || true)
 POST_FAIL=$(grep -c '^FAIL: ' "$LOG_DIR/postconditions.log" || true)
 echo "사후 조건: PASS $POST_PASS · FAIL/ERROR $POST_FAIL"
 sed 's/^/  /' "$LOG_DIR/postconditions.log"
-if [ "$POST_PASS" -ne 18 ] || [ "$POST_FAIL" -ne 0 ]; then
+if [ "$POST_PASS" -ne 22 ] || [ "$POST_FAIL" -ne 0 ]; then
   STATUS=1
 fi
 
