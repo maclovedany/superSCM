@@ -195,7 +195,93 @@ Claude 가 세션 풀러(5432)로 직접 적용했습니다. 적용 전후 정�
 ### SQL 로 할 수 없어 남은 일
 
 1. Vercel 환경변수 4개(`SUPABASE_SECRET_KEY`·`CRON_SECRET`·`RESEND_API_KEY`·`RESEND_FROM_EMAIL`)와
-   10분 Cron(Pro 이상 또는 동등 스케줄러)
+   10분 Cron(Pro 이상 또는 동등 스케줄러) — **또는 아래 §7의 Supabase pg_cron 경로(무료 플랜).**
 2. 직책·부서가 지정된 사용자 계정 생성 — 현재 `core.app_user` 1행이라 직책별 검수 불가
 3. 업무 마스터 입력: 공급처, 법인 출항 준비기간, 출항일 규칙, 한국 공휴일, 품목 정책 승인
 4. 취합 주기 열기(SCM 품목담당자) — 이후 기준월이 화면에 표시됨
+
+## 7. Task 14 추가 — Supabase pg_cron 알림 스케줄러 (무료 플랜, 2026-09-12)
+
+> §6 까지의 stage1(Task 1~13)은 이미 배포 DB 에 적용 완료된 상태입니다. 이번 절은 그 위에
+> **추가**하는 것이며, 기존 마이그레이션을 다시 적용할 필요는 없습니다.
+
+10분마다 도는 세 반복 작업(알림 발송 · 임시배정 자동 만료 · 수요 미제출 알림)을 Vercel Pro
+없이 Supabase 무료 플랜 안에서 돌리기 위한 절차입니다. 배경과 동작 방식은
+`docs/notification-operations.md`의 "실행 주기와 배포 조건 — 기본: Supabase pg_cron"을
+먼저 읽으세요.
+
+### 7-1. Edge Function 배포
+
+```bash
+supabase functions deploy notify --project-ref <project-ref>
+```
+
+`supabase/functions/notify/index.ts` 하나만 있으면 됩니다(npm 의존성 없음, `jsr:@supabase/supabase-js@2`만
+사용). `--no-verify-jwt`를 붙이지 않습니다 — 이 함수는 Supabase Auth JWT 검증이 아니라 자체
+`CRON_SECRET` 비교로 인증합니다(둘은 별개의 문 — pg_net이 호출할 때 Authorization 헤더를
+Supabase Auth JWT가 아니라 이 CRON_SECRET로 채웁니다).
+
+### 7-2. Edge Function 시크릿 설정
+
+```bash
+supabase secrets set CRON_SECRET='<임의의 긴 무작위 값>' --project-ref <project-ref>
+# 이메일을 아직 안 쓰면 이 둘은 생략해도 됩니다(IN_APP 알림은 그대로 동작).
+supabase secrets set RESEND_API_KEY='<Resend API 키>' --project-ref <project-ref>
+supabase secrets set RESEND_FROM_EMAIL='<발신 주소>' --project-ref <project-ref>
+```
+
+`SUPABASE_URL`·`SUPABASE_SERVICE_ROLE_KEY`는 플랫폼이 자동으로 주입하므로 직접 설정하지
+않습니다.
+
+### 7-3. Vault 시크릿 생성 (SQL Editor, `postgres` 역할)
+
+```sql
+select vault.create_secret(
+  'https://<project-ref>.supabase.co/functions/v1/notify',
+  'stage1_notify_url',
+  'Task 14 · 알림 Edge Function 호출 주소'
+);
+select vault.create_secret(
+  '<7-2에서 설정한 CRON_SECRET과 같은 값>',
+  'stage1_notify_secret',
+  'Task 14 · 알림 Edge Function 인증 비밀값(CRON_SECRET)'
+);
+```
+
+값을 나중에 바꿀 때는 새로 만들지 말고 `vault.update_secret(id, secret)`으로 교체합니다(id는
+`select id from vault.secrets where name = '...'`로 조회).
+
+### 7-4. 마이그레이션 적용
+
+```
+20260912000100_stage1_pg_cron_jobs.sql
+```
+
+pg_cron·pg_net 확장 설치(`if not exists`, 재적용 안전) 후 세 작업(`stage1-notify` ·
+`stage1-expire-allocations` · `stage1-demand-reminders`)을 10분 주기로 등록합니다. 이름으로
+먼저 `cron.unschedule`한 뒤 다시 `cron.schedule`하므로, 이 파일만 몇 번을 다시 적용해도
+작업이 중복 등록되지 않습니다(파일 하단 확인 쿼리 참고).
+
+### 7-5. 확인 쿼리
+
+```sql
+-- 세 작업이 모두 활성 상태인지
+select jobname, schedule, active from cron.job
+where jobname like 'stage1-%' order by jobname;
+-- 기대: 3행, active = true
+
+-- 최근 회차가 실제로 200을 받았는지 (claimed 0건이어도 200이 정상)
+select status_code, content::text, error_msg, created
+from net._http_response order by created desc limit 5;
+```
+
+`status_code = 401`이면 7-2의 `CRON_SECRET`과 7-3의 `stage1_notify_secret` 값이 다른 것입니다.
+자세한 디버깅 순서는 `docs/notification-operations.md`를 참고하세요.
+
+### 7-6. 로컬에서 검증하지 못한 것
+
+pg_cron·pg_net·Vault(`supabase_vault`)는 로컬 스크래치 PostgreSQL에 설치할 수 없어(확장
+자체가 없음), 이 저장소의 자동 테스트는 SQL 문법·가드·멱등성만 확인했습니다(스텁 스키마로
+직접 실행해 확인, `lib/notifications/pg-cron-migration.test.ts`). 실제 확장 설치 ·
+스케줄 등록 · Edge Function까지의 HTTP 왕복은 배포 후 위 7-5 확인 쿼리로 컨트롤러가
+직접 검증해야 합니다.

@@ -36,6 +36,7 @@
 | `Type 'MapIterator<...>' can only be iterated through when using the '--downlevelIteration' flag or with a '--target' of 'es2015' or higher` | `tsconfig.json`의 `target`이 `es5`라 `Map.entries()`를 바로 스프레드(`[...map.entries()]`)할 수 없음 | [#28](#28-mapiterator를-바로-스프레드할-수-없다) |
 | `policy "upload_batch_active_select" for table "upload_batch" already exists` | 마이그레이션의 `create policy` 앞에 `drop policy if exists`가 없어 재적용이 멈춤 | [#29](#29-마이그레이션-전체를-두-번-적용하면-중간에서-멈춘다) |
 | 마이그레이션 전체를 파일명 순서로 다시 적용하면 중간에서 멈춤(`cannot drop columns from view` · `cannot change name of view column` · `policy ... already exists`) | 뒤 파일이 앞 파일의 뷰를 넓혔거나, 정책을 drop 없이 다시 만듦 | [#29](#29-마이그레이션-전체를-두-번-적용하면-중간에서-멈춘다) |
+| `npm run build`에서 `Cannot find module 'jsr:@supabase/supabase-js@2'`(Deno Edge Function 파일에서) | Next.js `tsconfig.json`이 `supabase/functions/**`도 타입체크 대상에 포함시킴 | [#30](#30-npm-run-build가-supabasefunctions의-deno-edge-function을-타입체크하려다-실패한다) |
 
 ## #29 마이그레이션 전체를 두 번 적용하면 중간에서 멈춘다
 
@@ -818,3 +819,35 @@ do update set confirmed_receipt_date = excluded.confirmed_receipt_date;
 **예방.** `RETURNS TABLE (...)` 함수 안에서 그 출력 열과 이름이 같은 열에 `INSERT ... ON CONFLICT (열이름)`을
 쓸 때는 처음부터 `ON CONFLICT ON CONSTRAINT <제약이름>`을 씁니다(#20의 `RETURNING`·WHERE 별칭 규칙과
 같은 예방 습관을 ON CONFLICT 대상 열까지 넓힌다).
+
+## #30 `npm run build`가 `supabase/functions`의 Deno Edge Function을 타입체크하려다 실패한다
+
+**증상.** Task 14(pg_cron 알림 스케줄러)에서 `supabase/functions/notify/index.ts`(Deno Edge
+Function, `jsr:@supabase/supabase-js@2` import)를 추가한 뒤 `npm run build`가 다음 오류로
+실패했습니다.
+
+```text
+./supabase/functions/notify/index.ts:18:30
+Type error: Cannot find module 'jsr:@supabase/supabase-js@2' or its corresponding type declarations.
+```
+
+**원인.** `tsconfig.json`의 `include`가 `**/*.ts`라 저장소 전체의 `.ts` 파일을 다 포함합니다.
+`supabase/functions/**`는 Deno 런타임 전용 코드(`jsr:` 스펙파이어, `Deno.serve`, `Deno.env`)라
+Next.js가 쓰는 Node 기반 TypeScript 프로젝트(`moduleResolution: bundler`)로는 애초에 해석할
+수 없는 모듈 스펙입니다. 이 디렉터리는 Next.js 앱의 일부가 아니라 별도로 배포되는
+Supabase CLI 산출물입니다.
+
+**해결.** `tsconfig.json`의 `exclude`에 `supabase/functions`를 추가했습니다.
+
+```json
+"exclude": ["node_modules", "supabase/functions"]
+```
+
+Deno 코드 자체의 타입 검사는 이 tsconfig와 무관하게 `supabase functions deploy`(또는
+`deno check`)가 배포 시점에 Deno 자체 타입 검사기로 수행합니다.
+
+**예방.** Deno Edge Function을 저장소 안에 추가할 때는 `supabase/functions/` 아래에만 두고,
+Next.js `tsconfig.json`의 `include`가 그 경로까지 삼키지 않는지 `npm run build`로 바로
+확인합니다. 반대로 Edge Function 쪽에서 `lib/`의 Node 전용 코드(`node:crypto` 등)를 그대로
+import하면 Deno 배포 쪽에서 같은 종류의 오류가 날 수 있으므로, 공유가 필요한 순수 로직은
+Node 의존성이 없는 형태로 각 런타임에 맞게 따로 유지합니다.
