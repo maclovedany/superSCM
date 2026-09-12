@@ -54,9 +54,18 @@ SQL
 
 # 0850은 자기 순서 자리에서 곧바로 한 번 더 적용한다(재실행 안전성). 전체 적용 뒤에 다시 돌리면, 뒤 마이그레이션
 # (Task 9b 0900)이 analytics.v_item_policy 끝에 덧붙인 열을 0850의 뷰 정의가 지우려다 실패한다(error.md #24).
+# ★ Task 17 리뷰 fix round 1 — Task 14(20260912000100)의 pg_cron·pg_net 확장은 일반 로컬
+#   PostgreSQL에 없다(error.md #31). 이 스위트는 pg_cron과 무관하므로, sales_order_allocation/
+#   bootstrap.sh와 동일한 가드로 "정확히 그 파일이 그 이유로만" 실패하면 건너뛴다. 이전에는 이
+#   가드가 없어 이 스위트가 이 로컬 환경에서 한 번도 끝까지 돌아본 적이 없었다(error.md #35).
+PG_CRON_MIGRATION_NAME="20260912000100_stage1_pg_cron_jobs.sql"
 for migration in "$REPO"/supabase/migrations/*.sql; do
   name=$(basename "$migration")
   if ! "${PSQL[@]}" -d "$DB" -f "$migration" > "$LOG_DIR/migration-$name.log" 2>&1; then
+    if [ "$name" = "$PG_CRON_MIGRATION_NAME" ] && grep -qE 'extension "pg_(cron|net)" is not available' "$LOG_DIR/migration-$name.log"; then
+      echo "건너뜀(로컬에 pg_cron/pg_net 확장 없음, 이 스위트와 무관): $name" >&2
+      continue
+    fi
     echo "마이그레이션 실패: $name" >&2
     tail -5 "$LOG_DIR/migration-$name.log" >&2
     exit 1

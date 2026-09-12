@@ -1102,8 +1102,13 @@ core의 item_id 열을 가진 19개 표 전수조사 결과 0건이라(팀장 �
 **해결.** `supabase/migrations/20260912000900_gate_item_master_dummy_rows.sql`이
 `core.v_item_master`를 `raw.item_master.batch_id is not null`인 행만으로 다시
 정의합니다(DISTINCT ON·pref 정렬·열 이름/순서는 완전히 동일 — 열을 더하지 않습니다).
-`raw.item_master` 행 자체는 지우지 않습니다 — 정식 재적재나 실습 등록으로 언제든 다시 보일
-수 있습니다. 사유는 `#33`과 같은 패턴으로 새 객체(`core.v_item_master_source_status` +
+`raw.item_master` 행 자체는 지우지 않습니다 — 같은 품목코드를 `core.commit_import_batch`로
+다시 정식 재적재하면(`batch_id`가 채워짐) 언제든 다시 보일 수 있습니다. **정정(리뷰 fix
+round 1)** — 1차 서술은 "실습 등록(`core.register_practice_object`)으로도 다시 보인다"고
+적었는데, 스크래치 DB로 직접 측정해 반증됐습니다(등록 전후 모두 `core.v_item_master`에서
+0건). `core.register_practice_object`는 `core.practice_object`에만 INSERT할 뿐
+`raw.item_master.batch_id`를 전혀 건드리지 않습니다 — 유효한 복구 경로는
+`core.commit_import_batch` 하나뿐입니다. 사유는 `#33`과 같은 패턴으로 새 객체(`core.v_item_master_source_status` +
 `analytics.v_item_master_source_status`, 화면 배너 전용 요약)로 안내합니다 — **기존
 `analytics.v_stock_reference_source_status`에 합치지 않았습니다**: 그 뷰는 "참고 열 값"의
 출처 상태이고 이 뷰는 "품목이 화면에 보이는가" 자체의 출처 상태라 대상과 사유코드 체계가
@@ -1132,3 +1137,96 @@ raw.<표>" supabase/tests`로 전수 확인하고, 그 fixture의 의도가 "정
 `pg_get_viewdef`로 게이트 조건(WHERE 절) 자체가 두 번째 적용 뒤에도 남아 있는지 확인하는
 사후조건을 추가했습니다 — 열 수만 보면 "조용히 게이트 없는 옛 정의로 되돌아갔는지"를 알 수
 없습니다.
+
+## #35 `core.v_item_master` 출처 게이트가 `remove_practice_dataset`의 실습 표식을 조용히 지웠다
+
+**증상.** `#34`의 게이트를 건 뒤, 출처 없는 품목을 실습 ITEM으로 등기하고
+`core.remove_practice_dataset`을 실행하면 그 등기(실습 표식) 자체가 삭제됩니다 — 사람이
+아무것도 요청하지 않았는데 표식이 벗겨집니다.
+
+**원인.** `supabase/migrations/20260912000600_practice_retire_legacy_usage.sql`의 등기 정리
+블록(`delete from core.practice_object ... case o.object_kind when 'ITEM' then exists (...)`)
+이 "원본 객체가 아직 있는가"를 `core.v_item_master`(화면 가시성, `#34`에서 출처 게이트가
+걸린 뷰)로 판정했습니다. 게이트 뒤에는 출처 없는 품목이 `core.v_item_master`에서 사라지므로,
+그 품목의 실습 등기가 "원본이 없어졌다"로 오판돼 삭제됩니다 — 등기 정리 블록 바로 옆 주석이
+경고하는 실패 모드(N1)와 같은 종류이고, 이번엔 `#34`의 게이트가 새로 만든 구멍입니다. 1차
+구현 보고서는 "이 검사가 다루는 품목은 실습 등록된 품목뿐이고 항상 `batch_id`가 있어 영향이
+없다"고 판단했는데, 이건 **배포 DB의 현재 데이터가 우연히 그런 것이지 `core.register_practice_object`
+가 강제하는 불변식이 아니었습니다** — 그 함수는 `core.practice_object`에만 INSERT하고
+`raw.item_master.batch_id`를 전혀 건드리지 않습니다(같은 오해가 "실습 등록하면 화면에 다시
+보인다"는 별도의 잘못된 복구 경로 주장으로도 나타났습니다 — `#34` 정정 참고).
+
+**해결.** ITEM 존재 검사를 `core.v_item_master`가 아니라 `raw.item_master` 원본 행 기준으로
+바꿨습니다(`core.normalize_item_id`로 정규화해 비교). 등기부가 묻고 싶은 것은 "이 품목 행이
+아직 있는가"이지 "지금 화면에 보이는가"가 아닙니다 — 화면 가시성과 등기 유효성은 다른
+축입니다. 회귀 방지 테스트를 `supabase/tests/practice_data/scenarios.psql`(S23)에 추가해,
+출처 없는 품목을 ITEM으로 등기해도 `remove_practice_dataset` 뒤 그 등기가 살아남는 것을
+직접 확인합니다.
+
+**예방.** 게이트된(화면 가시성이 좁아진) 뷰를 "삭제·정리 여부를 판정하는 존재 검사"에 쓰면
+안 됩니다 — 그 뷰가 좁아질 때마다 판정이 조용히 더 공격적으로 바뀝니다. "원본이 있는가"를
+묻는 코드는 항상 원본 표(raw/core의 정본 표)를 직접 봐야 하고, "화면에 보이는가"를 묻는
+코드만 게이트된 뷰를 씁니다. 이번처럼 한 뷰에 새 게이트를 걸 때는 그 뷰를 참조하는 모든
+코드를 "생성 검증(강화해도 안전)"과 "존재·삭제 판정(게이트가 새 위험을 만들 수 있음)"으로
+나눠 분류합니다.
+
+## #36 로컬 환경에서 세 스위트(`item_policy`·`approved_demand`·`procurement_plan`)가 한 번도
+##     끝까지 돌아본 적이 없었다 — 저장소 결함 2개가 겹쳐 있었다
+
+**증상.** `bash supabase/tests/item_policy/run-all.sh`(및 `approved_demand`·
+`procurement_plan`)가 로컬 PostgreSQL 환경에서 `fixtures.psql`에 도달하지도 못하고
+`bootstrap.sh` 단계에서 멈췄습니다.
+
+**원인 — 결함 2개가 겹쳐 있었습니다.**
+
+1. **`bootstrap.sh`에 pg_cron 스킵 가드가 없음.** Task 14(`20260912000100_stage1_pg_cron_jobs.sql`)
+   가 요구하는 `pg_cron`·`pg_net` 확장은 Supabase 전용이라 일반 로컬 PostgreSQL에 없습니다
+   (`#31`). `sales_order_allocation`·`user_admin`·`practice_data`의 `bootstrap.sh`만
+   "정확히 그 파일이 그 이유로만 실패하면 건너뛴다"는 가드를 갖고 있었고, 나머지 7개 스위트
+   (`item_policy`·`approved_demand`·`procurement_plan`·`demand_submission`·`inventory_kpi`·
+   `procurement_schedule`·`master_edit`)는 이 가드가 없어 첫 마이그레이션 실패에서 그대로
+   멈췄습니다.
+2. **가상 직책을 그대로 쓴 fixture.** `20260912000300`(관리자 계정 관리)이
+   `core.app_user.job_role`에 실제 직책 6개만 허용하는 체크 제약을 걸었는데, `item_policy`
+   (`T9_DUAL_ROLE`)·`approved_demand`(`T8_DUAL_ROLE`)·`procurement_plan`(`T9B_DUAL_ROLE`)·
+   `sales_order_allocation`(`T5_DUAL`) fixture는 "요청 권한 + 승인 권한을 함께 가진 겸직
+   계정"을 만들려고 실재하지 않는 합성 직책명을 `app_user.job_role`에 그대로 INSERT했습니다.
+
+pg_cron 가드가 없어 1번이 먼저 막았기 때문에 세 스위트(`item_policy`·`approved_demand`·
+`procurement_plan`)에서는 2번이 pg_cron을 우회한 뒤에야 드러났습니다 — Task 17 구현 1차
+보고서는 2번만 원인으로 적고 "이 로컬 환경의 문제"라고 분류했는데, 두 결함 모두 **커밋된
+마이그레이션·fixture 자체의 문제라 어느 머신에서 돌려도 같은 지점에서 깨지는 저장소
+결함**입니다.
+
+**해결(Task 17 리뷰 fix round 1).** pg_cron 가드는 `item_policy`·`approved_demand`·
+`procurement_plan` 세 스위트의 `bootstrap.sh`에 `sales_order_allocation`과 동일한 스킵
+가드를 추가했습니다.
+
+2번은 **운영 제약을 건드리지 않는 방법으로 고쳤습니다** — 1차 대응은 각 스위트의 임시 DB
+에서 `app_user_job_role_chk`를 완화하는 것이었는데(`sales_order_allocation`의 `T5_DUAL`
+선례와 같은 방식), 다시 보니 **그럴 필요가 전혀 없었습니다.** `core.role_permission.job_role`
+열에는 CHECK도 FK도 없습니다(`20260911000200_step19_permission.sql:65-70`) — 즉 "이중
+권한을 가진 역할을 만드는 것" 자체는 이미 합법이고, 막혀 있는 것은 그 합성 직책명을 실제
+사용자(`app_user`)에게 배정하는 것뿐입니다. 그래서 네 스위트 모두 합성 직책 대신 **그
+스위트가 다른 용도로 쓰지 않는 실제 직책**(`item_policy`·`approved_demand`·
+`procurement_plan`은 `BIZ_DEV`, `sales_order_allocation`은 `BIZ_DEV`가 이미 다른 계정에
+쓰이고 있어 `SERVICE`)에 그 스위트가 필요한 권한 쌍만 `core.role_permission`으로 시험
+전용 임시 DB에 얹었습니다 — `app_user_job_role_chk` 완화 코드는 네 스위트 어디에도 남기지
+않았습니다(운영 제약을 전혀 건드리지 않습니다). "요청자 본인은 승인할 수 없다"류 시나리오는
+사용자 uuid로만 참조하므로 역할 이름과 무관하게 그대로 성립합니다.
+
+**남은 gap(별도 과제로 올림, 이번에 고치지 않음).** `demand_submission`·`inventory_kpi`·
+`procurement_schedule`·`master_edit` 4개 스위트는 여전히 pg_cron 스킵 가드가 없습니다(이
+넷은 job_role 완화 문제는 없어 가드만 추가하면 끝까지 돌아갑니다 — Task 17 검증 중
+`verify-suite.sh`라는 저장소 밖 임시 스크립트로 실제 확인했습니다). 다음에 이 스위트들을
+손대는 사람은 `sales_order_allocation/bootstrap.sh`의 4줄짜리 가드를 그대로 옮기면 됩니다.
+
+**예방.** 새 스위트의 `bootstrap.sh`를 만들 때는 항상 pg_cron 스킵 가드를 기본으로
+포함합니다(로컬 PostgreSQL에는 이 확장이 없다는 것이 이미 알려진 사실이기 때문입니다,
+`#31`). "요청 권한 + 승인 권한을 함께 가진 겸직 계정" 같은 시나리오가 필요할 때는 **운영
+제약을 넓히지 않습니다** — 먼저 그 열(`job_role`)에 제약이 있는지, 권한을 실제로 매기는
+표(`core.role_permission.job_role`)에도 같은 제약이 있는지 확인합니다. 후자에 제약이
+없다면(이번이 그랬습니다) 합성 직책명을 새로 만들 필요가 없습니다 — 그 스위트가 다른
+용도로 쓰지 않는 **실제 직책**에 시험에 필요한 권한 쌍만 임시 DB의 `core.role_permission`
+에 얹으면, `app_user_job_role_chk`는 손대지 않고도 원하는 권한 조합을 만들 수 있습니다.
+제약을 완화하는 것은 최후 수단입니다 — 완화가 정말 필요한지부터 스키마를 직접 확인합니다.

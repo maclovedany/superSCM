@@ -181,28 +181,39 @@ export function stockReferenceStatusBannerMessage(status: StockReferenceSourceSt
  *   같은 이유로 별도 뷰 + 별도 배너로 둔다(그 뷰에 열을 추가하는 것도 하지 않는다 — 이미 있는
  *   analytics 뷰를 넓히면 cannot drop columns from view 위험이 생긴다).
  */
+/**
+ * ★ 2026-09-12 리뷰 fix round 1 — 1차 초안은 이 값들을 "…Rows"로 부르고 raw.item_master
+ *   행 수를 그대로 옮겼는데, 배너 문구가 그 숫자를 화면 목록(품목 단위)에서 빠진 개수처럼
+ *   말해 단위가 어긋났다(23행을 21품목처럼 말함 — 리뷰어 지적). 상태 뷰 자체를 품목 단위로
+ *   다시 세도록 고쳤으므로(core.v_item_master_source_status, 열 수는 그대로 3개) 여기 필드
+ *   이름도 "…Items"로 맞춘다.
+ */
 export type ItemMasterSourceStatus = {
-  itemMasterSourcedRows: number;
-  itemMasterUnsourcedRows: number;
+  itemMasterSourcedItems: number;
+  itemMasterUnsourcedItems: number;
   itemMasterReasonCode: string | null;
 };
 
 export function normalizeItemMasterSourceStatus(row: Record<string, unknown> | null): ItemMasterSourceStatus | null {
   if (!row) return null;
   return {
-    itemMasterSourcedRows: numberValue(row, ['item_master_sourced_rows']) ?? 0,
-    itemMasterUnsourcedRows: numberValue(row, ['item_master_unsourced_rows']) ?? 0,
+    itemMasterSourcedItems: numberValue(row, ['item_master_sourced_items']) ?? 0,
+    itemMasterUnsourcedItems: numberValue(row, ['item_master_unsourced_items']) ?? 0,
     itemMasterReasonCode: text(row, ['item_master_reason_code']),
   };
 }
 
 export const ITEM_MASTER_STATUS_BANNER_TITLE = '품목 마스터 출처 안내';
 
+// ★ 2026-09-12 리뷰 fix round 1 — "실습 등록으로 들어오면 표시됩니다"라는 이전 문구를 뺐다.
+//   측정으로 반증됐다(core.register_practice_object는 raw.item_master.batch_id를 건드리지
+//   않아 가시성을 되돌리지 못한다) — 유효한 경로는 정식 재적재(core.commit_import_batch)
+//   하나뿐이다. 사유를 사람에게 옮길 때 실제로 확인한 것만 말한다(판정 8과 같은 원칙).
 export function itemMasterStatusBannerMessage(status: ItemMasterSourceStatus): string {
   if (status.itemMasterReasonCode === null) return '';
   return (
-    `출처가 확인되지 않은(정식 업로드 경로를 거치지 않은) 품목 마스터 데이터 ${status.itemMasterUnsourcedRows.toLocaleString('ko-KR')}건은 ` +
-    '이 화면 목록에 표시하지 않습니다 — 지어낸 품목을 실데이터처럼 보여주지 않기 위해서입니다. 정식 업로드나 실습 등록으로 ' +
-    '품목이 들어오면 표시됩니다.'
+    `출처가 확인되지 않은(정식 업로드 경로를 거치지 않은) 품목 ${status.itemMasterUnsourcedItems.toLocaleString('ko-KR')}개는 ` +
+    '이 화면 목록에 표시하지 않습니다 — 지어낸 품목을 실데이터처럼 보여주지 않기 위해서입니다. 같은 품목코드를 정식 업로드로 ' +
+    '다시 올리면 표시됩니다.'
   );
 }

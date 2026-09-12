@@ -153,36 +153,40 @@ test('참고 열 배너 문구는 Open PO 출처 미확인·파싱 불가·이�
   assert.match(bothMessage, /IMPORT하는 방법이 없어/);
 });
 
-test('analytics.v_item_master_source_status 행을 배너 상태로 옮긴다(Task 17)', () => {
+test('analytics.v_item_master_source_status 행을 배너 상태로 옮긴다 — 품목 단위(Task 17, 리뷰 fix round 1)', () => {
+  // ★ 리뷰 fix round 1 — 상태 뷰가 raw.item_master 행 수가 아니라 화면 목록과 같은 품목
+  //   단위로 센다(34행/23행이 아니라 32품목/21품목). 필드 이름도 …Items로 맞췄다.
   assert.deepEqual(
     normalizeItemMasterSourceStatus({
-      item_master_sourced_rows: 11,
-      item_master_unsourced_rows: 23,
+      item_master_sourced_items: 11,
+      item_master_unsourced_items: 21,
       item_master_reason_code: 'ITEM_MASTER_SOURCE_UNVERIFIED',
     }),
     {
-      itemMasterSourcedRows: 11,
-      itemMasterUnsourcedRows: 23,
+      itemMasterSourcedItems: 11,
+      itemMasterUnsourcedItems: 21,
       itemMasterReasonCode: 'ITEM_MASTER_SOURCE_UNVERIFIED',
     },
   );
   assert.equal(normalizeItemMasterSourceStatus(null), null);
 
   const clean = normalizeItemMasterSourceStatus({
-    item_master_sourced_rows: 11,
-    item_master_unsourced_rows: 0,
+    item_master_sourced_items: 11,
+    item_master_unsourced_items: 0,
     item_master_reason_code: null,
   })!;
   assert.equal(clean.itemMasterReasonCode, null);
 });
 
-test('품목 마스터 출처 배너 문구는 걸러진 행 수를 포함하고, 사유가 없으면 빈 문자열이다(Task 17)', () => {
-  const unverified = { itemMasterSourcedRows: 11, itemMasterUnsourcedRows: 23, itemMasterReasonCode: 'ITEM_MASTER_SOURCE_UNVERIFIED' };
+test('품목 마스터 출처 배너 문구는 걸러진 품목 수를 포함하고, 사유가 없으면 빈 문자열이다(Task 17, 리뷰 fix round 1)', () => {
+  const unverified = { itemMasterSourcedItems: 11, itemMasterUnsourcedItems: 21, itemMasterReasonCode: 'ITEM_MASTER_SOURCE_UNVERIFIED' };
   const message = itemMasterStatusBannerMessage(unverified);
   assert.match(message, /출처가 확인되지 않은/);
-  assert.match(message, /23건/);
+  assert.match(message, /21개/);
+  // ★ 리뷰 8-b — "실습 등록으로 들어오면 표시됩니다"는 측정으로 반증된 주장이라 문구에서 뺐다.
+  assert.doesNotMatch(message, /실습 등록/);
 
-  const clean = { itemMasterSourcedRows: 11, itemMasterUnsourcedRows: 0, itemMasterReasonCode: null };
+  const clean = { itemMasterSourcedItems: 11, itemMasterUnsourcedItems: 0, itemMasterReasonCode: null };
   assert.equal(itemMasterStatusBannerMessage(clean), '');
 });
 

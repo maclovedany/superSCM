@@ -24,6 +24,7 @@ bash supabase/tests/practice_data/run-all.sh
 | S10 | 법인 출항 준비기간과 실습 전 Forecast 설정이 원래 값으로 복원된다 |
 | S11 | 제거된 라벨은 재사용할 수 없고 두 번 제거되지 않는다 |
 | S12 | 등기부는 읽기만 열려 있다(일반 사용자의 직접 쓰기 거절) |
+| **S23** | **★ Task 17 리뷰 fix round 1 — 게이트된 품목(`core.v_item_master` 출처 게이트에 걸려 화면에 안 보이는 품목)을 ITEM으로 등기해도, `raw.item_master` 원본 행이 있으면 제거 절차가 그 실습 표식을 지우지 않는다.** 등기 정리가 원래 화면 가시성(`core.v_item_master`)으로 "원본이 있는가"를 판정해 게이트된 품목의 표식을 조용히 지웠던 blocking 결함의 회귀 방지 테스트 |
 
 ### 2부 — 실제 경로 (fix round 1 · I1)
 

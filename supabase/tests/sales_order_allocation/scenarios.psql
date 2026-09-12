@@ -929,6 +929,12 @@ reset role;
 -- 무표식 더미였다. core.v_item_master는 이제 raw.item_master.batch_id is not null인 행만
 -- 담는다. ITEMG01은 출처 있는(정식 업로드처럼 batch_id를 채운) 품목, ITEMG02는 출처 없는
 -- (5회차 더미와 같은 모양) 품목이다.
+-- ★ 리뷰 fix round 1(non-blocking #4) — 상태 뷰의 절대값을 단정하면 이 스위트에 출처 없는
+--   raw.item_master 행을 넣는 시나리오가 나중에 추가될 때 무관한 이유로 깨진다. INSERT 직전
+--   기준값을 캡처해 이후 델타(+1/+1)로 확인한다 — 순서 의존적이지 않다.
+select item_master_sourced_items as g16_base_sourced, item_master_unsourced_items as g16_base_unsourced
+  from core.v_item_master_source_status \gset
+
 insert into raw.item_master ("품목코드", "품목명", "품목구분", batch_id) values
   ('ITEMG01', 'T17 출처 있는 품목', '소모품', gen_random_uuid()),
   ('ITEMG02', 'T17 출처 없는 품목(게이트 대상)', '소모품', null)
@@ -968,25 +974,35 @@ select order_test.check(
   (select count(*) from (select * from core.v_item_master) t where item_id = 'ITEMT01') = 1,
   'S16 (d) stock_balance 배경 재고가 있는 기존 품목(ITEMT01)은 게이트 뒤에도 core.v_item_master에 그대로 남는다');
 
--- (e) core.v_item_master_source_status(소유자 권한, raw 직접 조회) — ITEMG02가 unsourced에
--- 반영되는지 확인한다(이 임시 DB에는 이 스위트가 넣은 모든 품목이 batch_id를 채웠으므로
--- ITEMG02가 유일한 출처 없는 행이어야 정확히 1이다).
+-- (e) core.v_item_master_source_status(소유자 권한, raw 직접 조회, 품목 단위 — 리뷰 fix
+-- round 1) — ITEMG01·ITEMG02가 각각 sourced/unsourced 품목 수를 정확히 1씩 올리는지
+-- 기준값 대비 델타로 확인한다(절대값 단정이 아니라 순서 독립적).
 select order_test.check(
-  (select item_master_unsourced_rows = 1 from core.v_item_master_source_status),
-  'S16 (e) core.v_item_master_source_status가 출처 없는 행 수를 정확히 센다(이 스위트에서는 ITEMG02 1건뿐)');
+  (select item_master_unsourced_items from core.v_item_master_source_status) = :g16_base_unsourced + 1,
+  'S16 (e) core.v_item_master_source_status의 출처 없는 품목 수가 ITEMG02 하나만큼 정확히 늘어난다(기준값 대비 델타)');
 select order_test.check(
-  (select item_master_sourced_rows > 0 from core.v_item_master_source_status),
-  'S16 (e) 상태 뷰가 출처 있는 행 수도 함께 보고한다');
+  (select item_master_sourced_items from core.v_item_master_source_status) = :g16_base_sourced + 1,
+  'S16 (e) 상태 뷰의 출처 있는 품목 수가 ITEMG01 하나만큼 정확히 늘어난다(기준값 대비 델타)');
 select order_test.check(
   (select item_master_reason_code = 'ITEM_MASTER_SOURCE_UNVERIFIED' from core.v_item_master_source_status),
   'S16 (e) 상태 뷰가 사유코드 ITEM_MASTER_SOURCE_UNVERIFIED를 보고한다');
+-- 품목 기준 직접 확인 — ITEMG02는 raw.item_master 전체를 통틀어 출처 있는 행이 하나도 없어야
+-- (상태 뷰가 세는 "출처 없는 품목"의 정의와 정확히 일치) 하고, ITEMG01은 출처 있는 행이 있어야 한다.
+select order_test.check(
+  (select bool_and(m.batch_id is null) from raw.item_master m
+    where upper(regexp_replace(m."품목코드", '[\s\-_]', '', 'g')) = 'ITEMG02'),
+  'S16 (e) ITEMG02는 raw.item_master 기준으로 전부 출처 없는 행이다(품목 단위 unsourced 정의와 일치)');
+select order_test.check(
+  (select bool_or(m.batch_id is not null) from raw.item_master m
+    where upper(regexp_replace(m."품목코드", '[\s\-_]', '', 'g')) = 'ITEMG01'),
+  'S16 (e) ITEMG01은 raw.item_master 기준으로 출처 있는 행이 하나 있다(품목 단위 sourced 정의와 일치)');
 
 -- (f) 화면 배너가 읽는 analytics.v_item_master_source_status — 재고 상세 권한 계정으로 조회.
 set role authenticated;
 select order_test.as_user(:'planner1') \g /dev/null
 select order_test.check(
-  (select item_master_unsourced_rows = 1 from analytics.v_item_master_source_status),
-  'S16 (f) analytics.v_item_master_source_status가 재고 상세 권한 계정에게 같은 카운트를 보여준다');
+  (select item_master_unsourced_items from analytics.v_item_master_source_status) = :g16_base_unsourced + 1,
+  'S16 (f) analytics.v_item_master_source_status가 재고 상세 권한 계정에게 같은 델타를 보여준다');
 select order_test.check(
   (select item_master_reason_code = 'ITEM_MASTER_SOURCE_UNVERIFIED' from analytics.v_item_master_source_status),
   'S16 (f) 화면 배너용 뷰도 같은 사유코드를 보고한다');

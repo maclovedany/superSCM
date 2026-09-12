@@ -224,3 +224,41 @@ select practice_test.expect_error(
   $f$insert into core.practice_dataset (label) values ('HACK')$f$,
   'permission denied|denied', 'S12 일반 사용자는 실습 묶음을 직접 만들 수 없다');
 reset role;
+
+
+\echo '== S23(Task 17 리뷰 fix round 1) 게이트된 품목의 실습 표식이 삭제되지 않는다 =='
+-- ★ 배경 — core.v_item_master(재고 화면 기준 뷰)가 출처 없는(batch_id null) raw.item_master
+--   행을 걸러내는 게이트를 받았다(20260912000900). core.remove_practice_dataset의 ITEM 등기
+--   정리 블록(20260912000600)이 원래 "원본이 아직 있는가"를 core.v_item_master로 판정했는데,
+--   출처 없는 품목을 ITEM으로 등기하면 게이트 뒤 core.v_item_master에서 사라져 "원본이
+--   없어졌다"고 오판해 등기(실습 표식) 자체가 삭제됐다 — 리뷰에서 잡힌 blocking 결함.
+--   fix round 1이 그 존재 검사를 raw.item_master 원본 기준으로 바꿨다(화면 가시성과 등기
+--   유효성은 다른 축이다). 이 시나리오는 고친 뒤에도 실제로 표식이 살아남는지 직접 검증한다
+--   — 없으면 같은 결함이 조용히 재발할 수 있다.
+insert into raw.item_master ("품목코드", "품목명", "품목구분") values
+  ('GATEITM01', 'T17 게이트된 품목(실습 표식 보존 검증)', '소모품')
+on conflict do nothing;
+
+select practice_test.as_user(:'admin1') \g /dev/null
+select core.open_practice_dataset('TEST-GATE-ITEM', '게이트된 품목 실습 표식 보존 검증', '{}'::jsonb) as gate_dataset \gset
+select core.register_practice_object('TEST-GATE-ITEM', 'ITEM', 'GATEITM01', '출처 없는 품목 표식');
+
+-- 사전 조건 — GATEITM01은 출처 게이트에 걸려 화면 목록(core.v_item_master)에는 없지만,
+-- 등기는 정상적으로 존재한다.
+select practice_test.check(
+  not exists (select 1 from core.v_item_master where item_id = 'GATEITM01'),
+  'S23 GATEITM01은 출처 게이트에 걸려 core.v_item_master에 나타나지 않는다(사전 조건)');
+select practice_test.check(
+  (select count(*) from core.practice_object
+    where dataset_id = :'gate_dataset'::uuid and object_kind = 'ITEM' and object_key = 'GATEITM01') = 1,
+  'S23 제거 전에는 등기(실습 표식)가 정상적으로 존재한다(사전 조건)');
+
+select core.remove_practice_dataset('TEST-GATE-ITEM', p_confirm => true);
+
+select practice_test.check(
+  (select count(*) from core.practice_object
+    where dataset_id = :'gate_dataset'::uuid and object_kind = 'ITEM' and object_key = 'GATEITM01') = 1,
+  'S23 ★ 게이트된 품목이어도 raw.item_master 원본 행이 남아 있으므로 실습 표식(등기)이 삭제되지 않는다(리뷰 fix round 1 — 고치기 전에는 여기서 0으로 실패했다)');
+select practice_test.check(
+  (select count(*) from raw.item_master where "품목코드" = 'GATEITM01') = 1,
+  'S23 raw.item_master 원본 행도 그대로 남는다(이 품목은 등록된 UPLOAD_BATCH에 속하지 않아 실제 삭제 대상이 아니다)');

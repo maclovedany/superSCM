@@ -108,19 +108,18 @@ on conflict (id) do nothing;
 -- ★ 이 스위트와 무관한 선행 드리프트 — 20260912000300(관리자 계정 관리)이 core.app_user.job_role에
 --   실제 직책 목록만 허용하는 체크 제약을 새로 걸어서, 이 fixture가 오래전부터 써 온 테스트 전용
 --   가상 직책 T5_DUAL(요청 권한 + 승인 권한을 함께 가진 겸직 계정 — 자기 승인 차단 검증용)을
---   더 이상 넣을 수 없게 됐다. 운영 제약은 그대로 두고, 이 임시 DB(guard.psql로 scm_test_*만
---   허용됨)에서만 T5_DUAL을 허용하도록 넓힌다.
--- ★★ 2026-09-12 리뷰 지적(§7) — 이 확대는 범위는 안전하지만 질문을 하나 덮는다: 20260912000300
---   이후로 "요청 권한 + 승인 권한을 함께 가진 실제 직책"은 운영에서 더 이상 만들 수 없다.
---   즉 이 아래 S6의 "자기 승인 차단" 시나리오는 운영에서 이미 구조적으로 도달 불가능한 조합을
---   검증하는 회귀 방지용 테스트로만 남는다(그 조합이 실제로 존재했을 때 자기 승인을 막았다는
---   과거 동작을 계속 지킨다는 뜻) — 지금 이 직책 조합으로 운영에서 승인 흐름을 타는 사용자는
---   없다. 픽스처를 실제 도달 가능한 조합으로 바꾸는 대신 이 문서화를 남기는 쪽을 택했다(대안:
---   화이트리스트에 겸직 가능한 실제 직책을 추가하는 것은 이 스위트가 결정할 범위 밖이다).
-alter table core.app_user drop constraint if exists app_user_job_role_chk;
-alter table core.app_user add constraint app_user_job_role_chk
-  check (job_role is null or job_role in ('SALES_REP', 'SCM_PLANNER', 'SCM_LEAD', 'BIZ_DEV', 'MARKETING', 'SERVICE', 'T5_DUAL'));
-
+--   더 이상 넣을 수 없게 됐다.
+-- ★★ Task 17 리뷰 fix round 1(정정) — 1차 대응은 운영 제약을 임시 DB에서 완화했는데(§7 지적과
+--   함께), **그럴 필요가 없었다** — core.role_permission.job_role에는 CHECK·FK가 없어
+--   (20260911000200_step19_permission.sql) 이중 권한 역할을 만드는 것 자체는 이미 합법이고,
+--   불법인 것은 그 합성 이름을 app_user에 배정하는 것뿐이다. 합성 직책(T5_DUAL) 대신 **이
+--   스위트가 쓰지 않는 실제 직책 SERVICE**에 이 두 권한을 시험 전용으로 얹는다(제약을 전혀
+--   건드리지 않는다 — 완화 코드 자체를 없앴다). BIZ_DEV는 쓸 수 없다 — 이 스위트가 이미
+--   t5-bizdev를 "ALLOC_MANUAL이 없어야 거절된다"는 음성 검증(S5)에 쓰고 있어, 같은 직책에
+--   이 권한을 얹으면 그 검증이 깨진다. S6("자기 승인 차단")은 역할 이름과 무관하게 성립한다
+--   — 사용자 uuid(t5-dual)로만 참조한다. 운영에서 이 권한 조합(요청+승인)을 가진 실제 직책이
+--   없다는 사실은 그대로다 — 이 시나리오는 그 조합이 존재했을 때의 차단 동작을 지키는
+--   회귀 방지용 테스트다.
 insert into core.app_user (user_id, email, name, department, role, active, job_role) values
   ('00000000-0000-4000-8000-000000000001', 't5-sales1@example.test', '영업1', 'SALES', 'USER', true, 'SALES_REP'),
   ('00000000-0000-4000-8000-000000000002', 't5-sales2@example.test', '영업2', 'SALES', 'USER', true, 'SALES_REP'),
@@ -128,7 +127,9 @@ insert into core.app_user (user_id, email, name, department, role, active, job_r
   ('00000000-0000-4000-8000-000000000021', 't5-lead1@example.test', '팀장1', 'SCM', 'USER', true, 'SCM_LEAD'),
   ('00000000-0000-4000-8000-000000000031', 't5-bizdev@example.test', '사업강화1', 'BIZ_DEV', 'USER', true, 'BIZ_DEV'),
   ('00000000-0000-4000-8000-000000000041', 't5-marketing@example.test', '마케팅1', 'MARKETING', 'USER', true, 'MARKETING'),
-  ('00000000-0000-4000-8000-000000000051', 't5-dual@example.test', '겸직검증', 'SCM', 'USER', true, 'T5_DUAL'),
+  -- ★ SERVICE는 이 스위트의 다른 어떤 계정도 쓰지 않는다 — 시험 전용으로 빌려 쓴다(운영
+  --   role_permission 시드는 건드리지 않는다 — 아래 INSERT는 이 임시 DB에만 존재한다).
+  ('00000000-0000-4000-8000-000000000051', 't5-dual@example.test', '겸직검증', 'SCM', 'USER', true, 'SERVICE'),
   -- 적재(core.commit_import_batch)는 관리자 전용이다 — S14 다품목 입고 검증에서만 쓴다.
   ('00000000-0000-4000-8000-000000000061', 't5-admin@example.test', '관리자1', null, 'ADMIN', true, null)
 -- ★ role도 반드시 덮어써야 한다. auth.users INSERT가 core.handle_new_auth_user() 트리거
@@ -138,9 +139,10 @@ insert into core.app_user (user_id, email, name, department, role, active, job_r
 on conflict (user_id) do update
   set job_role = excluded.job_role, role = excluded.role, name = excluded.name, active = true;
 
--- 자기 승인 차단을 검증하려면 요청 권한과 승인 권한을 함께 가진 계정이 필요하다(임시 DB 전용 직책).
+-- 자기 승인 차단을 검증하려면 요청 권한과 승인 권한을 함께 가진 계정이 필요하다(시험 전용 —
+-- SERVICE 직책에 이 두 권한을 임시 DB에서만 얹는다, 위 주석 참고).
 insert into core.role_permission (job_role, permission_code) values
-  ('T5_DUAL', 'ALLOC_MANUAL'), ('T5_DUAL', 'ALLOC_PRIORITY_APPROVE')
+  ('SERVICE', 'ALLOC_MANUAL'), ('SERVICE', 'ALLOC_PRIORITY_APPROVE')
 on conflict do nothing;
 
 -- ★ 2026-09-12(Task 17) — core.v_item_master가 출처 게이트(raw.item_master.batch_id is not

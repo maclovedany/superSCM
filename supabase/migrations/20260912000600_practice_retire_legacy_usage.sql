@@ -454,6 +454,16 @@ begin
   -- ★ fix round 3 — 아래 case가 모르는 종류(나중에 추가될 object_kind)는 **남긴다**. 남겼다는
   --   사실을 결과에 함께 보고해 조용히 넘어가지 않게 한다. 모르는 것을 지우는 쪽으로 기본값을
   --   두면, 종류가 늘어날 때마다 N1과 똑같은 방식으로 표식이 벗겨진다.
+  -- ★★ Task 17 리뷰 fix round 1(2026-09-12) — ITEM 존재 검사를 core.v_item_master(화면
+  --   가시성, 출처 게이트가 걸린 뷰)가 아니라 raw.item_master(원본 행 존재)로 바꾼다. 이
+  --   블록의 질문은 "이 등기가 가리키는 원본 행이 아직 있는가"이지 "지금 화면에 보이는가"가
+  --   아니다 — 화면 가시성과 등기 유효성은 다른 축이다(리뷰어 실측: 출처 없는 품목을 ITEM으로
+  --   등기하면 게이트 뒤 core.v_item_master에서 사라져 이 DELETE가 "원본이 없어졌다"고 오판해
+  --   실습 표식을 지웠다 — N1과 같은 실패 모드, 이번엔 게이트가 새로 만든 구멍이다). 배포
+  --   DB의 실습 11품목이 전부 batch_id를 갖는 것은 지금 데이터의 우연일 뿐
+  --   core.register_practice_object가 강제하는 불변식이 아니다(그 함수는 core.practice_object
+  --   에만 INSERT하고 raw.item_master.batch_id를 전혀 건드리지 않는다) — 그러니 이 존재
+  --   검사도 그 우연에 기대면 안 된다.
   select v_blocked || coalesce(jsonb_agg(jsonb_build_object(
            'kind', o.object_kind, 'key', o.object_key, 'reason', 'UNKNOWN_OBJECT_KIND')), '[]'::jsonb)
     into v_blocked
@@ -468,7 +478,7 @@ begin
   delete from core.practice_object o
    where o.dataset_id = v_dataset.dataset_id
      and not case o.object_kind
-       when 'ITEM'                 then exists (select 1 from core.v_item_master m where m.item_id = o.object_key)
+       when 'ITEM'                 then exists (select 1 from raw.item_master m where core.normalize_item_id(m."품목코드") = o.object_key)
        when 'ITEM_POLICY'          then exists (select 1 from core.item_policy p where p.item_id = o.object_key)
        when 'ITEM_POLICY_REVISION' then exists (select 1 from core.item_policy_revision r where r.revision_id::text = o.object_key)
        when 'UPLOAD_BATCH'         then exists (select 1 from core.upload_batch b where b.batch_id::text = o.object_key)

@@ -43,8 +43,14 @@
 --   가능"이지 삭제가 아닙니다(memory: "실데이터에 재고·리드타임이 없다" — 더미 화면·Tool을
 --   만들면 지어낸 숫자가 실데이터처럼 보인다는 같은 문제의식). 이 마이그레이션은 raw를 전혀
 --   건드리지 않고 core.v_item_master의 정의만 바꿉니다 — 21개 행은 core.commit_import_batch로
---   정식 재적재되거나 core.register_practice_object로 실습 등록되면 언제든 다시 보일 수
---   있습니다.
+--   같은 품목코드를 다시 정식 재적재하면(batch_id가 채워짐) 언제든 다시 보일 수 있습니다.
+--   ★★ 리뷰 fix round 1 정정(2026-09-12) — 1차 초안은 "core.register_practice_object 실습
+--   등록으로도 다시 보인다"고 적었는데 **스크래치 DB로 직접 측정해 반증됐습니다**(등록 전후
+--   모두 core.v_item_master에서 0건). core.register_practice_object(20260912000400:174-220)는
+--   core.practice_object에만 INSERT할 뿐 raw.item_master.batch_id를 전혀 건드리지 않습니다 —
+--   유효한 복구 경로는 core.commit_import_batch 하나뿐입니다. (같은 측정으로 core.commit_import_batch
+--   경로는 실제로 가시성을 되돌리는 것을 확인했습니다 — before 0 · 실습 등록 후 0 ·
+--   commit_import_batch 뒤 1.)
 --
 -- ★ 사유는 새 열이 아니라 새 객체로 안내합니다 — core.v_open_po_qty · core.v_inbound_qty가
 --   이미 쓴 패턴(20260912000800 §4-2, analytics.v_stock_reference_source_status +
@@ -78,13 +84,22 @@
 --     참조하는 업무 행이 0건이므로 지금 이 검증을 통과해 주문을 만든 사례가 없습니다. 게이트
 --     뒤에는 이 21개 품목으로 새 주문을 시도하면 ORDER_ITEM_UNKNOWN으로 거절됩니다 — 이는
 --     회귀가 아니라 "출처 없는 품목은 주문 대상이 아니다"라는 올바른 방향의 강화입니다.
---   - core.register_practice_object · remove_practice_dataset — raw.item_master를 직접
---     삭제/등록합니다(core.v_item_master를 거치지 않음). 유일한 v_item_master 참조는
---     20260912000600의 legacy-retire 검사(object_kind='ITEM'일 때 core.v_item_master에 아직
---     있는지)뿐이고, 이 검사가 다루는 품목은 실습 등록된 품목(항상 batch_id가 있음)뿐이라
---     영향이 없습니다.
---   - 결론: **BLOCKED 사유 없음** — 게이트가 필요로 하는 21개 더미 품목에 의존하는 소비자가
---     하나도 없습니다.
+--   - core.register_practice_object — core.practice_object에만 INSERT합니다(raw.item_master ·
+--     core.v_item_master 둘 다 거치지 않음). 게이트 영향 없음.
+--   - core.remove_practice_dataset — ★★ 리뷰 fix round 1에서 blocking으로 잡힌 지점입니다.
+--     20260912000600의 legacy-retire 검사(object_kind='ITEM'일 때 "원본이 아직 있는지" 판정)가
+--     원래 core.v_item_master(화면 가시성, 이 게이트가 걸린 뷰)를 썼습니다. 1차 초안은 "이
+--     검사가 다루는 품목은 실습 등록된 품목뿐이고 항상 batch_id가 있어 영향이 없다"고
+--     단정했는데, 이건 **측정된 우연이지 register_practice_object가 강제하는 불변식이
+--     아닙니다**(바로 위에서 확인했듯 그 함수는 raw.item_master.batch_id를 전혀 건드리지
+--     않습니다) — 출처 없는 품목을 ITEM으로 등록하면 게이트 뒤 core.v_item_master에서 사라져
+--     이 검사가 "원본이 없어졌다"고 오판, remove_practice_dataset이 실습 표식을 조용히
+--     지웁니다(리뷰어 실측: would_be_deleted = t). 20260912000600의 해당 DELETE 술어를
+--     raw.item_master 직접 조회로 바꿔 고쳤습니다(등기부는 "화면에 보이는가"가 아니라
+--     "원본 행이 아직 있는가"를 물어야 합니다) — 그 파일의 fix round 1 주석 참고.
+--   - 결론: **BLOCKED 사유는 없지만, remove_practice_dataset 하나는 게이트가 새로 만든
+--     잠재 결함이었고 이번에 고쳤습니다.** 나머지 26개 소비자는 게이트가 필요로 하는 21개
+--     더미 품목에 의존하지 않습니다.
 --
 -- ★★ 두 계층 정본 동기화 — core.v_item_master의 정본은 supabase/realdata/03b-missing-objects.sql
 --   입니다(그 파일이 만들고, 저장소 마이그레이션에는 이 파일 전까지 없었습니다). 적용 순서
@@ -138,8 +153,10 @@ comment on view core.v_item_master is
   고아 행이 생기지 않는다. 열 이름 · 순서 · DISTINCT ON(item_id) · pref 정렬은 20260911000500
   원본과 동일 — 열을 더하지 않는다(docs/stage1-판정기록.md Task 16과 같은 원칙). 사유 안내는
   analytics.v_item_master_source_status + ItemMasterStatusBanner가 화면 수준에서 한다(아래 §2).
-  raw.item_master 행 자체는 지우지 않는다 — commit_import_batch 재적재나
-  register_practice_object 실습 등록으로 언제든 다시 보일 수 있다';
+  raw.item_master 행 자체는 지우지 않는다 — 같은 품목코드를 core.commit_import_batch로 다시
+  정식 재적재하면(batch_id가 채워짐) 언제든 다시 보일 수 있다. register_practice_object 실습
+  등록은 가시성을 되돌리지 않는다(실측 반증, 리뷰 fix round 1) — core.practice_object에만
+  INSERT할 뿐 raw.item_master.batch_id를 건드리지 않는다';
 
 
 -- ══ 2. 품목 마스터 출처 상태 안내 — 별도 객체(열이 아니라 새 뷰) ═════════════
@@ -149,21 +166,40 @@ comment on view core.v_item_master is
 --   출처 상태다. 대상(값 vs 품목 존재)과 사유코드 체계가 서로 달라 한 뷰에 합치면 오히려
 --   읽기 어렵다. 같은 이유로 기존 뷰에 열을 추가하는 것도 하지 않는다(위 규칙이 이미 있는
 --   analytics 뷰 전체에 적용된다 — 열을 더하면 그 뷰도 cannot-drop-columns 위험을 갖게 된다).
+-- ★★ 리뷰 fix round 1(2026-09-12) — 1차 초안은 raw.item_master **행** 수를 셌는데(34행 ·
+--   23행), 배너 문구가 그 숫자를 화면 **목록**(core.v_item_master, DISTINCT ON(item_id) 뒤
+--   품목 단위)에서 빠진 개수처럼 말해서 단위가 어긋났다(리뷰어 지적: 23행 ≠ 21품목 — 34행이
+--   32품목으로 접히듯 23행도 21품목으로 접힌다, 2행이 기존 품목코드의 중복 표기이기 때문).
+--   목록의 단위(품목)에 맞춰 정규화된 품목코드 기준으로 다시 센다 — 열은 3개로 그대로
+--   유지한다(이름만 …_rows → …_items로 바꿨다, 열 수 불변이라 migration_rerun 사후조건
+--   영향 없음). "출처 있는 품목" = core.v_item_master에 실제로 나타나는 품목(정규화된 코드
+--   기준으로 batch_id 있는 행이 하나라도 있음)과 정확히 같은 정의다.
 create or replace view core.v_item_master_source_status as
+with items as (
+  select
+    upper(regexp_replace(m."품목코드", '[\s\-_]', '', 'g')) as item_id,
+    bool_or(m.batch_id is not null) as has_sourced_row
+  from raw.item_master m
+  group by upper(regexp_replace(m."품목코드", '[\s\-_]', '', 'g'))
+)
 select
-  count(*) filter (where m.batch_id is not null) as item_master_sourced_rows,
-  count(*) filter (where m.batch_id is null) as item_master_unsourced_rows,
-  case when count(*) filter (where m.batch_id is null) > 0
+  count(*) filter (where has_sourced_row) as item_master_sourced_items,
+  count(*) filter (where not has_sourced_row) as item_master_unsourced_items,
+  case when count(*) filter (where not has_sourced_row) > 0
        then 'ITEM_MASTER_SOURCE_UNVERIFIED'
   end as item_master_reason_code
-from raw.item_master m;
+from items;
 
 comment on view core.v_item_master_source_status is
-  '보정(2026-09-12) — core.v_item_master가 출처 없는 raw.item_master 행을 걸러내는 지금, 화면에
-  몇 행이 걸러졌는지 한 줄로 요약한다(품목별이 아니라 raw.item_master 전체 기준). item_master_reason_code:
-  ITEM_MASTER_SOURCE_UNVERIFIED(출처 없는 행이 1건이라도 있음) | null(전부 출처 있음). 소유자
-  권한으로 raw를 직접 읽는다 — analytics.v_item_master_source_status가 권한 필터를 얹어 감싼다
-  (core.v_stock_reference_source_status와 같은 배선, 20260912000800 §4-2)';
+  '보정(2026-09-12, 리뷰 fix round 1) — core.v_item_master가 출처 없는 raw.item_master 행을
+  걸러내는 지금, 화면 목록(품목 단위)에서 몇 품목이 걸러졌는지 한 줄로 요약한다. 정규화된
+  품목코드(core.normalize_item_id와 같은 규칙)로 묶어 "출처 있는 행이 하나라도 있는 품목"과
+  "전부 출처 없는 품목"을 센다 — core.v_item_master에 실제로 나타나는지와 정확히 같은 기준
+  이다(행 수가 아니라 품목 수 — raw.item_master 행 수를 그대로 세면 DISTINCT ON 중복 제거로
+  화면 목록과 단위가 어긋난다). item_master_reason_code: ITEM_MASTER_SOURCE_UNVERIFIED(출처
+  없는 품목이 1개라도 있음) | null(전부 출처 있음). 소유자 권한으로 raw를 직접 읽는다 —
+  analytics.v_item_master_source_status가 권한 필터를 얹어 감싼다(core.v_stock_reference_source_status
+  와 같은 배선, 20260912000800 §4-2)';
 
 grant select on core.v_item_master_source_status to authenticated;
 revoke all on core.v_item_master_source_status from anon, public;
@@ -199,9 +235,9 @@ revoke all on analytics.v_item_master_source_status from anon, public;
 --  where not exists (select 1 from raw.dim_item d where upper(regexp_replace(d."품목코드", '[\s\-_]', '', 'g')) = im.item_id);
 -- 기대: 0 (게이트 뒤에는 실습 등록 품목 = raw.dim_item 존재 품목과 완전히 겹친다)
 
--- (c) 상태 뷰.
+-- (c) 상태 뷰(품목 단위 — 리뷰 fix round 1로 행 단위에서 바꿨다).
 -- select * from analytics.v_item_master_source_status;
--- 기대(배포 DB): item_master_sourced_rows = 11 · item_master_unsourced_rows = 23 ·
+-- 기대(배포 DB): item_master_sourced_items = 11 · item_master_unsourced_items = 21 ·
 --       item_master_reason_code = 'ITEM_MASTER_SOURCE_UNVERIFIED'
 
 -- (d) stock_balance 10품목이 전부 살아남는지.
