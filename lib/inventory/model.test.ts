@@ -5,7 +5,9 @@ import {
   INVENTORY_VISIBILITY_SCOPES,
   isInventoryVisibilityScope,
   normalizeAvailableStockRow,
+  normalizeOpenPoDataStatus,
   normalizeOrderAvailableStockRow,
+  openPoStatusBannerMessage,
 } from './model.ts';
 
 test('조회 범위는 세 가지 업무 코드만 허용하고, 그 외 값은 GENERAL로 취급한다', () => {
@@ -44,30 +46,41 @@ test('analytics.v_available_stock 행을 화면 모델로 옮긴다 — 정상 �
     approvalHoldQty: 0,
     availableQty: 15,
     openPoQty: 5,
-    openPoReasonCode: null,
     inTransitQty: 8,
     reasonCode: null,
   });
 });
 
-test('보정(2026-09-12) — Open PO 참고 열이 파싱 불가(콤마 발주수량 등)로 null이면 사유 코드를 유지한다', () => {
-  // core.v_open_po_qty는 정상 창고재고 분류(reason_code)와 별개로 open_po_reason_code를 낸다 —
-  // 두 사유는 서로 다른 문제(재고 상태 미상 vs 발주수량 텍스트 파싱 불가)이므로 섞이면 안 된다.
+test('보정(2026-09-12) — Open PO 참고 열이 null이어도 별도 사유 열을 만들지 않는다(화면 배너가 안내한다)', () => {
+  // docs/stage1-판정기록.md Task 16 판정 — analytics.v_available_stock에 사유 열을 더하지
+  // 않는다. open_po_qty가 null이면 그냥 null로 옮긴다(reasonCode와 섞지 않는다).
   const row = normalizeAvailableStockRow({
     item_id: 'ITEM007',
-    item_name: '콤마 발주수량 품목',
+    item_name: '출처 미확인 발주수량 품목',
     normal_warehouse_qty: 20,
     available_qty: 20,
     open_po_qty: null,
-    open_po_reason_code: 'OPEN_PO_QTY_UNPARSEABLE',
     reason_code: null,
   });
 
   assert.equal(row.openPoQty, null);
-  assert.equal(row.openPoReasonCode, 'OPEN_PO_QTY_UNPARSEABLE');
-  // 재고 자체는 정상 분류돼 있으므로 reasonCode(정상 창고재고 사유)는 null이어야 한다.
   assert.equal(row.reasonCode, null);
   assert.equal(row.normalWarehouseQty, 20);
+  assert.ok(!('openPoReasonCode' in row));
+});
+
+test('analytics.v_open_po_data_status 행을 배너 상태로 옮긴다', () => {
+  assert.deepEqual(normalizeOpenPoDataStatus({ has_unverified_source: true, has_unparseable: false }), {
+    hasUnverifiedSource: true,
+    hasUnparseable: false,
+  });
+  assert.equal(normalizeOpenPoDataStatus(null), null);
+});
+
+test('Open PO 배너 문구는 출처 미확인·파싱 불가를 구분해서 안내한다', () => {
+  assert.match(openPoStatusBannerMessage({ hasUnverifiedSource: true, hasUnparseable: false }), /출처가 확인되지 않은/);
+  assert.match(openPoStatusBannerMessage({ hasUnverifiedSource: false, hasUnparseable: true }), /숫자로 읽을 수 없어/);
+  assert.match(openPoStatusBannerMessage({ hasUnverifiedSource: true, hasUnparseable: true }), /함께 있어/);
 });
 
 test('분류할 수 없는 행은 0이 아니라 null과 사유 코드를 유지한다', () => {

@@ -756,69 +756,138 @@ select order_test.check((select count(*) = 0 from raw.goods_receipt where source
   'S14 거절된 적재는 raw에 한 줄도 남기지 않는다');
 
 
-\echo '== S15 보정(2026-09-12) · Open PO 발주수량 콤마·공백·정크 텍스트가 있어도 조회 전체가 막히지 않는다 =='
+\echo '== S15 보정(2026-09-12) · Open PO 콤마·정크 텍스트 + 출처 게이트 =='
 -- 배포에서 실제로 겪은 사고: raw.purchase_order."발주수량"에 콤마('1,000')가 섞인 출처 없는
 -- (batch_id · source_type 모두 null) 5회차 더미 한 줄이 core.v_open_po_qty의 ::numeric 캐스트를
--- 실패시켜 analytics.v_available_stock을 읽는 화면 전체가 22P02로 막혔다. 관대한 파서로 고친 뒤,
--- (1) 콤마 값은 값을 잃지 않고 정상 복원되는지, (2) 콤마를 떼도 정말 숫자가 아닌 값(정크 텍스트)은
--- "파싱 불가한 값을 조용히 0으로 계산에서 빼는" 실수 없이 부분합 대신 null + 사유코드로 나오는지
--- 함께 확인한다.
+-- 실패시켜 analytics.v_available_stock을 읽는 화면 전체가 22P02로 막혔다. 이 절은 세 가지를
+-- 확인한다.
+--   (1) 콤마 값은 값을 잃지 않고 정상 복원되는지(출처가 있을 때)
+--   (2) 콤마를 떼도 정말 숫자가 아닌 값(정크 텍스트)은 부분합이 아니라 null + 사유코드로
+--       나오는지("조용히 0으로 계산에서 빼는" 실수를 하지 않는지)
+--   (3) ★ 출처 게이트 — 파싱 가능 여부와 무관하게, batch_id가 없는(출처 없는) 행이 기여하면
+--       그 품목의 open_po_qty를 절대 숫자로 보여주지 않는지(부분합·전체합 모두 금지).
+--       배포 DB는 raw.purchase_order 92행 전부 batch_id가 null이므로, 이 게이트가 없으면
+--       파싱만 고친 결과 더미 20품목이 실제 발주량처럼(합계 28,800) 화면에 보인다 — 이 저장소의
+--       "지어낸 숫자가 실데이터처럼 보이면 안 된다" 원칙 위반이다.
 insert into raw.item_master ("품목코드", "품목명", "품목구분") values
-  ('ITEMT50', 'S15 콤마 발주수량', '소모품'),
-  ('ITEMT51', 'S15 공란 발주수량', '소모품'),
-  ('ITEMT52', 'S15 정크 발주수량', '소모품'),
-  ('ITEMT53', 'S15 정상 발주수량', '소모품'),
-  ('ITEMT54', 'S15 정상+정크 혼재', '소모품')
+  ('ITEMT50', 'S15 콤마(출처 있음)', '소모품'),
+  ('ITEMT51', 'S15 공란(출처 있음)', '소모품'),
+  ('ITEMT52', 'S15 정크(출처 있음)', '소모품'),
+  ('ITEMT53', 'S15 정상(출처 있음)', '소모품'),
+  ('ITEMT54', 'S15 정상+정크 혼재(출처 있음)', '소모품'),
+  ('ITEMT55', 'S15 정상(출처 없음)', '소모품'),
+  ('ITEMT56', 'S15 정상+정상 혼재(출처 있음+없음)', '소모품')
 on conflict do nothing;
 
--- 출처 없는(batch_id · source_type 모두 null) 행 — 배포에서 실제로 발견된 5회차 더미와 같은 모양.
--- ITEMT50은 배포에서 실제로 발견된 것과 같은 콤마 값이다 — 관대한 파서는 이를 "파싱 불가"가
--- 아니라 정상 복원 가능한 값으로 다룬다(1,000 → 1000). "파싱 불가"(reason_code가 실제로 나오는
--- 경우)는 콤마를 떼도 여전히 숫자가 아닌 ITEMT52·ITEMT54 같은 정크 텍스트뿐이다.
-insert into raw.purchase_order ("발주번호", "발주일", "공급업체", "품목코드", "발주수량", "단가", "납기예정일", "발주담당") values
-  ('PO-S15-50',  '2026-05-09', 'Test Co', 'ITEMT50', '1,000', '6400', '2026-05-19', 'tester'),
-  ('PO-S15-51',  '2026-05-09', 'Test Co', 'ITEMT51', '',      '6400', '2026-05-19', 'tester'),
-  ('PO-S15-52',  '2026-05-09', 'Test Co', 'ITEMT52', '많음',   '6400', '2026-05-19', 'tester'),
-  ('PO-S15-53',  '2026-05-09', 'Test Co', 'ITEMT53', '500',    '6400', '2026-05-19', 'tester'),
-  ('PO-S15-54a', '2026-05-09', 'Test Co', 'ITEMT54', '300',    '6400', '2026-05-19', 'tester'),
-  ('PO-S15-54b', '2026-05-09', 'Test Co', 'ITEMT54', '많음',    '6400', '2026-05-19', 'tester');
+-- ITEMT50~54는 batch_id를 채워 "출처 있는" 행으로 만든다(정식 업로드로 들어온 발주처럼).
+-- ITEMT55~56은 배포에서 실제로 발견된 5회차 더미와 같은 모양(batch_id · source_type 모두 null).
+insert into raw.purchase_order ("발주번호", "발주일", "공급업체", "품목코드", "발주수량", "단가", "납기예정일", "발주담당", batch_id) values
+  ('PO-S15-50',  '2026-05-09', 'Test Co', 'ITEMT50', '1,000', '6400', '2026-05-19', 'tester', gen_random_uuid()),
+  ('PO-S15-51',  '2026-05-09', 'Test Co', 'ITEMT51', '',      '6400', '2026-05-19', 'tester', gen_random_uuid()),
+  ('PO-S15-52',  '2026-05-09', 'Test Co', 'ITEMT52', '많음',   '6400', '2026-05-19', 'tester', gen_random_uuid()),
+  ('PO-S15-53',  '2026-05-09', 'Test Co', 'ITEMT53', '500',    '6400', '2026-05-19', 'tester', gen_random_uuid()),
+  ('PO-S15-54a', '2026-05-09', 'Test Co', 'ITEMT54', '300',    '6400', '2026-05-19', 'tester', gen_random_uuid()),
+  ('PO-S15-54b', '2026-05-09', 'Test Co', 'ITEMT54', '많음',    '6400', '2026-05-19', 'tester', gen_random_uuid()),
+  ('PO-S15-55',  '2026-05-09', 'Test Co', 'ITEMT55', '500',    '6400', '2026-05-19', 'tester', null),
+  ('PO-S15-56a', '2026-05-09', 'Test Co', 'ITEMT56', '300',    '6400', '2026-05-19', 'tester', gen_random_uuid()),
+  ('PO-S15-56b', '2026-05-09', 'Test Co', 'ITEMT56', '200',    '6400', '2026-05-19', 'tester', null);
 
--- (a) core.v_open_po_qty 조회 자체가 예외 없이 끝나는지 — 이전 정의라면 여기서 22P02로 전체가 죽었다.
-select order_test.check(
-  (select count(*) >= 0 from core.v_open_po_qty),
-  'S15 콤마 값이 있어도 core.v_open_po_qty 조회가 예외 없이 끝난다'
-);
+-- (a) 원본 사고 재현 확인 — select *(컬럼 프루닝을 이기는 형태, docs/stage1-판정기록.md
+-- Task 16 판정)로 core.v_open_po_qty 전체를 읽는다. count(*)·필터된 count·품목별 열 하나만
+-- 읽는 쿼리는 옛(콤마를 그대로 ::numeric에 넘기는) 정의에서도 플래너가 open_po_qty 계산
+-- 자체를 가지치기해 통과할 수 있다 — 실제로 확인했다. select *만 옛 정의에서 그대로
+-- 22P02가 난다(이 마이그레이션을 빼고 돌리면 재현된다).
+do $$
+declare
+  v_row record;
+begin
+  -- for ... in select * from ... loop는 각 행을 record로 완전히 구체화해야 하므로
+  -- 플래너의 열 프루닝을 받지 않는다 — 여기서 예외가 나면 do 블록 전체가 실패해
+  -- ON_ERROR_STOP이 스크립트를 즉시 멈춘다(옛 정의라면 여기서 22P02).
+  for v_row in select * from core.v_open_po_qty loop
+    null;
+  end loop;
+end $$;
+select order_test.check(true, 'S15 (a) select *(컬럼 프루닝 없음)로 core.v_open_po_qty를 읽어도 예외 없이 끝난다(배포에서 실제로 22P02로 죽은 지점 — 바로 위 do 블록이 여기까지 왔다는 뜻)');
 
-select order_test.check((select open_po_qty = 1000 and reason_code is null from core.v_open_po_qty where item_id = 'ITEMT50'),
-  'S15 콤마 발주수량(1,000)은 예외 없이 콤마가 제거된 1000으로 정상 계산된다(파싱 불가가 아니다 — 값을 잃지 않는다)');
-select order_test.check((select open_po_qty = 0 and reason_code is null from core.v_open_po_qty where item_id = 'ITEMT51'),
-  'S15 공란 발주수량은 기존과 같이 0으로 집계되고 파싱 불가로 표시하지 않는다(원래도 값이 없었을 뿐 — 회귀 없음)');
-select order_test.check((select open_po_qty is null and reason_code = 'OPEN_PO_QTY_UNPARSEABLE' from core.v_open_po_qty where item_id = 'ITEMT52'),
-  'S15 정크 텍스트(많음)는 콤마를 떼도 숫자가 아니므로 예외 없이 open_po_qty null + reason_code OPEN_PO_QTY_UNPARSEABLE로 끝난다');
-select order_test.check((select open_po_qty = 500 and reason_code is null from core.v_open_po_qty where item_id = 'ITEMT53'),
-  'S15 정상 값(500)은 그대로 계산된다(회귀 없음)');
-select order_test.check((select open_po_qty is null and reason_code = 'OPEN_PO_QTY_UNPARSEABLE' from core.v_open_po_qty where item_id = 'ITEMT54'),
-  'S15 같은 품목에 정상 300 · 정크 텍스트(많음)가 섞이면 300만 보여주는 부분합이 아니라 전체를 null + 사유코드로 낸다(정크 값을 조용히 0으로 계산에서 빼지 않는다)');
+-- (b) 콤마·공란·정크 — 출처가 있는 행에서의 관대한 파싱. 사유 코드는 core.v_open_po_qty에
+-- 열로 두지 않는다(docs/stage1-판정기록.md Task 16 판정) — null 여부만 확인한다.
+select order_test.check((select open_po_qty = 1000 from core.v_open_po_qty where item_id = 'ITEMT50'),
+  'S15 (b) 출처 있는 콤마 발주수량(1,000)은 예외 없이 콤마가 제거된 1000으로 정상 계산된다(파싱 불가가 아니다 — 값을 잃지 않는다)');
+select order_test.check((select open_po_qty = 0 from core.v_open_po_qty where item_id = 'ITEMT51'),
+  'S15 (b) 출처 있는 공란 발주수량은 기존과 같이 0으로 집계된다(원래도 값이 없었을 뿐 — 회귀 없음)');
+select order_test.check((select open_po_qty is null from core.v_open_po_qty where item_id = 'ITEMT52'),
+  'S15 (b) 출처 있는 정크 텍스트(많음)는 콤마를 떼도 숫자가 아니므로 예외 없이 open_po_qty null로 끝난다');
+select order_test.check((select open_po_qty = 500 from core.v_open_po_qty where item_id = 'ITEMT53'),
+  'S15 (b) 출처 있는 정상 값(500)은 그대로 계산된다(회귀 없음)');
+select order_test.check((select open_po_qty is null from core.v_open_po_qty where item_id = 'ITEMT54'),
+  'S15 (b) 출처 있는 품목에 정상 300 · 정크(많음)가 섞이면 300만 보여주는 부분합이 아니라 전체를 null로 낸다(정크 값을 조용히 0으로 계산에서 빼지 않는다)');
 
--- (b) 화면이 실제로 읽는 analytics.v_available_stock도 예외 없이 끝나고, open_po_reason_code가
--- 정상 창고재고 분류 사유(reason_code)와 섞이지 않는지 확인 — STOCK_VIEW_ALL 권한 계정(planner1)으로 조회한다.
+-- (c) 출처 게이트 — 파싱 가능 여부와 무관하게, batch_id 없는 행이 있으면 절대 숫자를 보여주지 않는다.
+select order_test.check((select open_po_qty is null from core.v_open_po_qty where item_id = 'ITEMT55'),
+  'S15 (c) 출처 없는 행은 값이 깨끗한 숫자(500)여도 open_po_qty를 보여주지 않는다 — null(배포 ITEM007과 같은 모양)');
+select order_test.check((select open_po_qty is null from core.v_open_po_qty where item_id = 'ITEMT56'),
+  'S15 (c) 출처 있는 300 · 출처 없는 200이 섞이면 300만 보여주는 부분합(또는 합계 500)이 아니라 전체를 null로 낸다(출처 없는 더미 숫자가 실데이터처럼 섞이지 않는다)');
+
+-- (d) 화면이 실제로 읽는 analytics.v_available_stock도 예외 없이 끝나는지 확인 — 이 뷰는
+-- 이번 마이그레이션에서 다시 정의하지 않았지만(열 추가 금지 — Task 16 판정), core.v_open_po_qty
+-- 를 참조하므로 자동으로 고쳐진다. STOCK_VIEW_ALL 권한 계정(planner1)으로 조회한다.
 set role authenticated;
 select order_test.as_user(:'planner1') \g /dev/null
 select order_test.check(
-  (select count(*) from analytics.v_available_stock where item_id like 'ITEMT5%') = 5,
-  'S15 콤마 값이 있어도 analytics.v_available_stock 조회가 예외 없이 끝난다(배포에서 실제로 22P02로 막혔던 지점)'
+  (select count(*) from analytics.v_available_stock where item_id like 'ITEMT5%') = 7,
+  'S15 (d) 콤마 값이 있어도 analytics.v_available_stock 조회가 예외 없이 끝난다(배포에서 실제로 22P02로 막혔던 지점)'
 );
-select order_test.check((select open_po_qty = 1000 and open_po_reason_code is null from analytics.v_available_stock where item_id = 'ITEMT50'),
-  'S15 analytics.v_available_stock에서도 콤마 품목이 정상 숫자(1000)로 나온다');
-select order_test.check((select open_po_qty is null and open_po_reason_code = 'OPEN_PO_QTY_UNPARSEABLE' from analytics.v_available_stock where item_id = 'ITEMT52'),
-  'S15 정크 텍스트 품목은 analytics.v_available_stock에서도 open_po_reason_code로 표시된다(reason_code와 별개 열)');
+select order_test.check((select open_po_qty = 1000 from analytics.v_available_stock where item_id = 'ITEMT50'),
+  'S15 (d) analytics.v_available_stock에서도 출처 있는 콤마 품목이 정상 숫자(1000)로 나온다');
+select order_test.check((select open_po_qty is null from analytics.v_available_stock where item_id = 'ITEMT52'),
+  'S15 (d) 정크 텍스트 품목은 analytics.v_available_stock에서도 open_po_qty가 null이다');
+select order_test.check((select open_po_qty is null from analytics.v_available_stock where item_id = 'ITEMT55'),
+  'S15 (d) 출처 없는 품목은 analytics.v_available_stock에서도 숫자가 아니라 null이다');
 select order_test.check((select open_po_qty = 500 from analytics.v_available_stock where item_id = 'ITEMT53'),
-  'S15 정상 품목은 analytics.v_available_stock에서도 그대로 숫자로 나온다');
+  'S15 (d) 정상 품목은 analytics.v_available_stock에서도 그대로 숫자로 나온다');
+select order_test.check((select has_unverified_source from analytics.v_open_po_data_status),
+  'S15 (d) analytics.v_open_po_data_status가 출처 미확인 데이터가 있음을 화면 배너용으로 알려준다(ITEMT55·56)');
+select order_test.check((select has_unparseable from analytics.v_open_po_data_status),
+  'S15 (d) analytics.v_open_po_data_status가 파싱 불가 데이터가 있음도 함께 알려준다(ITEMT52·54)');
 reset role;
 
--- (c) 파서 자체 — 빈 문자열 · null · 앞뒤 공백 · 콤마 · 알 수 없는 텍스트 모두 예외 없이 처리된다.
-select order_test.check(core.parse_lenient_numeric('1,000') = 1000, 'S15 파서 — 천단위 콤마 제거');
-select order_test.check(core.parse_lenient_numeric('  500 ') = 500, 'S15 파서 — 앞뒤 공백 제거');
-select order_test.check(core.parse_lenient_numeric('') is null, 'S15 파서 — 빈 문자열은 예외 없이 null');
-select order_test.check(core.parse_lenient_numeric(null) is null, 'S15 파서 — null은 null');
-select order_test.check(core.parse_lenient_numeric('많음') is null, 'S15 파서 — 알 수 없는 텍스트도 예외 없이 null');
+-- (e) 파서 자체 — 빈 문자열 · null · 앞뒤 공백 · 콤마 · 알 수 없는 텍스트 모두 예외 없이 처리된다.
+select order_test.check(core.parse_lenient_numeric('1,000') = 1000, 'S15 (e) 읽기 파서 — 천단위 콤마 제거');
+select order_test.check(core.parse_lenient_numeric('  500 ') = 500, 'S15 (e) 읽기 파서 — 앞뒤 공백 제거');
+select order_test.check(core.parse_lenient_numeric('') is null, 'S15 (e) 읽기 파서 — 빈 문자열은 예외 없이 null');
+select order_test.check(core.parse_lenient_numeric(null) is null, 'S15 (e) 읽기 파서 — null은 null');
+select order_test.check(core.parse_lenient_numeric('많음') is null, 'S15 (e) 읽기 파서 — 알 수 없는 텍스트도 예외 없이 null');
+
+-- (f) 적재 파서 — 콤마는 받아들이고, 그래도 파싱 불가면 명확한 오류로 거부한다(화면 파서와
+-- 다른 판단 — 적재는 조용히 넘어가면 안 된다).
+select order_test.check(core.require_lenient_numeric('1,000', '현재고') = 1000, 'S15 (f) 적재 파서 — 콤마는 받아들인다');
+select order_test.check(core.require_lenient_numeric('', '현재고') is null, 'S15 (f) 적재 파서 — 빈 값은 null(오류 아님)');
+select order_test.expect_error('select core.require_lenient_numeric(''많음'', ''현재고'')', '현재고을\(를\) 숫자로 바꿀 수 없습니다', 'S15 (f) 적재 파서 — 파싱 불가면 명확한 한국어 오류로 거부한다');
+
+-- (g) 적재 경로 — goods_receipt 배치에 파싱 불가 입고수량이 섞이면 배치 전체를 거부하고
+-- (부분 반영하지 않고), 콤마 값은 정상 반영되는지 확인한다. order_test.commit_goods_receipt는
+-- 수량을 numeric으로 받아 콤마 텍스트를 그대로 흉내 낼 수 없으므로 직접 raw에 넣는다.
+do $$
+declare
+  v_batch_id uuid := gen_random_uuid();
+begin
+  insert into core.upload_batch (batch_id, file_name, import_type, import_mode, status)
+  values (v_batch_id, 'order_test-fixture.csv', 'goods_receipt', 'append', 'VALIDATED');
+  insert into raw.goods_receipt ("품목코드", "입고수량", "입고일", source_record_id, batch_id, receipt_status, source_type, loaded_at)
+  values ('ITEMT53', '1,000', now()::text, 'GR-S15-COMMA', v_batch_id, 'COMPLETED', 'FILE_UPLOAD', now());
+  perform core.apply_stock_receipts_from_batch(v_batch_id);
+end $$;
+select order_test.check((select qty = 1000 from core.stock_receipt_ledger where source_record_id = 'GR-S15-COMMA'),
+  'S15 (g) 적재 경로 — 콤마 섞인 입고수량도 배치 커밋 시 정상 반영된다(1000)');
+
+set role authenticated;
+select order_test.as_user('00000000-0000-4000-8000-000000000061') \g /dev/null
+select order_test.expect_error(
+  $f$select order_test.commit_import_lines('goods_receipt', 'append', 'GR-S15-JUNK', jsonb_build_array(jsonb_build_object('item_id', 'ITEMT53', 'qty', '많음', 'receipt_date', now()::text, 'receipt_status', 'COMPLETED')))$f$,
+  '입고수량을\(를\) 숫자로 바꿀 수 없습니다',
+  'S15 (g) 적재 경로 — 파싱 불가 입고수량은 배치 전체를 명확한 오류로 거부한다(조용히 그 행만 빼지 않는다)'
+);
+reset role;
+select order_test.check((select count(*) = 0 from raw.goods_receipt where source_record_id = 'GR-S15-JUNK'),
+  'S15 (g) 거부된 배치는 raw에도 한 줄도 남기지 않는다(트랜잭션 전체 롤백)');

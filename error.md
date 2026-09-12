@@ -958,20 +958,53 @@ available`일 때만 그 파일을 건너뛰고 계속 진행하도록 했습니
 그 뷰를 매 조회마다 참조하므로 화면 전체가 막혔습니다. 92행 중 이 한 줄만 문제였는데도, 집계
 쿼리는 한 줄이라도 캐스트가 실패하면 결과 전체가 아니라 쿼리 자체가 실패합니다.
 
-**해결.** `supabase/migrations/20260912000800_fix_open_po_qty_cast.sql`이 `core.parse_lenient_numeric(text)`
-공용 파서를 추가했습니다 — 앞뒤 공백·천단위 콤마를 뗀 뒤에도 숫자가 아니면 예외 대신 null을
-돌려줍니다(콤마는 정상 복원 가능한 값이라 `'1,000'` → `1000`으로 계산에 들어가며, 값을 잃지
-않습니다). `core.v_open_po_qty` · `core.apply_stock_receipts_from_batch`가 이 파서를 쓰도록
-다시 정의됐고, 그래도(콤마를 떼도) 정말 숫자가 아닌 값이 하나라도 있는 품목은 부분합을 보여주지
-않고 `open_po_qty` 전체를 null + `reason_code='OPEN_PO_QTY_UNPARSEABLE'`로 냅니다(일부 줄만
-조용히 빼고 계산한 부분합은 "정확해 보이는 틀린 숫자"가 되기 때문입니다). `analytics.v_available_stock`
-끝에 `open_po_reason_code` 열을 추가해 이 사유를 화면까지 전달합니다(기존 `reason_code`는 정상
-창고재고 분류 사유라 서로 다른 열로 분리했습니다).
+**해결.** `supabase/migrations/20260912000800_fix_open_po_qty_cast.sql`이 세 가지를 더합니다.
+
+1. `core.parse_lenient_numeric(text)`(읽기 경로 전용) — 앞뒤 공백·천단위 콤마를 뗀 뒤에도
+   숫자가 아니면 예외 대신 null을 돌려줍니다. 콤마는 정상 복원 가능한 값이라 `'1,000'` →
+   `1000`으로 계산에 들어가며 값을 잃지 않습니다. 그래도(콤마를 떼도) 정말 숫자가 아닌 값이
+   하나라도 있는 품목은 부분합을 보여주지 않고 `open_po_qty` 전체를 null로 냅니다.
+2. **출처 게이트** — 파싱만 고치는 것으로는 부족했습니다. `raw.purchase_order`·
+   `raw.goods_receipt`는 배포 DB에서 **전부**(92행·81행) `batch_id`가 null인 출처 없는
+   5회차 더미입니다. 파싱만 관대하게 하면 이 더미 20개 품목의 발주 텍스트가 전부 숫자로
+   읽혀 Open PO 열에 실제 발주량처럼(더미 합계 28,800) 보입니다 — 죽는 화면보다 나쁜
+   결과입니다("지어낸 숫자가 실데이터처럼 보이면 안 된다" 원칙 위반). 그래서
+   `core.v_open_po_qty`는 발주수량·입고수량에 기여하는 행 중 `batch_id`가 없는 행이
+   하나라도 있으면(파싱 가능 여부와 무관하게) 그 품목을 null로 냅니다. 지금 배포 DB는 두
+   raw 표 전부 출처가 없으므로, 이 마이그레이션을 적용해도 **어떤 품목의 Open PO도 숫자로
+   보이지 않습니다** — 실제 발주 데이터가 정식 업로드 경로(batch_id가 채워짐)로 들어올
+   때까지는 그것이 맞는 값입니다.
+3. **적재 경로는 다르게 판단합니다** — `core.apply_stock_balance_from_batch` ·
+   `core.apply_month_end_inventory_snapshot_from_batch` · `core.apply_stock_receipts_from_batch`
+   (raw.inventory."현재고" · raw.goods_receipt."입고수량"도 같은 무방비 캐스트였습니다)는
+   `core.require_lenient_numeric(text, label)`을 씁니다 — 콤마는 받아들이지만, 그래도
+   파싱 불가면 명확한 한국어 예외를 던져 배치 커밋 전체를 거부합니다. 읽기 경로는 과거에
+   쌓인 raw 전체를 매번 다시 읽으므로 옛 더미 행 하나 때문에 죽으면 안 되지만, 적재 경로는
+   "지금 이 배치"만 다루므로 조용히 통과시키면 틀린 값이 정본 표에 그대로 들어앉습니다.
+
+**`analytics.v_available_stock`·`core.v_open_po_qty`에는 사유 열을 더하지 않았습니다.**
+1차 수정안은 `open_po_reason_code` 열을 추가했으나, 그렇게 뷰를 넓히면 "전체를 파일명
+순서로 다시 적용"하는 표준 복구 절차의 재실행 확인 단계가 `cannot drop columns from view`
+로 멈춥니다(#24와 같은 현상 — `docs/stage1-판정기록.md` Task 16 판정으로 되돌렸습니다).
+사유는 새 열 대신 **새 객체**(`analytics.v_open_po_data_status`, 화면 배너 전용 요약 한 줄)
++ `OpenPoStatusBanner` 컴포넌트로 안내합니다 — 이 저장소가 practice-data에 이미 쓰는
+패턴과 같습니다. `analytics.v_available_stock` 자체는 이 보정에서 **전혀 재정의하지
+않았습니다** — `core.v_open_po_qty`만 고쳐도 그 뷰가 참조하는 값이 쿼리 시점에 자동으로
+바뀝니다.
+
+같은 패턴(raw 텍스트를 곧바로 `::numeric`, 출처 게이트 없음)의 두 번째 지점
+(`core.v_stock_on_hand` → `analytics.v_stockout_risk`, `/analysis` 재고 소진 위험 화면)도
+저장소 전체 참조 조사 중 발견해 같은 방식으로 고쳤습니다(이 뷰도 열은 바꾸지 않았습니다).
 
 **예방.** `raw.*` 텍스트 열을 `::numeric`으로 캐스트하는 새 뷰·함수를 추가할 때는 항상
-`core.parse_lenient_numeric`을 거칩니다 — 직접 캐스트하지 않습니다. ERP 원천 데이터는 사람이
-엑셀에서 손으로 채우거나 붙여넣은 값이 섞여 있어 천단위 콤마·앞뒤 공백이 드물지 않게 나타납니다.
-특히 배치 필터가 없는 "전체 raw를 그룹핑하는" 뷰(`core.v_open_po_qty`처럼)는 오래된 출처 없는
-더미 행 단 한 줄만으로도 전체 화면을 막을 수 있다는 점을 기억합니다 — batch_id가 있는 최근
-데이터만 검증하는 경로(`lib/import/validate.ts`)를 통과했다고 해서 과거에 쌓인 raw 전체가
-깨끗하다는 뜻은 아닙니다.
+`core.parse_lenient_numeric`(읽기)·`core.require_lenient_numeric`(적재)을 거칩니다 — 직접
+캐스트하지 않습니다. 파싱을 관대하게 만드는 것만으로는 부족하다는 점도 기억합니다 — 출처
+없는(batch_id null) 더미 데이터가 섞인 raw 표를 그대로 집계하면, 파싱 성공이 곧 "지어낸
+숫자가 실제 값처럼 보이는" 새로운 문제를 만듭니다. 배치 필터가 없는 "전체 raw를 그룹핑하는"
+읽기 경로 뷰를 새로 만들 때는 항상 출처(batch_id) 게이트가 필요한지부터 검토합니다. 사유를
+화면에 알려야 할 때는 기존 analytics 뷰에 열을 더하기 전에, `core` 쪽 뷰 재정의만으로
+해결되는지(값은 하위 뷰에서 자동 전파됩니다) 먼저 확인하고, 그래도 부족하면 새 열보다
+새 객체(+배너 컴포넌트)를 먼저 검토합니다. 테스트는 컬럼 프루닝을 이기는 형태(`select *`
+또는 plpgsql `for ... in select * from ... loop`)로 씁니다 — `count(*)`·필터된 count·
+품목별 열 하나만 읽는 쿼리는 플래너가 문제의 계산식 자체를 가지치기해 고치기 전 정의에서도
+통과할 수 있습니다.

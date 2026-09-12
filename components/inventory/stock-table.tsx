@@ -56,8 +56,10 @@ const columns: Column<AvailableStockRow>[] = [
     key: 'openPoQty',
     label: 'Open PO (참고)',
     align: 'right',
-    render: (row) =>
-      row.openPoQty === null ? <EmptyValue reasonCode={row.openPoReasonCode ?? 'CALCULATION_UNAVAILABLE'} /> : formatNumber(row.openPoQty, ' EA'),
+    // ★ 2026-09-12 보정 — 사유는 열이 아니라 화면 위 OpenPoStatusBanner가 한 번만 말한다
+    //   (docs/stage1-판정기록.md Task 16 판정 — analytics.v_available_stock에 사유 열을
+    //   더하지 않는다).
+    render: (row) => (row.openPoQty === null ? <span className="muted">—</span> : formatNumber(row.openPoQty, ' EA')),
   },
   {
     key: 'inTransitQty',
