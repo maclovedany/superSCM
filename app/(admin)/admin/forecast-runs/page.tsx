@@ -4,18 +4,21 @@
 //
 // ★ 계산은 하지 않는다. analytics.v_forecast_run이 이미 만든 열(n_models · n_items · n_rows ·
 //   is_stale)을 그대로 옮긴다.
-// ★ 원천 게이트(core.procurement_forecast_source_status)는 발주계획 생성 로직 내부 전용으로
-//   authenticated에도 EXECUTE 권한이 없다(20260911000900_stage1_procurement_plan.sql 9번 섹션).
-//   이 화면에서 직접 호출하면 permission denied라 판정을 새로 만들지 않고 이유를 안내만 한다.
+// ★ fix round 1 — 원천 게이트(core.procurement_forecast_source_status)는 발주계획 생성 로직 내부
+//   전용으로 authenticated에도 EXECUTE 권한이 없지만(20260911000900), 그 함수가 읽는 원본은 이미
+//   활성 사용자에게 열려 있어 admin 전용 읽기 전용 래퍼를 추가해도 권한 설계를 훼손하지 않는다는
+//   리뷰 판정에 따라 core.forecast_run_source_status_for_admin(uuid[])(20260912000700)을 추가했다.
+//   그 마이그레이션이 아직 적용되지 않은 환경에서는 조회가 빈 Map으로 실패하고 각 행이 그대로
+//   EmptyValue를 보여준다 — 화면이 깨지지 않는다.
 
 import PageHeader from '@/components/shell/page-header';
 import DataTable, { type Column } from '@/components/ui/data-table';
 import EmptyValue from '@/components/ui/empty-value';
 import ForecastPipelineNote from '@/components/admin/forecast-pipeline-note';
 import { requireAdmin } from '@/lib/auth';
-import { getForecastRuns } from '@/lib/scm';
+import { getForecastRuns, getForecastRunSourceStatuses } from '@/lib/scm';
 import { getPracticeForecastRunIds } from '@/lib/practice/repository';
-import type { ForecastRun } from '@/lib/scm-model';
+import { SOURCE_STATUS_LABELS, type ForecastRun, type SourceStatus } from '@/lib/scm-model';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,9 +35,16 @@ function statusTag(status: ForecastRun['status']) {
   return <span className="tag amber">RUNNING</span>;
 }
 
+function sourceGateTag(status: SourceStatus) {
+  const label = SOURCE_STATUS_LABELS[status];
+  return status === 'VERIFIED' ? <span className="tag green">{label}</span> : <span className="tag amber" title={status}>{label}</span>;
+}
+
 export default async function ForecastRunsPage() {
   await requireAdmin();
-  const [{ rows, error }, practiceRunIds] = await Promise.all([getForecastRuns(), getPracticeForecastRunIds()]);
+  const [{ rows, error: runsError }, practiceRunIds] = await Promise.all([getForecastRuns(), getPracticeForecastRunIds()]);
+  const { statuses: sourceStatuses, error: sourceStatusError } = await getForecastRunSourceStatuses(rows.map((row) => row.runId));
+  const error = runsError;
 
   const columns: Column<ForecastRun>[] = [
     {
@@ -61,7 +71,10 @@ export default async function ForecastRunsPage() {
     },
     {
       key: 'sourceGate', label: '원천 게이트', align: 'center',
-      render: () => <EmptyValue reasonCode="SOURCE_STATUS_NOT_EXPOSED" />,
+      render: (row) => {
+        const status = sourceStatuses.get(row.runId);
+        return status ? sourceGateTag(status) : <EmptyValue reasonCode={sourceStatusError ? 'SOURCE_STATUS_UNAVAILABLE' : 'SOURCE_STATUS_NOT_JUDGED'} />;
+      },
     },
     { key: 'startedAt', label: '시작', render: (row) => formatDateTime(row.startedAt) },
     { key: 'finishedAt', label: '종료', render: (row) => formatDateTime(row.finishedAt) },
@@ -85,8 +98,8 @@ export default async function ForecastRunsPage() {
             <div className="card-title">
               <div>
                 <h3>실행 이력</h3>
-                <span>최근 실행이 먼저 옵니다. 원천 게이트 판정(VERIFIED 등)은 core.procurement_forecast_source_status가
-                  발주계획 생성 로직 전용이라 이 화면에서 직접 조회할 수 없습니다 — 판정은 발주계획 생성 시점에 이뤄집니다.</span>
+                <span>최근 실행이 먼저 옵니다. 원천 게이트는 core.procurement_forecast_source_status와 같은 판정입니다
+                  (VERIFIED만 발주계획 생성에 쓸 수 있습니다). {sourceStatusError ? <span className="text-danger">판정 조회에 실패했습니다: {sourceStatusError}</span> : null}</span>
               </div>
             </div>
             <DataTable columns={columns} rows={rows} rowKey={(row) => row.runId} empty="Forecast 실행 이력이 없습니다." />

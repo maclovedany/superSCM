@@ -1,15 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  isSourceStatus,
+  normalizeBacktestPerformanceSummary,
   normalizeBacktestRun,
   normalizeChampionModel,
   normalizeForecastModelConfig,
   normalizeForecastRun,
   normalizeLeadtimeGap,
-  normalizeModelPerformanceRow,
   normalizeStockoutKpi,
   normalizeStockoutRisk,
-  summarizeModelPerformance,
 } from './scm-model.ts';
 
 test('normalizes analytics leadtime rows into the screen model', () => {
@@ -170,26 +170,19 @@ test('normalizes a v_backtest_run row', () => {
   });
 });
 
-test('normalizes a v_model_performance row used to build the backtest-runs summary', () => {
-  const result = normalizeModelPerformanceRow({
-    backtest_run_id: 'b1', model_id: 'WMA_3M', item_id: 'ITEM001', wape: 0.234, calculation_status: 'SUCCESS',
+// fix round 1 — 채점 요약은 이제 analytics.v_backtest_performance_summary가 SQL로 집계해 둔 열을
+// 그대로 옮긴다(화면·lib 모두 원본 행을 훑어 다시 계산하지 않는다).
+test('normalizes a v_backtest_performance_summary row', () => {
+  const result = normalizeBacktestPerformanceSummary({
+    backtest_run_id: 'b1', scored_count: 3, unavailable_count: 1, wape_min: 0.1, wape_max: 0.5,
   });
-  assert.deepEqual(result, { backtestRunId: 'b1', modelId: 'WMA_3M', itemId: 'ITEM001', wape: 0.234, calculationStatus: 'SUCCESS' });
-});
-
-test('summarizeModelPerformance counts scored rows and takes the wape min/max, not an average', () => {
-  const rows = [
-    { calculationStatus: 'SUCCESS', wape: 0.1 },
-    { calculationStatus: 'SUCCESS', wape: 0.5 },
-    { calculationStatus: 'SUCCESS', wape: 0.3 },
-    { calculationStatus: 'UNAVAILABLE', wape: null },
-  ];
-  const result = summarizeModelPerformance('b1', rows);
   assert.deepEqual(result, { backtestRunId: 'b1', scoredCount: 3, unavailableCount: 1, wapeMin: 0.1, wapeMax: 0.5 });
 });
 
-test('summarizeModelPerformance returns null range when no row was scored', () => {
-  const result = summarizeModelPerformance('b2', [{ calculationStatus: 'UNAVAILABLE', wape: null }]);
+test('normalizes a v_backtest_performance_summary row with no scored items as null range', () => {
+  const result = normalizeBacktestPerformanceSummary({
+    backtest_run_id: 'b2', scored_count: 0, unavailable_count: 1, wape_min: null, wape_max: null,
+  });
   assert.deepEqual(result, { backtestRunId: 'b2', scoredCount: 0, unavailableCount: 1, wapeMin: null, wapeMax: null });
 });
 
@@ -221,4 +214,19 @@ test('normalizes a v_model_config row, including updated_at', () => {
   assert.equal(result.isDefault, true);
   assert.deepEqual(result.applicableDemandType, ['SMOOTH', 'ERRATIC']);
   assert.equal(result.updatedAt, '2026-08-28T00:05:00Z');
+});
+
+// fix round 1 — core.forecast_run_source_status_for_admin(20260912000700)가 돌려준 텍스트를 화면이
+// 신뢰하기 전에 다섯 값(SOURCE_STATUSES) 중 하나인지 가린다. RPC가 예상 밖의 값(오타 · 다른 버전의
+// 판정 함수)을 돌려주면 화면에 그대로 찍지 않고 조용히 걸러낸다.
+test('isSourceStatus accepts exactly the five core.procurement_forecast_source_status values', () => {
+  assert.equal(isSourceStatus('VERIFIED'), true);
+  assert.equal(isSourceStatus('FORECAST_SOURCE_UNVERIFIED'), true);
+  assert.equal(isSourceStatus('FORECAST_WINDOW_CHANGED'), true);
+  assert.equal(isSourceStatus('FORECAST_INPUT_UNTRACED'), true);
+  assert.equal(isSourceStatus('FORECAST_INPUT_CHANGED'), true);
+  assert.equal(isSourceStatus('BOGUS'), false);
+  assert.equal(isSourceStatus(null), false);
+  assert.equal(isSourceStatus(undefined), false);
+  assert.equal(isSourceStatus(42), false);
 });

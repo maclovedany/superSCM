@@ -21,12 +21,15 @@ function formatDateTime(value: string | null): string {
   return new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
-function formatMetric(value: number | null): string {
-  return value === null ? '—' : value.toLocaleString('ko-KR', { maximumFractionDigits: 3 });
+// fix round 1 — Bias · RMSE · MAE도 WAPE · MAPE와 같은 규칙(null은 EmptyValue + 사유 코드)을 따른다.
+// 다섯 지표 모두 core.run_backtest의 NO_VALID_CANDIDATE 경로에서 함께 null이 될 수 있다. 그래서
+// 이 두 포맷 함수는 null을 받지 않는다 — 호출부(컬럼 render)가 먼저 null을 걸러낸다.
+function formatMetric(value: number): string {
+  return value.toLocaleString('ko-KR', { maximumFractionDigits: 3 });
 }
 
-function formatWape(value: number | null): string {
-  return value === null ? '—' : `${(value * 100).toFixed(1)}%`;
+function formatWape(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
 }
 
 export default async function ChampionModelsPage() {
@@ -51,9 +54,9 @@ export default async function ChampionModelsPage() {
     },
     { key: 'wape', label: 'WAPE', align: 'right', render: (row) => row.wape === null ? <EmptyValue reasonCode="WAPE_UNAVAILABLE" /> : formatWape(row.wape) },
     { key: 'mape', label: 'MAPE', align: 'right', render: (row) => row.mape === null ? <EmptyValue reasonCode="MAPE_UNAVAILABLE" /> : formatWape(row.mape) },
-    { key: 'bias', label: 'Bias', align: 'right', render: (row) => formatMetric(row.bias) },
-    { key: 'rmse', label: 'RMSE', align: 'right', render: (row) => formatMetric(row.rmse) },
-    { key: 'mae', label: 'MAE', align: 'right', render: (row) => formatMetric(row.mae) },
+    { key: 'bias', label: 'Bias', align: 'right', render: (row) => row.bias === null ? <EmptyValue reasonCode="BIAS_UNAVAILABLE" /> : formatMetric(row.bias) },
+    { key: 'rmse', label: 'RMSE', align: 'right', render: (row) => row.rmse === null ? <EmptyValue reasonCode="RMSE_UNAVAILABLE" /> : formatMetric(row.rmse) },
+    { key: 'mae', label: 'MAE', align: 'right', render: (row) => row.mae === null ? <EmptyValue reasonCode="MAE_UNAVAILABLE" /> : formatMetric(row.mae) },
     { key: 'selectionReason', label: '선정 근거', render: (row) => row.selectionReason ?? <span className="muted">—</span> },
     { key: 'selectedAt', label: '선정일', render: (row) => formatDateTime(row.selectedAt) },
   ];

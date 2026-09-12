@@ -1,3 +1,9 @@
+// ★ error.md #13 — SOURCE_STATUSES는 런타임 값이라 node --test가 확장자 없는 상대 경로를 해석하지
+//   못한다. 명시적으로 .ts를 붙인다(allowImportingTsExtensions로 Next.js 타입 검사도 허용된다).
+import { SOURCE_STATUSES, type SourceStatus } from './procurement/model.ts';
+
+export type { SourceStatus };
+
 export type LeadtimeGap = {
   supplier: string;
   country: string;
@@ -410,14 +416,16 @@ export function normalizeBacktestRun(row: Record<string, unknown>): BacktestRun 
 }
 
 /**
- * Backtest 실행별 채점 요약 — core.model_performance를 집계한다.
+ * Backtest 실행별 채점 요약 — analytics.v_backtest_performance_summary(fix round 1)를 그대로 옮긴다.
  *
- * ★ AGENTS.md 2번(숫자 계산은 SQL이 한다)은 평균 · 분위수 같은 통계 추정을 화면 코드에서 만들지
- *   말라는 규칙이다. 여기서 하는 건 평균이 아니라 이미 core.run_backtest가 저장해 둔 wape 값들의
- *   최솟값 · 최댓값(범위)과 단순 개수 집계뿐이다 — 새로운 수치를 추정하지 않는다. 그래도 이 계산은
- *   화면 컴포넌트가 아니라 여기(순수 함수)에 두고 model.test.ts로 고정한다.
+ * ★ fix round 1 리뷰 전에는 이 요약(개수 · WAPE 최솟값·최댓값)을 화면이 core.model_performance
+ *   원본 행을 내려받아 직접 집계했다. AGENTS.md 2번의 문언("화면 코드에서 평균이나 분위수를 구하지
+ *   마세요")에 걸릴 정도는 아니라고 판단했었지만(평균이 아니라 최솟값·최댓값이었다), 이 저장소에
+ *   화면 계층이 행을 훑어 집계한 선례가 없었다(averageStockoutDays조차 SQL이 계산한 열을 읽는다).
+ *   선례를 만들지 않는 게 낫다는 리뷰 판정에 따라 집계를 SQL로 내렸다 — 이 타입은 이제 뷰 열을
+ *   그대로 옮기기만 한다(다른 정규화 함수와 같은 모양).
  */
-export type ModelPerformanceSummary = {
+export type BacktestPerformanceSummary = {
   backtestRunId: string;
   scoredCount: number;
   unavailableCount: number;
@@ -425,36 +433,13 @@ export type ModelPerformanceSummary = {
   wapeMax: number | null;
 };
 
-export function summarizeModelPerformance(
-  backtestRunId: string,
-  rows: Array<{ calculationStatus: string; wape: number | null }>,
-): ModelPerformanceSummary {
-  const scored = rows.filter((row) => row.calculationStatus === 'SUCCESS');
-  const wapes = scored.map((row) => row.wape).filter((wape): wape is number => wape !== null);
-  return {
-    backtestRunId,
-    scoredCount: scored.length,
-    unavailableCount: rows.length - scored.length,
-    wapeMin: wapes.length === 0 ? null : Math.min(...wapes),
-    wapeMax: wapes.length === 0 ? null : Math.max(...wapes),
-  };
-}
-
-export type ModelPerformanceRow = {
-  backtestRunId: string;
-  modelId: string;
-  itemId: string;
-  wape: number | null;
-  calculationStatus: string;
-};
-
-export function normalizeModelPerformanceRow(row: Record<string, unknown>): ModelPerformanceRow {
+export function normalizeBacktestPerformanceSummary(row: Record<string, unknown>): BacktestPerformanceSummary {
   return {
     backtestRunId: String(value(row, ['backtest_run_id']) ?? ''),
-    modelId: String(value(row, ['model_id']) ?? ''),
-    itemId: String(value(row, ['item_id']) ?? ''),
-    wape: numberValue(row, ['wape']),
-    calculationStatus: String(value(row, ['calculation_status']) ?? 'UNAVAILABLE'),
+    scoredCount: numberValue(row, ['scored_count']) ?? 0,
+    unavailableCount: numberValue(row, ['unavailable_count']) ?? 0,
+    wapeMin: numberValue(row, ['wape_min']),
+    wapeMax: numberValue(row, ['wape_max']),
   };
 }
 
@@ -490,4 +475,25 @@ export function normalizeChampionModel(row: Record<string, unknown>): ChampionMo
     selectionMethod: selectionMethod === 'AUTO' || selectionMethod === 'MANUAL' ? selectionMethod : null,
     selectedAt: value(row, ['selected_at']) === null ? null : String(value(row, ['selected_at'])),
   };
+}
+
+/**
+ * Forecast Run 원천 게이트 표시용 — fix round 1.
+ *
+ * ★ 판정 로직은 core.procurement_forecast_source_status 하나뿐이다(20260911000900). 여기서 다시
+ *   구현하지 않는다 — core.forecast_run_source_status_for_admin(uuid[])(20260912000700, admin
+ *   전용 읽기 전용 래퍼)이 그 함수를 그대로 호출한 결과를 받아 한글 라벨만 붙인다.
+ * ★ SourceStatus 타입은 lib/procurement/model.ts의 것을 그대로 쓴다(파일 위에서 re-export) — 값의
+ *   집합을 두 곳에 따로 적으면 언젠가 갈라진다.
+ */
+export const SOURCE_STATUS_LABELS: Record<SourceStatus, string> = {
+  VERIFIED: '검증됨',
+  FORECAST_SOURCE_UNVERIFIED: '원천 미검증',
+  FORECAST_WINDOW_CHANGED: '학습·검증 기간 변경됨',
+  FORECAST_INPUT_UNTRACED: '입력 지문 없음',
+  FORECAST_INPUT_CHANGED: '입력 변경됨',
+};
+
+export function isSourceStatus(value: unknown): value is SourceStatus {
+  return typeof value === 'string' && (SOURCE_STATUSES as readonly string[]).includes(value);
 }

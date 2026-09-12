@@ -10,6 +10,8 @@
 
 import { createSupabaseServerClient } from './supabase';
 import {
+  isSourceStatus,
+  normalizeBacktestPerformanceSummary,
   normalizeBacktestRun,
   normalizeBomRequirement,
   normalizeChampionModel,
@@ -17,10 +19,10 @@ import {
   normalizeForecastRun,
   normalizeItemDemandKpi,
   normalizeItemDemandProfile,
-  normalizeModelPerformanceRow,
   normalizeOlAccuracy,
   normalizeOlAccuracyFy,
   normalizeShipmentTrend,
+  type BacktestPerformanceSummary,
   type BacktestRun,
   type BomRequirement,
   type ChampionModel,
@@ -28,10 +30,10 @@ import {
   type ForecastRun,
   type ItemDemandKpi,
   type ItemDemandProfile,
-  type ModelPerformanceRow,
   type OlAccuracy,
   type OlAccuracyFy,
   type ShipmentTrend,
+  type SourceStatus,
 } from './scm-model';
 
 /** 수요 성격 — Syntetos-Boylan 분류. 6개월 미만은 유형 null + reason_code */
@@ -178,22 +180,49 @@ export async function getBacktestRuns(): Promise<{ rows: BacktestRun[]; error: s
 }
 
 /**
- * 채점 원본 행 — analytics.v_model_performance. backtest-runs 화면이 채점 요약(개수 · WAPE 범위)을
- * 만드는 재료로만 쓴다. 화면은 이 행을 직접 표로 그리지 않는다.
+ * Backtest 실행별 채점 요약 — analytics.v_backtest_performance_summary(fix round 1,
+ * 20260912000700). 개수 · WAPE 최솟값·최댓값을 SQL이 이미 집계해 둔 열을 그대로 옮긴다 — 화면도
+ * 이 함수도 원본 행을 훑어 다시 계산하지 않는다.
  */
-export async function getModelPerformanceRows(backtestRunIds: string[]): Promise<{ rows: ModelPerformanceRow[]; error: string | null }> {
+export async function getBacktestPerformanceSummaries(backtestRunIds: string[]): Promise<{ rows: BacktestPerformanceSummary[]; error: string | null }> {
   if (backtestRunIds.length === 0) return { rows: [], error: null };
   try {
     const supabase = await createSupabaseServerClient();
     const { data, error } = await supabase
       .schema('analytics')
-      .from('v_model_performance')
-      .select('backtest_run_id, model_id, item_id, wape, calculation_status')
+      .from('v_backtest_performance_summary')
+      .select('*')
       .in('backtest_run_id', backtestRunIds);
     if (error) return { rows: [], error: error.message };
-    return { rows: (data ?? []).map((row) => normalizeModelPerformanceRow(row as Record<string, unknown>)), error: null };
+    return { rows: (data ?? []).map((row) => normalizeBacktestPerformanceSummary(row as Record<string, unknown>)), error: null };
   } catch (error) {
-    return { rows: [], error: error instanceof Error ? error.message : 'Backtest 채점 결과를 조회하지 못했습니다.' };
+    return { rows: [], error: error instanceof Error ? error.message : 'Backtest 채점 요약을 조회하지 못했습니다.' };
+  }
+}
+
+/**
+ * Forecast Run별 원천 게이트 판정 — fix round 1(20260912000700). core.procurement_forecast_source_status는
+ * 발주계획 생성 로직 내부 전용이라 authenticated에도 EXECUTE가 없다. 대신 core.is_admin()으로 막은
+ * 읽기 전용 래퍼 core.forecast_run_source_status_for_admin(uuid[])를 부른다 — 판정 로직은 원본 함수가
+ * 그대로 하고, 이 함수는 결과를 한 번에 받아오기만 한다.
+ *
+ * ★ 이 마이그레이션이 아직 적용되지 않은 환경(함수가 없음)이면 RPC가 42883으로 실패한다 — 그 경우
+ *   화면은 빈 Map을 받고 각 행에 EmptyValue를 그대로 보여준다(화면이 깨지지 않는다).
+ */
+export async function getForecastRunSourceStatuses(runIds: string[]): Promise<{ statuses: Map<string, SourceStatus>; error: string | null }> {
+  const statuses = new Map<string, SourceStatus>();
+  if (runIds.length === 0) return { statuses, error: null };
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase.schema('core').rpc('forecast_run_source_status_for_admin', { p_run_ids: runIds });
+    if (error) return { statuses, error: error.message };
+    for (const row of (data ?? []) as Array<Record<string, unknown>>) {
+      const runId = row.run_id === null || row.run_id === undefined ? null : String(row.run_id);
+      if (runId && isSourceStatus(row.source_status)) statuses.set(runId, row.source_status);
+    }
+    return { statuses, error: null };
+  } catch (error) {
+    return { statuses, error: error instanceof Error ? error.message : '원천 게이트 판정을 조회하지 못했습니다.' };
   }
 }
 

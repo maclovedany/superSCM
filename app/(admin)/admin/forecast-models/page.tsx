@@ -45,7 +45,7 @@ export default async function ForecastModelsPage() {
     <section className="analysis-page">
       <PageHeader eyebrow="ADMIN" title="Forecast Models" description="예측 모델 registry 입니다." />
       <div className="analysis-content">
-        <ForecastPipelineNote />
+        <ForecastPipelineNote variant="registry" />
 
         {error ? (
           <div className="card">

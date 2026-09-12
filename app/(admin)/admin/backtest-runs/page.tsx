@@ -2,17 +2,19 @@
 // 비어 있어 NoRealDataNotice만 보여줬다. STEP 7 core.run_backtest가 실제 실행 이력을 남긴 지금은
 // "아직 산출할 수 없습니다"가 사실이 아니다).
 //
-// ★ 채점 요약(개수 · WAPE 범위)은 lib/scm-model.ts의 summarizeModelPerformance가 만든다 — 화면은
-//   analytics.v_model_performance 행을 그대로 넘기기만 한다(AGENTS.md 2번 · scm-model.ts 주석 참고).
+// ★ fix round 1 — 채점 요약(개수 · WAPE 범위)은 이제 analytics.v_backtest_performance_summary가
+//   집계한 값을 그대로 읽는다(20260912000700). 예전엔 화면이 core.model_performance 원본 행을
+//   내려받아 최솟값·최댓값을 직접 계산했는데, 이 저장소에 화면 계층이 집계하는 선례가 없어서 SQL로
+//   내렸다(lib/scm-model.ts의 BacktestPerformanceSummary 주석 참고).
 
 import PageHeader from '@/components/shell/page-header';
 import DataTable, { type Column } from '@/components/ui/data-table';
 import EmptyValue from '@/components/ui/empty-value';
 import ForecastPipelineNote from '@/components/admin/forecast-pipeline-note';
 import { requireAdmin } from '@/lib/auth';
-import { getBacktestRuns, getModelPerformanceRows } from '@/lib/scm';
+import { getBacktestPerformanceSummaries, getBacktestRuns } from '@/lib/scm';
 import { getPracticeBacktestRunIds } from '@/lib/practice/repository';
-import { summarizeModelPerformance, type BacktestRun, type ModelPerformanceSummary } from '@/lib/scm-model';
+import type { BacktestPerformanceSummary, BacktestRun } from '@/lib/scm-model';
 
 export const dynamic = 'force-dynamic';
 
@@ -33,18 +35,18 @@ function formatWape(value: number | null): string {
   return value === null ? '—' : `${(value * 100).toFixed(1)}%`;
 }
 
-type Row = BacktestRun & { summary: ModelPerformanceSummary };
+const EMPTY_SUMMARY: BacktestPerformanceSummary = { backtestRunId: '', scoredCount: 0, unavailableCount: 0, wapeMin: null, wapeMax: null };
+
+type Row = BacktestRun & { summary: BacktestPerformanceSummary };
 
 export default async function BacktestRunsPage() {
   await requireAdmin();
   const [{ rows: runs, error: runsError }, practiceRunIds] = await Promise.all([getBacktestRuns(), getPracticeBacktestRunIds()]);
-  const { rows: perfRows, error: perfError } = await getModelPerformanceRows(runs.map((run) => run.backtestRunId));
-  const error = runsError ?? perfError;
+  const { rows: summaryRows, error: summaryError } = await getBacktestPerformanceSummaries(runs.map((run) => run.backtestRunId));
+  const error = runsError ?? summaryError;
 
-  const rows: Row[] = runs.map((run) => ({
-    ...run,
-    summary: summarizeModelPerformance(run.backtestRunId, perfRows.filter((row) => row.backtestRunId === run.backtestRunId)),
-  }));
+  const summaryByRun = new Map(summaryRows.map((summary) => [summary.backtestRunId, summary]));
+  const rows: Row[] = runs.map((run) => ({ ...run, summary: summaryByRun.get(run.backtestRunId) ?? EMPTY_SUMMARY }));
 
   const columns: Column<Row>[] = [
     {
@@ -97,8 +99,9 @@ export default async function BacktestRunsPage() {
             <div className="card-title">
               <div>
                 <h3>실행 이력</h3>
-                <span>WAPE 범위는 core.model_performance에 저장된 값의 최솟값 · 최댓값입니다(평균을 새로 구하지 않습니다).
-                  판정 불가 건은 검증 기간에 짝지을 Actual이 없거나 WAPE 분모가 0인 경우입니다.</span>
+                <span>채점 완료 · WAPE 범위는 analytics.v_backtest_performance_summary가 core.model_performance를
+                  집계한 값입니다(화면은 다시 계산하지 않습니다). 판정 불가 건은 검증 기간에 짝지을 Actual이
+                  없거나 WAPE 분모가 0인 경우입니다.</span>
               </div>
             </div>
             <DataTable columns={columns} rows={rows} rowKey={(row) => row.backtestRunId} empty="Backtest 실행 이력이 없습니다." />
