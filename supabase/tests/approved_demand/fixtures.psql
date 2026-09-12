@@ -49,7 +49,7 @@ on conflict (id) do nothing;
 -- ★ Task 17 리뷰 fix round 1(정정) — 20260912000300(관리자 계정 관리)이 core.app_user.job_role에
 --   실제 직책 목록만 허용하는 체크 제약을 걸어서, 이 fixture가 오래전부터 써 온 테스트 전용
 --   가상 직책(예: T8_DUAL_ROLE)을 더 이상 넣을 수 없게 됐다(이 로컬 환경에서는 pg_cron 가드
---   부재로 가려져 있다가 그 가드를 추가한 지금 처음 드러났다 — error.md #35). 1차 초안은
+--   부재로 가려져 있다가 그 가드를 추가한 지금 처음 드러났다 — error.md #36). 1차 초안은
 --   운영 제약을 임시 DB에서 완화했는데, **그럴 필요가 없었다** — core.role_permission.job_role
 --   에는 CHECK·FK가 없어(20260911000200_step19_permission.sql) 이중 권한 역할을 만드는
 --   것 자체는 이미 합법이고, 불법인 것은 그 합성 이름을 app_user에 배정하는 것뿐이다. 그래서

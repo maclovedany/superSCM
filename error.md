@@ -1170,8 +1170,8 @@ raw.<표>" supabase/tests`로 전수 확인하고, 그 fixture의 의도가 "정
 코드를 "생성 검증(강화해도 안전)"과 "존재·삭제 판정(게이트가 새 위험을 만들 수 있음)"으로
 나눠 분류합니다.
 
-## #36 로컬 환경에서 세 스위트(`item_policy`·`approved_demand`·`procurement_plan`)가 한 번도
-##     끝까지 돌아본 적이 없었다 — 저장소 결함 2개가 겹쳐 있었다
+## #36 저장소 결함 2개가 겹쳐 세 스위트(`item_policy`·`approved_demand`·`procurement_plan`)가
+##     한 번도 끝까지 돌아본 적이 없었다
 
 **증상.** `bash supabase/tests/item_policy/run-all.sh`(및 `approved_demand`·
 `procurement_plan`)가 로컬 PostgreSQL 환경에서 `fixtures.psql`에 도달하지도 못하고

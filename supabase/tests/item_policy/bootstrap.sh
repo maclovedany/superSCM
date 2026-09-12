@@ -57,7 +57,7 @@ SQL
 # ★ Task 17 리뷰 fix round 1 — Task 14(20260912000100)의 pg_cron·pg_net 확장은 일반 로컬
 #   PostgreSQL에 없다(error.md #31). 이 스위트는 pg_cron과 무관하므로, sales_order_allocation/
 #   bootstrap.sh와 동일한 가드로 "정확히 그 파일이 그 이유로만" 실패하면 건너뛴다. 이전에는 이
-#   가드가 없어 이 스위트가 이 로컬 환경에서 한 번도 끝까지 돌아본 적이 없었다(error.md #35).
+#   가드가 없어 이 스위트가 이 로컬 환경에서 한 번도 끝까지 돌아본 적이 없었다(error.md #36).
 PG_CRON_MIGRATION_NAME="20260912000100_stage1_pg_cron_jobs.sql"
 for migration in "$REPO"/supabase/migrations/*.sql; do
   name=$(basename "$migration")

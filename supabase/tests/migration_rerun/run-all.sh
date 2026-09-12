@@ -147,13 +147,30 @@ union all
 -- 덮였는지"를 알 수 없다 — 열 구성은 같아도 WHERE 절이 빠진 옛 정의로 되돌아갈 수 있다).
 select case when def like '%batch_id IS NOT NULL%' then 'PASS: ' else 'FAIL: ' end
        || 'core.v_item_master 정의가 두 번째 적용 뒤에도 출처 게이트(batch_id IS NOT NULL)를 유지한다'
-  from (select pg_get_viewdef('core.v_item_master'::regclass, true) as def) v;
+  from (select pg_get_viewdef('core.v_item_master'::regclass, true) as def) v
+union all
+-- Task 17 리뷰 fix round 2 — core.remove_practice_dataset은 20260912000400(원본)과
+-- 20260912000600(회수 로직판, 최종 정의) 두 곳에 정의가 있다. 0600의 ITEM 존재 검사를
+-- core.v_item_master(출처 게이트 걸린 화면 가시성 뷰)에서 raw.item_master(원본 행) 기준으로
+-- 고쳤는데(리뷰 fix round 1 — 안 고치면 게이트된 품목의 실습 표식이 조용히 삭제된다), 이
+-- 함수는 파일명이 낮은 0400에도 옛(게이트된 뷰 기준) 정의가 남아 있어 **0400을 단독
+-- 재적용하면 그 결함이 되살아난다**(migration_rerun은 전체 순서 재적용만 검증하므로 이
+-- 단독 재적용 위험 자체는 이 사후조건이 못 잡는다 — 그래도 "전체 순서로 다시 적용한 최종
+-- 상태가 고쳐진 쪽인지"는 잡아야 한다). pg_get_functiondef는 plpgsql 함수 본문을 저장된
+-- 텍스트 그대로 재구성하므로(뷰처럼 재정규화하지 않는다), 고친 줄의 정확한 문구가 남아
+-- 있는지로 확인한다 — 주석이 아니라 실제 실행되는 WHEN 절 텍스트를 짚는다.
+select case when body like '%from raw.item_master m where core.normalize_item_id(m."품목코드") = o.object_key%'
+            then 'PASS: ' else 'FAIL: ' end
+       || 'core.remove_practice_dataset의 ITEM 존재 검사가 두 번째 적용 뒤에도 raw.item_master 원본 기준(출처 게이트 우회)을 유지한다'
+  from (select pg_get_functiondef(p.oid) as body from pg_proc p
+          join pg_namespace n on n.oid = p.pronamespace
+         where n.nspname = 'core' and p.proname = 'remove_practice_dataset') f;
 SQL
 POST_PASS=$(grep -c '^PASS: ' "$LOG_DIR/postconditions.log" || true)
 POST_FAIL=$(grep -c '^FAIL: ' "$LOG_DIR/postconditions.log" || true)
 echo "사후 조건: PASS $POST_PASS · FAIL/ERROR $POST_FAIL"
 sed 's/^/  /' "$LOG_DIR/postconditions.log"
-if [ "$POST_PASS" -ne 15 ] || [ "$POST_FAIL" -ne 0 ]; then
+if [ "$POST_PASS" -ne 16 ] || [ "$POST_FAIL" -ne 0 ]; then
   STATUS=1
 fi
 
