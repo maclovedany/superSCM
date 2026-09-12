@@ -37,6 +37,7 @@
 | `policy "upload_batch_active_select" for table "upload_batch" already exists` | 마이그레이션의 `create policy` 앞에 `drop policy if exists`가 없어 재적용이 멈춤 | [#29](#29-마이그레이션-전체를-두-번-적용하면-중간에서-멈춘다) |
 | 마이그레이션 전체를 파일명 순서로 다시 적용하면 중간에서 멈춤(`cannot drop columns from view` · `cannot change name of view column` · `policy ... already exists`) | 뒤 파일이 앞 파일의 뷰를 넓혔거나, 정책을 drop 없이 다시 만듦 | [#29](#29-마이그레이션-전체를-두-번-적용하면-중간에서-멈춘다) |
 | `npm run build`에서 `Cannot find module 'jsr:@supabase/supabase-js@2'`(Deno Edge Function 파일에서) | Next.js `tsconfig.json`이 `supabase/functions/**`도 타입체크 대상에 포함시킴 | [#30](#30-npm-run-build가-supabasefunctions의-deno-edge-function을-타입체크하려다-실패한다) |
+| `ERROR: extension "pg_cron" is not available` (로컬 DB 검증 스위트 bootstrap) | 일반 로컬 PostgreSQL(Homebrew)에는 Supabase 전용 확장 `pg_cron`·`pg_net`이 없음 | [#31](#31-로컬-db-검증-스위트가-pg_cron-확장-없음으로-멈춘다) |
 
 ## #29 마이그레이션 전체를 두 번 적용하면 중간에서 멈춘다
 
@@ -851,3 +852,35 @@ Next.js `tsconfig.json`의 `include`가 그 경로까지 삼키지 않는지 `np
 확인합니다. 반대로 Edge Function 쪽에서 `lib/`의 Node 전용 코드(`node:crypto` 등)를 그대로
 import하면 Deno 배포 쪽에서 같은 종류의 오류가 날 수 있으므로, 공유가 필요한 순수 로직은
 Node 의존성이 없는 형태로 각 런타임에 맞게 따로 유지합니다.
+
+## #31 로컬 DB 검증 스위트가 `pg_cron` 확장 없음으로 멈춘다
+
+**증상.** 관리자 계정 관리(`supabase/tests/user_admin/`) 스위트의 `bootstrap.sh`가 전체
+마이그레이션을 파일명 순서로 적용하는 중 다음 오류로 멈췄습니다.
+
+```text
+마이그레이션 실패: 20260912000100_stage1_pg_cron_jobs.sql
+ERROR:  extension "pg_cron" is not available
+DETAIL:  Could not open extension control file
+".../share/postgresql@17/extension/pg_cron.control": No such file or directory.
+```
+
+**원인.** Task 14가 추가한 `20260912000100_stage1_pg_cron_jobs.sql`은 `create extension pg_cron` ·
+`create extension pg_net`으로 시작합니다. 이 두 확장은 Supabase 플랫폼에는 기본 포함돼 있지만,
+`supabase/tests/*`가 쓰는 일반 로컬 PostgreSQL(Homebrew `postgresql@17`)에는 설치돼 있지
+않습니다 — 별도로 컴파일된 확장 바이너리가 필요합니다(`shared_preload_libraries` 등록과 클러스터
+재시작까지 필요해, 로컬 검증 목적만으로 클러스터 전체를 건드리는 것은 다른 스위트를 동시에 쓰는
+세션에 영향을 줄 수 있어 피했습니다).
+
+**해결.** 이 스위트(`supabase/tests/user_admin/bootstrap.sh`)의 마이그레이션 적용 루프에서,
+실패 로그가 정확히 `extension "pg_cron" is not available` 또는 `extension "pg_net" is not
+available`일 때만 그 파일을 건너뛰고 계속 진행하도록 했습니다 — 그 외 이유로 실패하면
+지금까지와 같이 즉시 멈춥니다. 이 스위트는 pg_cron 작업 자체를 검증하지 않으므로 건너뛰어도
+이후 마이그레이션(0300 포함)의 스키마 상태에는 영향이 없습니다.
+
+**예방.** `supabase/migrations/`에 확장 설치가 필요한 새 마이그레이션을 추가할 때는, 로컬
+전체-마이그레이션 부트스트랩을 쓰는 다른 `supabase/tests/*` 스위트도 같은 오류를 만난다는 것을
+염두에 둡니다. 이미 있는 스위트의 `bootstrap.sh`를 일괄 수정하는 대신, 새로 만드는 스위트마다
+이 패턴(로그 문구로 좁혀 건너뛰기)을 반복하거나, 더 근본적으로는 pg_cron 의존 마이그레이션을
+`do $$ ... exception when others then raise notice ... $$`로 감싸 확장이 없는 환경에서도
+파일 자체가 통과하도록 만드는 방법이 있습니다(이번 작업 범위 밖이라 적용하지 않았습니다).

@@ -40,6 +40,20 @@ test('admin cannot demote or deactivate their own account', async () => {
   assert.deepEqual(canManageUser({ actorId: 'A', targetId: 'B', nextRole: 'USER', nextActive: false }), { allowed: true });
 });
 
+// 관리자 계정 관리(refactor_260911.md) — 비활성화 · 완전 삭제 전용 자기 자신 확인.
+test('canSetActive는 자신을 비활성화하는 시도만 거절한다', async () => {
+  const { canSetActive } = await import('./auth-policy.ts');
+  assert.deepEqual(canSetActive({ actorId: 'A', targetId: 'A', nextActive: false }), { allowed: false, reason: 'SELF_DEACTIVATION' });
+  assert.deepEqual(canSetActive({ actorId: 'A', targetId: 'A', nextActive: true }), { allowed: true });
+  assert.deepEqual(canSetActive({ actorId: 'A', targetId: 'B', nextActive: false }), { allowed: true });
+});
+
+test('canDeleteUser는 자기 자신을 대상으로 하면 항상 거절한다', async () => {
+  const { canDeleteUser } = await import('./auth-policy.ts');
+  assert.deepEqual(canDeleteUser({ actorId: 'A', targetId: 'A' }), { allowed: false, reason: 'SELF_DELETE' });
+  assert.deepEqual(canDeleteUser({ actorId: 'A', targetId: 'B' }), { allowed: true });
+});
+
 test('route access denies USER admin routes with 403', async () => {
   const policy = await import('./auth-policy.ts');
   assert.equal(typeof policy.routeAccessDecision, 'function');
