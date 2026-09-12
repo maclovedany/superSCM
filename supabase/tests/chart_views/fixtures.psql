@@ -1,0 +1,122 @@
+-- 차트 데이터 뷰(analytics.v_demand_series · v_shipment_monthly_rollup · v_shipment_monthly_item)
+-- 검증 fixture — 로컬 임시 DB(scm_test_*) 전용. 운영 마이그레이션에 넣지 않는다.
+-- 구조는 supabase/tests/inventory_kpi와 같다(같은 사용자 · 헬퍼 스키마 패턴).
+\set ON_ERROR_STOP 1
+\ir guard.psql
+
+create schema if not exists chart_test;
+grant usage on schema chart_test to anon, authenticated;
+
+create or replace function chart_test.as_user(p_user uuid) returns text language sql as $$
+  select set_config('request.jwt.claim.sub', p_user::text, false)
+$$;
+
+create or replace function chart_test.check(p_ok boolean, p_label text) returns text language plpgsql as $$
+begin
+  if p_ok is distinct from true then
+    raise exception 'FAIL: %', p_label;
+  end if;
+  return 'PASS: ' || p_label;
+end $$;
+
+grant execute on all functions in schema chart_test to anon, authenticated;
+
+-- ══ 사용자 — STOCK_VIEW_ALL 있는 SCM 품목담당자 · 없는 마케팅 ═══════════════
+insert into auth.users (id, email) values
+  ('00000000-0000-4000-8000-000000000901', 'chart-planner1@example.test'),
+  ('00000000-0000-4000-8000-000000000902', 'chart-marketing1@example.test')
+on conflict (id) do nothing;
+
+insert into core.app_user (user_id, email, name, department, role, active, job_role) values
+  ('00000000-0000-4000-8000-000000000901', 'chart-planner1@example.test', 'SCM품목담당1', 'SCM', 'USER', true, 'SCM_PLANNER'),
+  ('00000000-0000-4000-8000-000000000902', 'chart-marketing1@example.test', '마케팅1', 'MARKETING', 'USER', true, 'MARKETING')
+on conflict (user_id) do update
+  set job_role = excluded.job_role, department = excluded.department, role = excluded.role, name = excluded.name, active = true;
+
+
+-- ══ 1. 수요 시계열(analytics.v_demand_series) fixture ═══════════════════════
+--
+-- 품목 5개, 각각 다른 사유 코드 시나리오 전용:
+--   CHDEM01  실적과 예측(밴드 포함)이 같은 달에 다 있다 — 정상 케이스, 사유 코드 전부 null
+--   CHDEM02  실적만 있고 Backtest·Champion 선정 자체를 받은 적이 없다 → NO_CHAMPION_SELECTION
+--   CHDEM03  실적(2026-06)과 예측(2026-08)이 서로 다른 달 → 기간 갭. 2026-06엔 예측이 없고
+--            (Champion은 있지만 그 달 예측 행이 없다 → PERIOD_NOT_FORECASTED), 2026-08엔 실적이
+--            없다(NO_ACTUAL_USAGE)
+--   CHDEM04  Backtest는 됐지만 유효 후보가 없다(core.run_backtest의 NO_VALID_CANDIDATE) →
+--            champion_model_id가 null → NO_CHAMPION_MODEL
+--   CHDEM05  예측은 있는데(Champion 모델) p80·p90이 없다 → BAND_UNAVAILABLE(밴드만 결측,
+--            predicted_qty는 채워져 있다 — 실측 450행 중 180행과 같은 모양)
+insert into raw.item_master ("품목코드", "품목명", "품목구분", batch_id) values
+  ('CHDEM01', '차트 테스트 실적예측 정상', '완제품', gen_random_uuid()),
+  ('CHDEM02', '차트 테스트 Champion 미선정', '완제품', gen_random_uuid()),
+  ('CHDEM03', '차트 테스트 기간 갭', '완제품', gen_random_uuid()),
+  ('CHDEM04', '차트 테스트 유효후보없음', '완제품', gen_random_uuid()),
+  ('CHDEM05', '차트 테스트 밴드결측', '완제품', gen_random_uuid())
+on conflict do nothing;
+
+-- 출처 확인된 실적(batch_id not null)만 actual_qty에 잡혀야 한다 — CHDEM01에 출처 없는(batch_id
+-- null) 행을 하나 더 얹어, 그 행이 합계에 섞이지 않는지도 함께 확인한다.
+insert into raw.usage_history (usage_id, item_id, use_date, qty, warehouse, batch_id, source_type) values
+  ('CHUSE01', 'CHDEM01', '2026-07-15', 80,  'W1', gen_random_uuid(), 'IMPORT'),
+  ('CHUSE01B','CHDEM01', '2026-07-20', 999, 'W1', null,              'LEGACY'),
+  ('CHUSE02', 'CHDEM02', '2026-07-10', 40,  'W1', gen_random_uuid(), 'IMPORT'),
+  ('CHUSE03', 'CHDEM03', '2026-06-05', 30,  'W1', gen_random_uuid(), 'IMPORT'),
+  ('CHUSE04', 'CHDEM04', '2026-07-20', 20,  'W1', gen_random_uuid(), 'IMPORT')
+on conflict do nothing;
+
+-- Forecast Run · Model Version · Forecast Result — CHDEM01·03·04·05가 쓸 champion 예측 원본.
+insert into core.forecast_run (run_id, status, granularity, horizon, started_at, finished_at)
+values ('00000000-0000-4000-8000-000000000910', 'SUCCESS', 'MONTH', 9, now(), now())
+on conflict (run_id) do nothing;
+
+insert into core.model_version (model_version, run_id, model_id, version, definition, parameters) values
+  ('00000000-0000-4000-8000-000000000911', '00000000-0000-4000-8000-000000000910', 'MA_3M', '1.0.0', '{}'::jsonb, '{}'::jsonb),
+  ('00000000-0000-4000-8000-000000000913', '00000000-0000-4000-8000-000000000910', 'MA_6M', '1.0.0', '{}'::jsonb, '{}'::jsonb)
+on conflict (run_id, model_id) do nothing;
+
+-- CHDEM01 — 같은 달(2026-07)에 MA_3M(진짜 champion, 밴드 포함) · MA_6M(decoy, champion이 아니라
+-- v_demand_series에 나오면 안 됨) 두 모델 예측을 함께 넣어 "champion 모델만 고른다"를 확인한다.
+insert into core.forecast_result (run_id, model_id, item_id, period, model_version, predicted_qty, p80, p90) values
+  ('00000000-0000-4000-8000-000000000910', 'MA_3M', 'CHDEM01', '2026-07-01', '00000000-0000-4000-8000-000000000911', 100, 110, 120),
+  ('00000000-0000-4000-8000-000000000910', 'MA_6M', 'CHDEM01', '2026-07-01', '00000000-0000-4000-8000-000000000913', 999, 999, 999),
+  ('00000000-0000-4000-8000-000000000910', 'MA_3M', 'CHDEM03', '2026-08-01', '00000000-0000-4000-8000-000000000911', 50,  55,  60),
+  ('00000000-0000-4000-8000-000000000910', 'MA_3M', 'CHDEM05', '2026-07-01', '00000000-0000-4000-8000-000000000911', 70,  null, null)
+on conflict (run_id, model_id, item_id, period) do nothing;
+
+insert into core.backtest_run (backtest_run_id, forecast_run_id, status, metric, started_at, finished_at)
+values ('00000000-0000-4000-8000-000000000912', '00000000-0000-4000-8000-000000000910', 'SUCCESS', 'WAPE', now(), now())
+on conflict (backtest_run_id) do nothing;
+
+-- CHDEM01 · 03 · 05 — champion = MA_3M(정상 후보). CHDEM04 — champion_model_id null(NO_VALID_CANDIDATE).
+-- CHDEM02는 champion_model_selection 행 자체가 없다(Backtest를 받은 적 없음).
+insert into core.champion_model_selection
+  (backtest_run_id, item_id, champion_model_id, model_version, champion_metric, selection_reason, selection_method) values
+  ('00000000-0000-4000-8000-000000000912', 'CHDEM01', 'MA_3M', '00000000-0000-4000-8000-000000000911', 'WAPE', 'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO'),
+  ('00000000-0000-4000-8000-000000000912', 'CHDEM03', 'MA_3M', '00000000-0000-4000-8000-000000000911', 'WAPE', 'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO'),
+  ('00000000-0000-4000-8000-000000000912', 'CHDEM04', null,    null,                                  'WAPE', 'NO_VALID_CANDIDATE', 'AUTO'),
+  ('00000000-0000-4000-8000-000000000912', 'CHDEM05', 'MA_3M', '00000000-0000-4000-8000-000000000911', 'WAPE', 'LOWEST_WAPE_THEN_ABS_BIAS_RMSE_MODEL_ID', 'AUTO')
+on conflict do nothing;
+
+
+-- ══ 2. 출고 월별 뷰(v_shipment_monthly_rollup · v_shipment_monthly_item) fixture ═══
+--
+-- CHSHIP01(PART) 8개월 연속(2026-01~2026-08), 2026-07에 스파이크(10배) — trailing 6개월 평균
+-- 대비 배수가 그 달에 커지는지, 그리고 앞의 관측치가 3개월 미만인 2026-01~03은
+-- INSUFFICIENT_TRAILING_HISTORY로 null 처리되는지 확인한다.
+-- CHSHIP02(OPTION) 3개월(2026-06~2026-08) — TOTAL·ITEM_TYPE 레벨이 서로 다른 item_type을
+-- 올바로 합산하는지 확인한다.
+insert into raw.fact_shipment (item_code, ym, qty, item_type, source_file) values
+  ('CHSHIP01', '2026-01', 100, 'PART', 'chart_test_fixture'),
+  ('CHSHIP01', '2026-02', 100, 'PART', 'chart_test_fixture'),
+  ('CHSHIP01', '2026-03', 100, 'PART', 'chart_test_fixture'),
+  ('CHSHIP01', '2026-04', 100, 'PART', 'chart_test_fixture'),
+  ('CHSHIP01', '2026-05', 100, 'PART', 'chart_test_fixture'),
+  ('CHSHIP01', '2026-06', 100, 'PART', 'chart_test_fixture'),
+  ('CHSHIP01', '2026-07', 1000, 'PART', 'chart_test_fixture'),
+  ('CHSHIP01', '2026-08', 100, 'PART', 'chart_test_fixture'),
+  ('CHSHIP02', '2026-06', 40, 'OPTION', 'chart_test_fixture'),
+  ('CHSHIP02', '2026-07', 40, 'OPTION', 'chart_test_fixture'),
+  ('CHSHIP02', '2026-08', 40, 'OPTION', 'chart_test_fixture')
+on conflict do nothing;
+
+select 'fixtures ok';
