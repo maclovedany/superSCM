@@ -22,6 +22,9 @@
 // 검사할 수 있습니다.
 
 import type { AppRole } from '../menu.ts';
+// 타입만 가져옵니다(런타임에 사라집니다) — lib/scm.ts 를 정적으로 부르면 테스트가 죽습니다.
+import type { BomRequirement, ItemDemandProfile, ShipmentTrend } from '../scm-model.ts';
+import type { ListResult } from '../scm.ts';
 
 /** 툴 한 번의 결과 — 슬라이드 43 의 계약 */
 export type ToolResult = {
@@ -46,19 +49,61 @@ export type JsonSchemaObject = {
   additionalProperties: false;
 };
 
+/**
+ * 툴이 부르는 lib/scm.ts 함수들의 모양.
+ *
+ * ★ 시험용 주입구입니다 — lib/notifications/email.ts 의 `fetchImpl` 과 같은 이유로 둡니다.
+ *   run() 은 DB 를 부르므로 예전에는 시험할 수 없었고, 그래서 이 파일의 결함(잘린 배열을
+ *   훑어 UNKNOWN_ITEM 을 단언하던 것)이 테스트에 한 번도 잡히지 않았습니다.
+ *   실제 실행에서는 아무도 넘기지 않으며, 그때는 lib/scm.ts 를 그대로 부릅니다.
+ */
+export type ScmQueries = {
+  getShipmentTrends: () => Promise<ListResult<ShipmentTrend>>;
+  getShipmentTrendByItem: (itemCode: string) => Promise<{ rows: ShipmentTrend[]; error: string | null }>;
+  getItemDemandProfiles: () => Promise<ListResult<ItemDemandProfile>>;
+  getItemDemandProfileByItem: (itemCode: string) => Promise<{ rows: ItemDemandProfile[]; error: string | null }>;
+  getBomRequirements: (modelBase: string) => Promise<ListResult<BomRequirement>>;
+};
+
 export type AgentTool = {
   name: string;
   /** 한국어 설명. 모델은 이 문장만 보고 툴을 고릅니다 */
   description: string;
   parameters: JsonSchemaObject;
   roles: AppRole[];
-  run: (args: Record<string, unknown>) => Promise<ToolResult>;
+  run: (args: Record<string, unknown>, scm?: Partial<ScmQueries>) => Promise<ToolResult>;
 };
 
 // ── 작은 도구들 ───────────────────────────────────────────────
 
 function fail(reason: string): ToolResult {
   return { ok: false, data: null, numbers: {}, dataAsOf: null, reason };
+}
+
+/**
+ * 전수를 모르면 `total` 을 **내보내지 않고** 사유를 답니다.
+ *
+ * ★ 반환 행 수로 대신 채우지 않습니다. 예전에는 `total: rows.length` 였고, 그 값은 잘린
+ *   배열의 길이(1,000)라 비서가 "총 1,000건" 이라는 **없는 수를 검증된 사실로** 말했습니다.
+ *   모르는 수는 0 도 1,000 도 아니라 부재입니다 (AGENTS.md 규칙 5).
+ */
+function totalField(total: number | null): Record<string, unknown> {
+  return total === null ? { totalReasonCode: 'COUNT_UNAVAILABLE' } : { total };
+}
+
+/**
+ * lib/scm.ts 의 조회 함수 하나를 집어 옵니다 — 주입된 것이 있으면 그것을, 없으면 진짜를.
+ *
+ * 동적 import 는 주입이 없을 때만 일어납니다(테스트가 서버 전용 모듈을 건드리지 않습니다).
+ */
+async function readScm<K extends keyof ScmQueries>(
+  override: Partial<ScmQueries> | undefined,
+  key: K,
+): Promise<ScmQueries[K]> {
+  const injected = override?.[key];
+  if (injected) return injected;
+  const scm = await import('../scm.ts');
+  return scm[key] as ScmQueries[K];
 }
 
 function ok(
@@ -152,16 +197,29 @@ const getShipmentTrend: AgentTool = {
     '품목의 출고 추이를 돌려줍니다 — 관측 개월 수 · 최근 출고량 · 3/6/12개월 이동평균 · 최근 3개월이 12개월 평균의 몇 배인가(추세). "요즘 얼마나 나가나", "출고가 늘었나 줄었나" 같은 질문에 씁니다. 이동평균은 출고가 없던 달을 0으로 포함해 계산된 값입니다.',
   parameters: ITEM_ARG,
   roles: ['ADMIN', 'USER'],
-  async run(args) {
+  async run(args, scm) {
     const itemCode = argText(args, 'itemCode');
-    const { getShipmentTrends } = await import('../scm.ts');
-    const { rows, error } = await getShipmentTrends();
-    if (error) return fail(`출고 추이를 조회하지 못했습니다: ${error}`);
-    if (rows.length === 0) return fail('NO_SHIPMENT — 출고 실적이 없습니다.');
 
-    const picked = itemCode ? rows.filter((row) => row.itemCode === itemCode) : rows.slice(0, LIST_LIMIT);
-    if (itemCode && picked.length === 0) {
-      return fail(`UNKNOWN_ITEM — ${itemCode} 은(는) 출고 목록에 없습니다.`);
+    // ★ 품목을 지정했으면 DB 에서 거릅니다. 목록을 받아 filter 하면 출고량 상위 1,000건 밖의
+    //   품목(2026-09-13 실측 9,198개 · 90.2%)이 전부 "없습니다" 가 됩니다 — 예: 589K39896 은
+    //   출고량 7.0 으로 5,084위라 실재하는데도 UNKNOWN_ITEM 이었습니다.
+    let picked: ShipmentTrend[];
+    let total: number | null;
+    if (itemCode) {
+      const readByItem = await readScm(scm, 'getShipmentTrendByItem');
+      const { rows, error } = await readByItem(itemCode);
+      if (error) return fail(`출고 추이를 조회하지 못했습니다: ${error}`);
+      // DB 가 걸렀으므로 0행은 "내 시야에 없다" 가 아니라 "이 뷰에 없다" 입니다.
+      if (rows.length === 0) return fail(`UNKNOWN_ITEM — ${itemCode} 의 출고 실적이 없습니다.`);
+      picked = rows;
+      total = rows.length;
+    } else {
+      const readAll = await readScm(scm, 'getShipmentTrends');
+      const { rows, total: found, error } = await readAll();
+      if (error) return fail(`출고 추이를 조회하지 못했습니다: ${error}`);
+      if (rows.length === 0) return fail('NO_SHIPMENT — 출고 실적이 없습니다.');
+      picked = rows.slice(0, LIST_LIMIT);
+      total = found;
     }
 
     const plain = picked.map((row) => ({
@@ -181,10 +239,10 @@ const getShipmentTrend: AgentTool = {
       reasonCode: row.reasonCode,
     }));
 
-    const numbers: Record<string, number | null> = { matched: picked.length, total: rows.length };
+    const numbers: Record<string, number | null> = { listed: picked.length, total };
     flatten(numbers, 'row', plain as unknown as Record<string, unknown>[]);
     return ok(
-      { scope: itemCode ?? `출고량 상위 ${plain.length}건`, total: rows.length, rows: plain },
+      { scope: itemCode ?? `출고량 상위 ${plain.length}건`, listed: plain.length, ...totalField(total), rows: plain },
       numbers,
       picked[0]?.dataAsOf ?? null,
     );
@@ -197,16 +255,27 @@ const getDemandProfile: AgentTool = {
     '품목의 수요 성격을 돌려줍니다 — 수요 유형(SMOOTH · INTERMITTENT · ERRATIC · LUMPY) · 수요 발생 간격(ADI) · 변동성(CV²) · 무수요 비율. "수요가 규칙적인가", "드물게 나가는 품목인가", "Croston 이 필요한가" 같은 질문에 씁니다. 관측 6개월 미만이면 유형 대신 사유를 돌려줍니다.',
   parameters: ITEM_ARG,
   roles: ['ADMIN', 'USER'],
-  async run(args) {
+  async run(args, scm) {
     const itemCode = argText(args, 'itemCode');
-    const { getItemDemandProfiles } = await import('../scm.ts');
-    const { rows, error } = await getItemDemandProfiles();
-    if (error) return fail(`수요 패턴을 조회하지 못했습니다: ${error}`);
-    if (rows.length === 0) return fail('NO_SHIPMENT — 수요 패턴 데이터가 없습니다.');
 
-    const picked = itemCode ? rows.filter((row) => row.itemCode === itemCode) : rows.slice(0, LIST_LIMIT);
-    if (itemCode && picked.length === 0) {
-      return fail(`UNKNOWN_ITEM — ${itemCode} 은(는) 수요 패턴 목록에 없습니다.`);
+    // ★ 거르기를 DB 로 내립니다 — 품목코드 순 상위 1,000건 밖의 품목(실측 9,198개)은 목록
+    //   조회로는 보이지 않습니다. 예: 796L51508 은 4,979위라 실재하는데도 "없습니다" 였습니다.
+    let picked: ItemDemandProfile[];
+    let total: number | null;
+    if (itemCode) {
+      const readByItem = await readScm(scm, 'getItemDemandProfileByItem');
+      const { rows, error } = await readByItem(itemCode);
+      if (error) return fail(`수요 패턴을 조회하지 못했습니다: ${error}`);
+      if (rows.length === 0) return fail(`UNKNOWN_ITEM — ${itemCode} 의 수요 패턴이 없습니다.`);
+      picked = rows;
+      total = rows.length;
+    } else {
+      const readAll = await readScm(scm, 'getItemDemandProfiles');
+      const { rows, total: found, error } = await readAll();
+      if (error) return fail(`수요 패턴을 조회하지 못했습니다: ${error}`);
+      if (rows.length === 0) return fail('NO_SHIPMENT — 수요 패턴 데이터가 없습니다.');
+      picked = rows.slice(0, LIST_LIMIT);
+      total = found;
     }
 
     const plain = picked.map((row) => ({
@@ -225,10 +294,10 @@ const getDemandProfile: AgentTool = {
       reasonCode: row.reasonCode,
     }));
 
-    const numbers: Record<string, number | null> = { matched: picked.length, total: rows.length };
+    const numbers: Record<string, number | null> = { listed: picked.length, total };
     flatten(numbers, 'row', plain as unknown as Record<string, unknown>[]);
     return ok(
-      { scope: itemCode ?? `상위 ${plain.length}건`, total: rows.length, rows: plain },
+      { scope: itemCode ?? `상위 ${plain.length}건`, listed: plain.length, ...totalField(total), rows: plain },
       numbers,
       picked[0]?.dataAsOf ?? null,
     );
@@ -287,12 +356,14 @@ const getBomRequirement: AgentTool = {
     '기종 1대를 팔려면 무엇이 몇 개 필요한지 돌려줍니다 — CAP(판매 구성 단위) · NEUTRAL(본체) · MUST_OPTION(필수 투입 옵션) · SCC · BOM 구성. 복수 기종에 공용으로 쓰이는 부품에는 공용 표시가 붙습니다. "이 기종에 뭐가 들어가나", "옵션이 몇 개 필요한가" 같은 질문에 씁니다.',
   parameters: MODEL_ARG,
   roles: ['ADMIN', 'USER'],
-  async run(args) {
+  async run(args, scm) {
     const modelBase = argText(args, 'modelBase');
     if (modelBase === null) return fail('기종 이름(modelBase)이 필요합니다.');
 
-    const { getBomRequirements } = await import('../scm.ts');
-    const { rows, error } = await getBomRequirements(modelBase);
+    // ★ model_base 로 걸러도 기종 23개 중 2개는 1,000행을 넘습니다(실측 MDL227 3,285 ·
+    //   MDL213 1,978) — 그 둘에서 total 을 rows.length 로 세면 1,000 이라는 거짓이 나옵니다.
+    const readBom = await readScm(scm, 'getBomRequirements');
+    const { rows, total, error } = await readBom(modelBase);
     if (error) return fail(`BOM 소요를 조회하지 못했습니다: ${error}`);
     if (rows.length === 0) return fail(`UNKNOWN_MODEL — ${modelBase} 의 BOM 구성이 없습니다.`);
 
@@ -307,9 +378,9 @@ const getBomRequirement: AgentTool = {
       commonFlag: row.commonFlag,
     }));
 
-    const numbers: Record<string, number | null> = { total: rows.length, listed: picked.length };
+    const numbers: Record<string, number | null> = { total, listed: picked.length };
     flatten(numbers, 'row', plain as unknown as Record<string, unknown>[]);
-    return ok({ modelBase, total: rows.length, rows: plain }, numbers);
+    return ok({ modelBase, listed: picked.length, ...totalField(total), rows: plain }, numbers);
   },
 };
 
