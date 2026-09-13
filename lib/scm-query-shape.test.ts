@@ -21,7 +21,9 @@ import path from 'node:path';
 // ★ 이 시험이 막는 것: count: 'exact' 가 조용히 사라지는 것. 사라지면 total 이 null 이 되고
 //   COUNT_UNAVAILABLE 로 떨어진다. 거짓을 말하지는 않지만 "전수를 안다" 는 능력을 잃는다.
 
-const SOURCE = readFileSync(path.join(import.meta.dirname, 'scm.ts'), 'utf8');
+// 다섯 함수는 lib/scm-big-views.ts 로 옮겼다(가짜 클라이언트로 동작을 시험하기 위해).
+// 본문 판독은 그 파일을 본다 — scm.ts 는 이제 다시 내보내기만 한다.
+const SOURCE = readFileSync(path.join(import.meta.dirname, 'scm-big-views.ts'), 'utf8');
 
 /** 함수 하나의 본문만 떼어 온다 — 주석은 빼고 센다(설명 문장에 같은 글자가 나온다) */
 function bodyOf(name: string): string {

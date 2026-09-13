@@ -8,115 +8,47 @@
 // v_leadtime_gap)는 더 이상 읽지 않습니다. 실데이터에는 재고와 리드타임이 없고,
 // 수요 프로파일은 v_item_demand_profile 이 대신합니다 (07-deprecate-and-agent.sql).
 //
-// ── 1,000행 상한을 다루는 규칙 (정합성 라운드, 2026-09-13) ──────────────────────
-//
-// PostgREST 는 응답 행 수에 상한이 있습니다. v_item_demand_profile · v_shipment_trend 는
-// 2026-09-13 실측으로 각각 10,198행, v_bom_requirement_x 는 7,546행(기종 23개 중 2개가
-// 1,000행 초과 — MDL227 3,285 · MDL213 1,978)이라 **필터 없이 부르면 조용히 잘립니다.**
-//
-// 그래서 이 파일의 큰 뷰 조회는 셋을 지킵니다.
-//
-//   ① 품목 하나를 묻는 경로는 `.eq()` 로 **DB 에서** 거릅니다. 잘린 배열을 훑지 않습니다
-//      (getShipmentMonthlyByItem 의 선례와 같은 모양). 그래야 "목록에 없다" 가
-//      "존재하지 않는다" 를 뜻하게 됩니다.
-//   ② 목록 경로는 `count: 'exact'` 로 **전수**를 따로 받습니다. 반환 행이 잘려도 total 은
-//      참입니다 — 전수는 반환 행 수와 다른 질문이기 때문입니다.
-//   ③ count 를 받지 못하면 total 은 `rows.length` 가 아니라 **null** 입니다. 모르는 수를
-//      반환 행 수로 채우면 그 순간 거짓이 사실 채널로 들어갑니다 (AGENTS.md 규칙 5).
-
-/** 표가 한 번에 받는 최대 행 수 — 상한을 서버 기본값에 맡기지 않고 여기서 못박습니다.
- *  전량을 받으려면 가상화가 함께 와야 합니다(components/ui/data-table.tsx 는 전 행을 DOM 에
- *  그립니다). 가상화가 없는 동안에는 이 상한이 화면을 지킵니다. */
-const TABLE_FETCH_LIMIT = 1000;
-
-/** 목록 조회 결과 — total 은 잘림과 무관한 전수이고, 알 수 없으면 null 입니다 */
-export type ListResult<T> = { rows: T[]; total: number | null; error: string | null };
+// ★ 1,000행 상한을 다루는 규칙(잘림 · count · 상한 명시)은 lib/scm-big-views.ts 머리에
+//   있습니다. 그 규칙이 적용되는 다섯 조회가 그 파일에 살기 때문입니다 — 규칙을 코드에서
+//   떼어 두 곳에 적어 두면 한쪽만 낡습니다.
 
 import { createSupabaseServerClient } from './supabase';
+
+// 1,000행 상한에 걸리는 큰 뷰 다섯 조회는 lib/scm-big-views.ts 에 있습니다.
+//
+// ★ 왜 따로 있나 — 그 파일은 supabase 를 **정적으로** 부르지 않아 node --test 가 import 할 수
+//   있고, 가짜 클라이언트를 끼워 "질의가 정말 count 를 요청하는가 · total 이 정말 그 count
+//   에서 오는가" 를 시험할 수 있습니다. 이 파일은 아래에서 './inventory/repository' 를 다시
+//   내보내는데 그 끝에 'next/headers' 가 있어(node --test 에서 해석 불가) 시험이 못 읽습니다.
+// ★ 부르는 쪽은 예전 그대로 lib/scm.ts 에서 가져다 씁니다.
+export {
+  getBomRequirements,
+  getItemDemandProfileByItem,
+  getItemDemandProfiles,
+  getShipmentTrendByItem,
+  getShipmentTrends,
+  type ListResult,
+} from './scm-big-views';
 import {
   isSourceStatus,
   normalizeBacktestPerformanceSummary,
   normalizeBacktestRun,
-  normalizeBomRequirement,
   normalizeChampionModel,
   normalizeForecastModelConfig,
   normalizeForecastRun,
   normalizeItemDemandKpi,
-  normalizeItemDemandProfile,
   normalizeOlAccuracy,
   normalizeOlAccuracyFy,
-  normalizeShipmentTrend,
   type BacktestPerformanceSummary,
   type BacktestRun,
-  type BomRequirement,
   type ChampionModel,
   type ForecastModelConfig,
   type ForecastRun,
   type ItemDemandKpi,
-  type ItemDemandProfile,
   type OlAccuracy,
   type OlAccuracyFy,
-  type ShipmentTrend,
   type SourceStatus,
 } from './scm-model';
-
-/**
- * 수요 성격 — Syntetos-Boylan 분류. 6개월 미만은 유형 null + reason_code.
- *
- * ★ 10,198행(2026-09-13 실측)이라 반환 행은 TABLE_FETCH_LIMIT 에서 잘립니다. total 은
- *   잘림과 무관한 전수입니다 — 화면은 이 둘을 구분해 보여야 합니다.
- * ★ 품목 하나를 찾을 때 이 함수를 부른 뒤 배열을 훑지 마세요. getItemDemandProfileByItem 을
- *   씁니다(잘린 배열에는 90% 의 품목이 없습니다).
- */
-export async function getItemDemandProfiles(): Promise<ListResult<ItemDemandProfile>> {
-  try {
-    const supabase = await createSupabaseServerClient();
-    const { data, error, count } = await supabase
-      .schema('analytics')
-      .from('v_item_demand_profile')
-      .select('*', { count: 'exact' })
-      .order('item_code')
-      .limit(TABLE_FETCH_LIMIT);
-    if (error) return { rows: [], total: null, error: error.message };
-    return {
-      rows: (data ?? []).map((row) => normalizeItemDemandProfile(row as Record<string, unknown>)),
-      total: count ?? null,
-      error: null,
-    };
-  } catch (error) {
-    return { rows: [], total: null, error: error instanceof Error ? error.message : '수요 프로파일을 조회하지 못했습니다.' };
-  }
-}
-
-/**
- * 품목 하나의 수요 성격 — analytics.v_item_demand_profile.
- *
- * ★ itemCode 는 선택 인자가 아닙니다. 거르기를 DB 에서 하기 때문에 0행은 "잘려서 안 보인다"
- *   가 아니라 **"이 뷰에 그 품목이 없다"** 를 뜻합니다 — 부르는 쪽이 UNKNOWN_ITEM 을
- *   사실로 말할 수 있는 유일한 모양입니다 (getShipmentMonthlyByItem 과 같은 이유).
- * ★ 품목당 1행이라 `rows.length` 도 오늘은 맞지만, 그것은 **우연한 정확성**입니다 — 방금
- *   고친 결함과 정확히 같은 모양이라 여기서도 count 로 셉니다. 뷰가 품목당 여러 행을 내는
- *   날이 와도 이 함수는 틀리지 않습니다.
- */
-export async function getItemDemandProfileByItem(itemCode: string): Promise<ListResult<ItemDemandProfile>> {
-  try {
-    const supabase = await createSupabaseServerClient();
-    const { data, error, count } = await supabase
-      .schema('analytics')
-      .from('v_item_demand_profile')
-      .select('*', { count: 'exact' })
-      .eq('item_code', itemCode)
-      .order('item_code');
-    if (error) return { rows: [], total: null, error: error.message };
-    return {
-      rows: (data ?? []).map((row) => normalizeItemDemandProfile(row as Record<string, unknown>)),
-      total: count ?? null,
-      error: null,
-    };
-  } catch (error) {
-    return { rows: [], total: null, error: error instanceof Error ? error.message : '수요 프로파일을 조회하지 못했습니다.' };
-  }
-}
 
 /** 품목 구분별 수요 유형 분포 */
 export async function getItemDemandKpi(): Promise<{ rows: ItemDemandKpi[]; error: string | null }> {
@@ -127,62 +59,6 @@ export async function getItemDemandKpi(): Promise<{ rows: ItemDemandKpi[]; error
     return { rows: (data ?? []).map((row) => normalizeItemDemandKpi(row as Record<string, unknown>)), error: null };
   } catch (error) {
     return { rows: [], error: error instanceof Error ? error.message : '수요 유형 요약을 조회하지 못했습니다.' };
-  }
-}
-
-/**
- * 출고 추이 — XCN 합산 기준. 이동평균은 0인 달을 포함해 계산된 값입니다.
- *
- * ★ 10,198행(2026-09-13 실측)이라 반환 행은 출고량 상위 TABLE_FETCH_LIMIT 건에서 잘립니다.
- *   total 은 잘림과 무관한 전수입니다.
- * ★ 품목 하나를 찾을 때는 getShipmentTrendByItem 을 씁니다.
- */
-export async function getShipmentTrends(): Promise<ListResult<ShipmentTrend>> {
-  try {
-    const supabase = await createSupabaseServerClient();
-    const { data, error, count } = await supabase
-      .schema('analytics')
-      .from('v_shipment_trend')
-      .select('*', { count: 'exact' })
-      .order('total_qty', { ascending: false, nullsFirst: false })
-      .limit(TABLE_FETCH_LIMIT);
-    if (error) return { rows: [], total: null, error: error.message };
-    return {
-      rows: (data ?? []).map((row) => normalizeShipmentTrend(row as Record<string, unknown>)),
-      total: count ?? null,
-      error: null,
-    };
-  } catch (error) {
-    return { rows: [], total: null, error: error instanceof Error ? error.message : '출고 추이를 조회하지 못했습니다.' };
-  }
-}
-
-/**
- * 품목 하나의 출고 추이 — analytics.v_shipment_trend.
- *
- * ★ 거르기를 DB 에서 합니다. 출고량 상위 1,000건 밖의 품목(실측 9,198개, 90.2%)은 목록
- *   조회로는 영영 보이지 않습니다 — 예: 589K39896 은 출고량 7.0 이라 상위 1,000건 밖입니다
- *   (7.0 동률이 229품목이라 순위는 4,894~5,122 구간이고 한 값으로 말할 수 없습니다).
- * ★ 품목당 1행이라 `rows.length` 도 오늘은 맞지만 그것은 **우연한 정확성**입니다 —
- *   getItemDemandProfileByItem 과 같은 이유로 여기서도 count 로 셉니다.
- */
-export async function getShipmentTrendByItem(itemCode: string): Promise<ListResult<ShipmentTrend>> {
-  try {
-    const supabase = await createSupabaseServerClient();
-    const { data, error, count } = await supabase
-      .schema('analytics')
-      .from('v_shipment_trend')
-      .select('*', { count: 'exact' })
-      .eq('item_code', itemCode)
-      .order('total_qty', { ascending: false, nullsFirst: false });
-    if (error) return { rows: [], total: null, error: error.message };
-    return {
-      rows: (data ?? []).map((row) => normalizeShipmentTrend(row as Record<string, unknown>)),
-      total: count ?? null,
-      error: null,
-    };
-  } catch (error) {
-    return { rows: [], total: null, error: error instanceof Error ? error.message : '출고 추이를 조회하지 못했습니다.' };
   }
 }
 
@@ -218,35 +94,6 @@ export async function getOlAccuracyFy(): Promise<{ rows: OlAccuracyFy[]; error: 
 // Task 4 — 정상 창고재고와 가용재고. 실제 구현은 lib/inventory/repository.ts에 있습니다.
 // 화면과 (앞으로 추가될) Agent 툴이 같은 조회 함수를 쓰도록 여기서도 다시 내보냅니다.
 export { getAvailableStock, getOrderAvailableStock } from './inventory/repository';
-
-/**
- * BOM 소요 — 기종 1대를 팔려면 무엇이 몇 개 필요한가.
- *
- * ★ 이미 model_base 로 거르지만 그것만으로는 부족합니다 — 기종 23개 중 2개가 1,000행을
- *   넘습니다(2026-09-13 실측: MDL227 3,285 · MDL213 1,978). 그 둘에서는 반환 행이 잘리므로
- *   total 을 `rows.length` 로 세면 틀립니다. count 로 따로 받습니다.
- */
-export async function getBomRequirements(modelBase: string): Promise<ListResult<BomRequirement>> {
-  try {
-    const supabase = await createSupabaseServerClient();
-    const { data, error, count } = await supabase
-      .schema('analytics')
-      .from('v_bom_requirement_x')
-      .select('*', { count: 'exact' })
-      .eq('model_base', modelBase)
-      .order('part_role')
-      .order('item_code')
-      .limit(TABLE_FETCH_LIMIT);
-    if (error) return { rows: [], total: null, error: error.message };
-    return {
-      rows: (data ?? []).map((row) => normalizeBomRequirement(row as Record<string, unknown>)),
-      total: count ?? null,
-      error: null,
-    };
-  } catch (error) {
-    return { rows: [], total: null, error: error instanceof Error ? error.message : 'BOM 소요를 조회하지 못했습니다.' };
-  }
-}
 
 // Task 15 fix round 2 — STEP 6·7 실행 이력 화면(admin/forecast-runs · backtest-runs · champion-models ·
 // forecast-models). 6회차 실데이터 전용 Forecast 엔진은 없지만, STEP 6 SQL Baseline · STEP 7 Backtest
