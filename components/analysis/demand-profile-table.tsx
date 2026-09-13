@@ -71,7 +71,14 @@ const columns: Column<ItemDemandProfile>[] = [
   { key: 'reasonCode', label: '사유', render: (row) => row.reasonCode ?? <span className="muted">—</span> },
 ];
 
-export default function DemandProfileTable({ rows }: { rows: ItemDemandProfile[] }) {
+/**
+ * total 은 뷰의 전수이고 rows 는 받아 온 행입니다 — 둘은 다릅니다.
+ *
+ * ★ 검색·필터를 브라우저에서 하므로 받아 오지 못한 행은 검색해도 나오지 않습니다. 그 사실을
+ *   숨기지 않고 카드 머리에 적습니다 — 잘린 표를 전량처럼 보이게 두지 않습니다.
+ *   전량을 받으려면 가상화가 함께 와야 합니다(data-table.tsx 는 전 행을 DOM 에 그립니다).
+ */
+export default function DemandProfileTable({ rows, total }: { rows: ItemDemandProfile[]; total: number | null }) {
   const [search, setSearch] = useState('');
   const [demandType, setDemandType] = useState('ALL');
   const [itemType, setItemType] = useState('ALL');
@@ -102,7 +109,12 @@ export default function DemandProfileTable({ rows }: { rows: ItemDemandProfile[]
           <h3>품목별 수요 성격</h3>
           <span>Syntetos–Boylan 분류. 관측 6개월 미만은 유형을 추정하지 않습니다.</span>
         </div>
-        <span className="muted">{filteredRows.length.toLocaleString('ko-KR')}건</span>
+        <span className="muted">
+          {filteredRows.length.toLocaleString('ko-KR')}건
+          {total !== null && total > rows.length
+            ? ` · 전체 ${total.toLocaleString('ko-KR')}건 중 ${rows.length.toLocaleString('ko-KR')}건만 받았습니다`
+            : ''}
+        </span>
       </div>
       <div className="button-row demand-profile-filters">
         <input
