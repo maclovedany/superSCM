@@ -1,2 +1,104 @@
-.chart-surface{min-height:220px;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface-subtle);display:grid;place-items:center;color:var(--muted)}.chart-legend{display:flex;flex-wrap:wrap;gap:var(--space-3);color:var(--muted);font-size:11px}.chart-legend-item{display:inline-flex;align-items:center;gap:6px}.chart-dot{width:8px;height:8px;border-radius:50%;background:var(--blue)}.chart-dot.safe{background:var(--green)}.chart-dot.warning{background:var(--amber)}.chart-dot.critical{background:var(--red)}
+/* 인라인 SVG 차트 —  app/globals.css 가 불러온다.
+ *
+ * ★ 색·간격·반경은 **전부 토큰 경유**다. 새 색을 하드코딩하지 않는다(AGENTS.md 1번).
+ *   저장소에 :root 가 하나뿐이라 라이트/다크 분기는 없다 — 토큰을 바꾸면 차트도 함께 바뀐다.
+ * ★ 인라인 style= 은 **좌표처럼 데이터에서 오는 값**에만 쓴다. 색·굵기·점선은 전부 여기 있다.
+ * ★ 의미 배정: 실적은 실선(--blue, 일어난 일), 예측은 점선(--amber, 아직 아닌 일),
+ *   밴드는 예측과 같은 계열의 옅은 면. 끊긴 구간은 아무것도 그리지 않는다.
+ */
 
+.chart-figure{margin:0}
+.chart-figure+.chart-figure{margin-top:var(--space-5)}
+.chart-svg{display:block;width:100%;height:auto;overflow:visible}
+
+/* 축·격자 */
+.chart-grid-line{stroke:var(--line-subtle);stroke-width:1}
+.chart-axis-line{stroke:var(--line);stroke-width:1}
+.chart-axis-label{fill:var(--muted);font-size:10px}
+.chart-axis-label.y{text-anchor:end;dominant-baseline:middle}
+.chart-axis-label.x{text-anchor:middle}
+.chart-zero-line{stroke:var(--muted);stroke-width:1;stroke-dasharray:3 3}
+
+/* 선 — 구간마다 M 으로 다시 시작하므로 끊긴 자리는 저절로 비어 있다 */
+.chart-line{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.chart-line-actual{stroke:var(--blue)}
+.chart-line-predicted{stroke:var(--amber);stroke-dasharray:5 4}
+.chart-line-total{stroke:var(--blue)}
+.chart-line-item{stroke:var(--blue)}
+
+/* 외딴 점 — 앞뒤가 결측이라 선으로는 보이지 않는 값 */
+.chart-point{stroke:var(--surface);stroke-width:1.5}
+.chart-point-actual{fill:var(--blue)}
+.chart-point-predicted{fill:var(--amber)}
+.chart-point-item{fill:var(--blue)}
+
+/* 밴드 — p90 이 넓고 p80 이 좁다. 없는 구간은 경로 자체가 없다 */
+.chart-band{stroke:none}
+.chart-band-p90{fill:var(--pale-amber)}
+.chart-band-p80{fill:var(--amber-line);opacity:.55}
+
+/* 막대 */
+.chart-bar{stroke:none}
+.chart-bar-sales{fill:var(--blue)}
+.chart-bar-scm{fill:var(--green)}
+.chart-bar-positive{fill:var(--red)}
+.chart-bar-negative{fill:var(--green)}
+.chart-stack-0{fill:var(--blue)}
+.chart-stack-1{fill:var(--green)}
+.chart-stack-2{fill:var(--amber)}
+.chart-stack-3{fill:var(--muted)}
+
+/* 값에 닿는 자리 — 마우스와 키보드 둘 다 */
+.chart-hit{fill:transparent;cursor:pointer}
+.chart-hit:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
+.chart-hit-marker{stroke:var(--blue);stroke-width:1;stroke-dasharray:2 2;pointer-events:none}
+
+/* 툴팁 */
+.chart-tooltip-layer{position:relative}
+.chart-tooltip{position:absolute;z-index:2;min-width:150px;max-width:260px;padding:var(--space-3);border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface);box-shadow:var(--shadow-active);color:var(--ink);font-size:11px;line-height:1.6;pointer-events:none}
+.chart-tooltip dl{display:grid;grid-template-columns:auto 1fr;gap:2px var(--space-3);margin:var(--space-2) 0 0}
+.chart-tooltip dt{color:var(--muted)}
+.chart-tooltip dd{margin:0;font-variant-numeric:tabular-nums;text-align:right}
+.chart-tooltip .chart-tooltip-title{font-weight:800}
+.chart-tooltip .chart-tooltip-reason{margin:var(--space-2) 0 0;color:var(--muted)}
+
+/* 범례 */
+.chart-legend{display:flex;flex-wrap:wrap;gap:var(--space-3);margin-top:var(--space-3);color:var(--muted);font-size:11px}
+.chart-legend-item{display:inline-flex;align-items:center;gap:6px}
+.chart-dot{width:8px;height:8px;border-radius:50%;background:var(--blue);flex:none}
+.chart-dot.actual{background:var(--blue)}
+.chart-dot.predicted{background:var(--amber)}
+.chart-dot.band-p80{background:var(--amber-line)}
+.chart-dot.band-p90{background:var(--pale-amber);border:1px solid var(--amber-line)}
+.chart-dot.sales{background:var(--blue)}
+.chart-dot.scm{background:var(--green)}
+.chart-dot.stack-0{background:var(--blue)}
+.chart-dot.stack-1{background:var(--green)}
+.chart-dot.stack-2{background:var(--amber)}
+.chart-dot.stack-3{background:var(--muted)}
+.chart-dot.safe{background:var(--green)}
+.chart-dot.warning{background:var(--amber)}
+.chart-dot.critical{background:var(--red)}
+
+/* 빈자리의 설명 — 차트가 그리지 않은 구간을 말로 적는다 */
+.chart-reasons{display:flex;flex-direction:column;gap:6px;margin:var(--space-3) 0 0;padding:0;list-style:none}
+.chart-reason{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:baseline;color:var(--muted);font-size:11px;line-height:1.5}
+.chart-reason strong{color:var(--ink-soft);font-weight:700}
+.chart-reason .chart-reason-months{font-variant-numeric:tabular-nums}
+
+/* 데이터가 없을 때 — 빈 축 대신 문장을 보인다 */
+.chart-empty{min-height:120px;display:grid;place-items:center;padding:var(--space-5);border:1px dashed var(--line);border-radius:var(--radius-md);background:var(--surface-subtle);color:var(--muted);font-size:12px;text-align:center}
+
+/* 선택 줄 */
+.chart-controls{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin-bottom:var(--space-3)}
+.chart-controls label{color:var(--ink-soft);font-size:11px;font-weight:700}
+
+/* 표 대체 표현 — 차트를 못 읽는 사용자를 위한 같은 값 */
+.chart-table-details{margin-top:var(--space-3)}
+.chart-table-details summary{cursor:pointer;color:var(--blue);font-size:11px;font-weight:800}
+.chart-table-details .analysis-table-wrap{margin-top:var(--space-3)}
+
+@media(max-width:760px){
+  .chart-axis-label{font-size:9px}
+  .chart-controls .table-select,.chart-controls .form-input{width:100%}
+}
