@@ -55,3 +55,9 @@ backups/
 # 사용자 소유 문서 — 저장소에서 제외합니다
 summary/
 제안.md
+
+# 2026-09-13 사용자 지시 — CLAUDE.md · ARCHITECTURE.md 외의 .md 는 GitHub 에 올리지 않는다.
+# 파일은 로컬에 그대로 두고 인덱스에서만 뺀다(git rm --cached).
+*.md
+!CLAUDE.md
+!ARCHITECTURE.md
