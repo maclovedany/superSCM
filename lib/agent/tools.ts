@@ -59,9 +59,9 @@ export type JsonSchemaObject = {
  */
 export type ScmQueries = {
   getShipmentTrends: () => Promise<ListResult<ShipmentTrend>>;
-  getShipmentTrendByItem: (itemCode: string) => Promise<{ rows: ShipmentTrend[]; error: string | null }>;
+  getShipmentTrendByItem: (itemCode: string) => Promise<ListResult<ShipmentTrend>>;
   getItemDemandProfiles: () => Promise<ListResult<ItemDemandProfile>>;
-  getItemDemandProfileByItem: (itemCode: string) => Promise<{ rows: ItemDemandProfile[]; error: string | null }>;
+  getItemDemandProfileByItem: (itemCode: string) => Promise<ListResult<ItemDemandProfile>>;
   getBomRequirements: (modelBase: string) => Promise<ListResult<BomRequirement>>;
 };
 
@@ -202,17 +202,18 @@ const getShipmentTrend: AgentTool = {
 
     // ★ 품목을 지정했으면 DB 에서 거릅니다. 목록을 받아 filter 하면 출고량 상위 1,000건 밖의
     //   품목(2026-09-13 실측 9,198개 · 90.2%)이 전부 "없습니다" 가 됩니다 — 예: 589K39896 은
-    //   출고량 7.0 으로 5,084위라 실재하는데도 UNKNOWN_ITEM 이었습니다.
+    //   출고량 7.0 이라 상위 1,000건 밖이고, 실재하는데도 UNKNOWN_ITEM 이었습니다.
     let picked: ShipmentTrend[];
     let total: number | null;
     if (itemCode) {
       const readByItem = await readScm(scm, 'getShipmentTrendByItem');
-      const { rows, error } = await readByItem(itemCode);
+      const { rows, total: found, error } = await readByItem(itemCode);
       if (error) return fail(`출고 추이를 조회하지 못했습니다: ${error}`);
       // DB 가 걸렀으므로 0행은 "내 시야에 없다" 가 아니라 "이 뷰에 없다" 입니다.
       if (rows.length === 0) return fail(`UNKNOWN_ITEM — ${itemCode} 의 출고 실적이 없습니다.`);
       picked = rows;
-      total = rows.length;
+      // 품목당 1행이라 rows.length 도 오늘은 맞지만, 그 정확성은 우연입니다 — count 를 씁니다.
+      total = found;
     } else {
       const readAll = await readScm(scm, 'getShipmentTrends');
       const { rows, total: found, error } = await readAll();
@@ -264,11 +265,11 @@ const getDemandProfile: AgentTool = {
     let total: number | null;
     if (itemCode) {
       const readByItem = await readScm(scm, 'getItemDemandProfileByItem');
-      const { rows, error } = await readByItem(itemCode);
+      const { rows, total: found, error } = await readByItem(itemCode);
       if (error) return fail(`수요 패턴을 조회하지 못했습니다: ${error}`);
       if (rows.length === 0) return fail(`UNKNOWN_ITEM — ${itemCode} 의 수요 패턴이 없습니다.`);
       picked = rows;
-      total = rows.length;
+      total = found;
     } else {
       const readAll = await readScm(scm, 'getItemDemandProfiles');
       const { rows, total: found, error } = await readAll();

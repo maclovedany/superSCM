@@ -94,20 +94,27 @@ export async function getItemDemandProfiles(): Promise<ListResult<ItemDemandProf
  * ★ itemCode 는 선택 인자가 아닙니다. 거르기를 DB 에서 하기 때문에 0행은 "잘려서 안 보인다"
  *   가 아니라 **"이 뷰에 그 품목이 없다"** 를 뜻합니다 — 부르는 쪽이 UNKNOWN_ITEM 을
  *   사실로 말할 수 있는 유일한 모양입니다 (getShipmentMonthlyByItem 과 같은 이유).
+ * ★ 품목당 1행이라 `rows.length` 도 오늘은 맞지만, 그것은 **우연한 정확성**입니다 — 방금
+ *   고친 결함과 정확히 같은 모양이라 여기서도 count 로 셉니다. 뷰가 품목당 여러 행을 내는
+ *   날이 와도 이 함수는 틀리지 않습니다.
  */
-export async function getItemDemandProfileByItem(itemCode: string): Promise<{ rows: ItemDemandProfile[]; error: string | null }> {
+export async function getItemDemandProfileByItem(itemCode: string): Promise<ListResult<ItemDemandProfile>> {
   try {
     const supabase = await createSupabaseServerClient();
-    const { data, error } = await supabase
+    const { data, error, count } = await supabase
       .schema('analytics')
       .from('v_item_demand_profile')
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('item_code', itemCode)
       .order('item_code');
-    if (error) return { rows: [], error: error.message };
-    return { rows: (data ?? []).map((row) => normalizeItemDemandProfile(row as Record<string, unknown>)), error: null };
+    if (error) return { rows: [], total: null, error: error.message };
+    return {
+      rows: (data ?? []).map((row) => normalizeItemDemandProfile(row as Record<string, unknown>)),
+      total: count ?? null,
+      error: null,
+    };
   } catch (error) {
-    return { rows: [], error: error instanceof Error ? error.message : '수요 프로파일을 조회하지 못했습니다.' };
+    return { rows: [], total: null, error: error instanceof Error ? error.message : '수요 프로파일을 조회하지 못했습니다.' };
   }
 }
 
@@ -154,21 +161,28 @@ export async function getShipmentTrends(): Promise<ListResult<ShipmentTrend>> {
  * 품목 하나의 출고 추이 — analytics.v_shipment_trend.
  *
  * ★ 거르기를 DB 에서 합니다. 출고량 상위 1,000건 밖의 품목(실측 9,198개, 90.2%)은 목록
- *   조회로는 영영 보이지 않습니다 — 예: 589K39896 은 출고량 7.0 으로 5,084위입니다.
+ *   조회로는 영영 보이지 않습니다 — 예: 589K39896 은 출고량 7.0 이라 상위 1,000건 밖입니다
+ *   (7.0 동률이 229품목이라 순위는 4,894~5,122 구간이고 한 값으로 말할 수 없습니다).
+ * ★ 품목당 1행이라 `rows.length` 도 오늘은 맞지만 그것은 **우연한 정확성**입니다 —
+ *   getItemDemandProfileByItem 과 같은 이유로 여기서도 count 로 셉니다.
  */
-export async function getShipmentTrendByItem(itemCode: string): Promise<{ rows: ShipmentTrend[]; error: string | null }> {
+export async function getShipmentTrendByItem(itemCode: string): Promise<ListResult<ShipmentTrend>> {
   try {
     const supabase = await createSupabaseServerClient();
-    const { data, error } = await supabase
+    const { data, error, count } = await supabase
       .schema('analytics')
       .from('v_shipment_trend')
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('item_code', itemCode)
       .order('total_qty', { ascending: false, nullsFirst: false });
-    if (error) return { rows: [], error: error.message };
-    return { rows: (data ?? []).map((row) => normalizeShipmentTrend(row as Record<string, unknown>)), error: null };
+    if (error) return { rows: [], total: null, error: error.message };
+    return {
+      rows: (data ?? []).map((row) => normalizeShipmentTrend(row as Record<string, unknown>)),
+      total: count ?? null,
+      error: null,
+    };
   } catch (error) {
-    return { rows: [], error: error instanceof Error ? error.message : '출고 추이를 조회하지 못했습니다.' };
+    return { rows: [], total: null, error: error instanceof Error ? error.message : '출고 추이를 조회하지 못했습니다.' };
   }
 }
 

@@ -98,8 +98,9 @@ test('BOM 툴은 기종 이름을 반드시 받는다 — 비우면 전체를 �
 // 않았습니다. ScmQueries 주입구로 그 구멍을 닫습니다 — DB 없이 run() 을 그대로 돌립니다.
 //
 // 아래 수치는 2026-09-13 배포 DB 실측입니다.
-//   v_shipment_trend 10,198행 · 589K39896 은 출고량 7.0 으로 5,084위(상위 1,000 밖)
-//   v_item_demand_profile 10,198행 · 796L51508 은 품목코드순 4,979위(상위 1,000 밖)
+//   v_shipment_trend 10,198행 · 589K39896 은 출고량 7.0 이라 상위 1,000 밖
+//     (7.0 동률이 229품목이라 순위는 4,894~5,122 구간 — 한 값으로 말할 수 없다)
+//   v_item_demand_profile 10,198행 · 796L51508 은 품목코드순 4,979위(고유 정렬이라 확정값)
 //   v_bom_requirement_x MDL227 3,285행(기종 23개 중 1,000행을 넘는 둘 중 하나)
 
 function trend(itemCode: string, totalQty: number | null): ShipmentTrend {
@@ -144,6 +145,7 @@ test('출고 추이 — 상위 1,000건 밖의 품목도 실제 값을 돌려준
     },
     getShipmentTrendByItem: async (itemCode) => ({
       rows: itemCode === '589K39896' ? [trend('589K39896', 7.0)] : [],
+      total: itemCode === '589K39896' ? 1 : 0,
       error: null,
     }),
   });
@@ -157,11 +159,26 @@ test('출고 추이 — 상위 1,000건 밖의 품목도 실제 값을 돌려준
 test('출고 추이 — DB 에 정말 없는 품목에만 UNKNOWN_ITEM 을 붙인다', async () => {
   const tool = findTool('getShipmentTrend');
   const result = await tool!.run({ itemCode: '없는코드' }, {
-    getShipmentTrendByItem: async () => ({ rows: [], error: null }),
+    getShipmentTrendByItem: async () => ({ rows: [], total: 0, error: null }),
   });
 
   assert.equal(result.ok, false);
   assert.match(result.reason ?? '', /UNKNOWN_ITEM/);
+});
+
+test('품목 지정 조회의 total 도 count 에서 온다 — rows.length 가 아니다', async () => {
+  // 품목당 1행이라 rows.length 도 오늘은 맞다. 그 우연한 정확성에 기대지 않는지 본다:
+  // count 를 못 받은 상황을 주입하면, rows.length 를 쓰는 코드라면 1 이 나온다.
+  const tool = findTool('getShipmentTrend');
+  const result = await tool!.run({ itemCode: '589K39896' }, {
+    getShipmentTrendByItem: async () => ({ rows: [trend('589K39896', 7.0)], total: null, error: null }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.numbers.total, null, 'rows.length 를 쓰면 1 이 됩니다');
+  const data = result.data as Record<string, unknown>;
+  assert.equal(data.total, undefined);
+  assert.equal(data.totalReasonCode, 'COUNT_UNAVAILABLE');
 });
 
 test('수요 패턴 — 상위 1,000건 밖의 품목도 실제 행을 돌려준다', async () => {
@@ -175,6 +192,7 @@ test('수요 패턴 — 상위 1,000건 밖의 품목도 실제 행을 돌려준
     },
     getItemDemandProfileByItem: async (itemCode) => ({
       rows: itemCode === '796L51508' ? [profile('796L51508')] : [],
+      total: itemCode === '796L51508' ? 1 : 0,
       error: null,
     }),
   });
