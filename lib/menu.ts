@@ -64,3 +64,86 @@ export function menuForRole(role: AppRole): MenuItem[] {
 export function menuFor(role: AppRole, permissions: PermissionSet): MenuItem[] {
   return menuForRole(role).filter((item) => !item.anyOf || permissions.hasAny(...item.anyOf));
 }
+
+export type MenuGroup = { label: string; items: MenuItem[] };
+
+/**
+ * 메뉴를 의미 그룹으로 묶기 위한 배치표입니다. 여기 없는 href 가 있거나(→ 랜덤한 곳에 안
+ * 나타나고 사라짐), 여기 있는 href 가 USER_MENU/ADMIN_MENU 에 없으면(→ 존재하지 않는
+ * 항목을 그리려 함) 둘 다 버그이므로 menuGroupsFor 가 즉시 던집니다(refactor_260911 menu-brief §변조 시험 M1).
+ *
+ * USER_MENU 19개, ADMIN_MENU 12개 — 실측(2026-09-13, `grep -c "href:" lib/menu.ts` = 32 - 타입
+ * 선언의 "href: string;" 1줄 = 31).
+ */
+const MENU_GROUP_LAYOUT: readonly { label: string; hrefs: readonly string[] }[] = [
+  // USER
+  { label: '개요', hrefs: ['/dashboard', '/agent', '/notifications'] },
+  { label: '수요', hrefs: ['/demand-submissions', '/analysis/demand-profile', '/analysis/model-comparison'] },
+  {
+    label: '구매 · 발주',
+    hrefs: [
+      '/procurement-plans',
+      '/procurement-plans/item-policies',
+      '/procurement-plans/schedule',
+      '/analysis/receipt-gap',
+      '/analysis/leadtime',
+      '/urgent-orders',
+    ],
+  },
+  { label: '영업 · 배정', hrefs: ['/orders', '/allocations', '/allocations/priorities'] },
+  { label: '재고', hrefs: ['/inventory', '/analysis/inventory-performance', '/analysis/stockout'] },
+  { label: '승인', hrefs: ['/approvals'] },
+  // ADMIN — 브리프가 요구한 최소 4분할(마스터·권한 / 데이터 / 예측 엔진 / 시스템)
+  { label: '마스터 · 권한', hrefs: ['/admin/master', '/admin/permissions', '/admin/users'] },
+  { label: '데이터', hrefs: ['/admin/demand', '/admin/data-management', '/admin/practice-data'] },
+  {
+    label: '예측 엔진',
+    hrefs: ['/admin/forecast-models', '/admin/forecast-runs', '/admin/backtest-runs', '/admin/champion-models'],
+  },
+  { label: '시스템', hrefs: ['/admin/notification-history', '/admin/settings'] },
+];
+
+function assertMenuGroupLayoutCoversAllItems(): void {
+  const allHrefs = [...USER_MENU, ...ADMIN_MENU].map((item) => item.href);
+  const layoutHrefs = MENU_GROUP_LAYOUT.flatMap((group) => group.hrefs);
+
+  const missing = allHrefs.filter((href) => !layoutHrefs.includes(href));
+  if (missing.length > 0) {
+    throw new Error(`menuGroupsFor: 그룹에 배치되지 않은 메뉴 항목이 있습니다 — ${missing.join(', ')}`);
+  }
+
+  const unknown = layoutHrefs.filter((href) => !allHrefs.includes(href));
+  if (unknown.length > 0) {
+    throw new Error(`menuGroupsFor: 존재하지 않는 메뉴 항목을 그룹에 배치했습니다 — ${unknown.join(', ')}`);
+  }
+
+  const seen = new Set<string>();
+  const duplicated = layoutHrefs.filter((href) => (seen.has(href) ? true : (seen.add(href), false)));
+  if (duplicated.length > 0) {
+    throw new Error(`menuGroupsFor: 같은 메뉴 항목이 두 그룹에 배치됐습니다 — ${duplicated.join(', ')}`);
+  }
+}
+
+/**
+ * 역할과 업무 권한을 반영한 메뉴를 의미 그룹으로 묶어 돌려줍니다.
+ *
+ * ★ menuFor()/menuForRole() 의 평면 배열은 그대로 둡니다 — auth-policy.test.ts,
+ *   permission.test.ts, analysis-tabs.tsx 가 그 반환 형태에 의존합니다.
+ * ★ 권한 필터는 그룹 안에서도 그대로 걸립니다(anyOf 없는 항목은 로그인만으로 보임).
+ * ★ 필터 후 항목이 0개가 된 그룹은 제목째 숨깁니다 — 빈 그룹 제목은 "권한 없는 무언가가
+ *   있다"는 정보 누출입니다(analysis-tabs.tsx:6-8 과 같은 원칙).
+ *
+ * ★ 배치표 검증(assertMenuGroupLayoutCoversAllItems)은 여기, 호출 시점에만 돕니다.
+ *   lib/menu.ts를 import만 하는 다른 코드(auth-policy.test.ts 등)까지 깨뜨리지 않기
+ *   위해서입니다 — 그룹화를 실제로 쓰는 경로에서만 실패해야 합니다.
+ */
+export function menuGroupsFor(role: AppRole, permissions: PermissionSet): MenuGroup[] {
+  assertMenuGroupLayoutCoversAllItems();
+  const visible = menuFor(role, permissions);
+  const byHref = new Map(visible.map((item) => [item.href, item] as const));
+
+  return MENU_GROUP_LAYOUT.map((group) => ({
+    label: group.label,
+    items: group.hrefs.map((href) => byHref.get(href)).filter((item): item is MenuItem => item !== undefined),
+  })).filter((group) => group.items.length > 0);
+}
