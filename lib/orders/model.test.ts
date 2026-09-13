@@ -545,6 +545,10 @@ test('주문 · 배정 DB 검증 스크립트는 저장소에 있고 로컬 임�
   // README.md 는 목록에서 뺐다(2026-09-13) — 저장소 정책으로 CLAUDE.md · ARCHITECTURE.md 외의 md 는
   // 추적하지 않으므로 깨끗한 체크아웃에는 없다. 이 시험의 목적은 "검증 **스크립트**가 저장소에
   // 있다"이고, README 는 스크립트가 아니라 문서라 빼도 목적이 유지된다.
+  // ★ 단, 같은 배열이 아래 접속정보 스캔(PGPASSWORD= · supabase.co · sb_secret_ 등)에도 쓰이므로
+  //   README 는 이제 그 검사도 받지 않는다. 알고 택한 손실이다 — README 는 실행되지 않고, 유출
+  //   위험이 큰 .sh · .psql 아홉 개는 그대로 검사된다. (추적 안 되는 파일을 스캔 목록에만 되살리면
+  //   깨끗한 체크아웃에서 같은 실패가 되돌아오므로 그렇게 하지 않는다.)
   const files = ['lib.sh', 'guard.psql', 'auth-stub.psql', 'bootstrap.sh', 'fixtures.psql', 'scenarios.psql', 'concurrency.sh', 'invariants.psql', 'run-all.sh'];
   for (const file of files) assert.equal(existsSync(new URL(file, base)), true, `${file}가 있어야 합니다.`);
   for (const file of ['auth-stub.psql', 'fixtures.psql', 'scenarios.psql', 'invariants.psql']) {

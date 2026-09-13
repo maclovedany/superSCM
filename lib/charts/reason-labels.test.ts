@@ -4,8 +4,13 @@ import test from 'node:test';
 import { CHART_REASON_CODES, CHART_REASON_LABELS, chartReasonLabel } from './reason-labels.ts';
 
 /**
- * 뷰가 낼 수 있는 사유 코드 목록 — 2026-09-13 배포 DB 의 뷰 정의를 직접 읽어 뽑았다.
+ * 화면에 닿을 수 있는 사유 코드 목록 — 2026-09-13 배포 DB 의 뷰 정의를 직접 읽어 뽑았고,
+ * 화면 코드가 폴백으로 만들어 내는 코드도 함께 둔다(출처별 소절 참고).
  * 뷰에 분기가 하나 늘면 이 시험이 먼저 깨져서 라벨 없는 코드가 화면에 새는 것을 막는다.
+ *
+ * ★ 이 목록이 지키는 것: 어떤 코드가 CHART_REASON_CODES 에서 **지워지는** 것. 완전성(:36)·
+ *   구별성(:44) 가드는 CHART_REASON_CODES 를 돌기 때문에, 목록에서 빠진 코드는 그 두 가드의
+ *   검사 대상에서도 조용히 빠진다. 여기 적힌 코드는 그 제거를 잡는다(2026-09-13 리뷰 ④-b).
  */
 const CODES_THE_VIEWS_CAN_EMIT = [
   // analytics.v_demand_series
@@ -21,6 +26,10 @@ const CODES_THE_VIEWS_CAN_EMIT = [
   'UNKNOWN_ROLLUP_LEVEL',
   // analytics.v_ol_accuracy
   'NO_ACTUAL',
+  // 화면 코드가 만드는 폴백 — 뷰가 내지 않는다. lib/charts/ol-accuracy.ts:46 의
+  // `reasonCode ?? 'CALCULATION_UNAVAILABLE'`. 문구는 lib/status.ts 를 참조하지만 코드 자체는
+  // CHART_REASON_CODES 에 남아야 하고, 이 항목이 그 제거를 잡는다.
+  'CALCULATION_UNAVAILABLE',
 ];
 
 test('사유 코드 — 뷰가 낼 수 있는 코드가 전부 목록에 있다', () => {
