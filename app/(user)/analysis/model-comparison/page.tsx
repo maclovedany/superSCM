@@ -1,5 +1,6 @@
 import AnalysisFrame from '@/components/analysis/analysis-frame';
 import OlAccuracyTable from '@/components/analysis/ol-accuracy-table';
+import OlAccuracyChart from '@/components/charts/ol-accuracy-chart';
 import DataTable, { type Column } from '@/components/ui/data-table';
 import { getOlAccuracy, getOlAccuracyFy } from '@/lib/scm';
 import type { OlAccuracyFy } from '@/lib/scm-model';
@@ -53,6 +54,18 @@ export default async function ModelComparisonPage() {
           </div>
         </div>
         <DataTable columns={fyColumns} rows={fyRows} rowKey={(row) => row.fySheet} empty="채점할 실적이 없습니다." />
+      </div>
+
+      {/* ★ 값이 없는 칸은 막대를 그리지 않는다 — WAPE 0% 는 "완벽히 맞혔다"라서, 채점할 실적이
+          없는 것을 0 으로 그리면 최악의 칸이 최고의 칸으로 뒤집힌다. */}
+      <div className="section card">
+        <div className="card-title">
+          <div>
+            <h3>기종별 WAPE</h3>
+            <span>회계연도를 고르면 기종별로 영업 OL 과 SCM OL 을 나란히 봅니다.</span>
+          </div>
+        </div>
+        <OlAccuracyChart rows={rows} />
       </div>
 
       <OlAccuracyTable rows={rows} />

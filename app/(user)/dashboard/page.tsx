@@ -4,6 +4,8 @@ import KpiCard from '@/components/ui/kpi-card';
 import Panel from '@/components/ui/panel';
 import BaseMonthValue from '@/components/ui/base-month-value';
 import PracticeDataBanner from '@/components/ui/practice-banner';
+import ShipmentRollupChart from '@/components/charts/shipment-rollup-chart';
+import { getShipmentMonthlyRollup } from '@/lib/analytics/repository';
 import { formatBaseMonthDotted } from '@/lib/kpi/model';
 import { getDashboardSummary } from '@/lib/kpi/repository';
 import { showsPracticeBanner } from '@/lib/practice/model';
@@ -22,7 +24,11 @@ export const dynamic = 'force-dynamic';
 //   이전에는 baseMonth가 null이면 항상 PLANNING_CYCLE_NOT_OPEN으로 표시해, 조회가 실제로
 //   실패했을 때도 "SCM이 아직 안 열었나 보다"로 보였다.
 export default async function DashboardPage() {
-  const [summary, { status: practiceStatus }] = await Promise.all([getDashboardSummary(), getPracticeDataStatus()]);
+  const [summary, { status: practiceStatus }, { rows: rollupRows, error: rollupError }] = await Promise.all([
+    getDashboardSummary(),
+    getPracticeDataStatus(),
+    getShipmentMonthlyRollup(),
+  ]);
   const baseMonth = formatBaseMonthDotted(summary.baseMonth);
   // ★ Task 15 — 대시보드는 재고 · 발주계획 · 월말 재고 요약을 한 화면에 모으므로, 그중 하나라도
   //   실습 데이터의 영향을 받으면 배너를 띄운다.
@@ -63,6 +69,16 @@ export default async function DashboardPage() {
           }
         />
       </div>
+      {/* ★ 출고 월별 추이는 raw.fact_shipment 기반 실데이터다(실습 품목 11개는 이 뷰에 없다).
+          조회 실패와 빈 결과를 구분한다(AGENTS.md 3번) — 차트는 값이 없으면 빈 축 대신 문장을 보인다. */}
+      <Panel title="출고 월별 추이" description="품목 구분별 누적 출고량과 전체 합계 — analytics.v_shipment_monthly_rollup">
+        {rollupError ? (
+          <p className="text-danger">출고 월별 집계를 불러오지 못했습니다: {rollupError}</p>
+        ) : (
+          <ShipmentRollupChart rows={rollupRows} />
+        )}
+      </Panel>
+
       <Panel title="SCM Intelligence" description="공급망 운영 콘솔">
         <InsightBanner title="분석 결과를 먼저 확인하세요">
           수요 패턴과 OL 예측 정확도는 왼쪽 USER 메뉴에서 확인할 수 있습니다. 월말 재고 성과는{' '}
