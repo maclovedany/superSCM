@@ -6,6 +6,8 @@
 // ★ 각 코드는 **서로 다른 사실**을 주장한다. "예측이 아직 없다"와 "예측은 있는데 구간만 없다"를
 //   한 문구로 뭉뚱그리면 사유 코드를 세 개로 나눠 둔 뷰의 설계가 화면에서 사라진다.
 
+import { STATUS_REASON_LABELS } from '../status.ts';
+
 /**
  * 차트가 마주칠 수 있는 사유 코드 전부.
  *
@@ -49,7 +51,17 @@ export const CHART_REASON_LABELS: Record<ChartReasonCode, string> = {
   UNKNOWN_ROLLUP_LEVEL: '알 수 없는 집계 수준이라 어느 계열인지 정하지 못했습니다',
   NO_ACTUAL: '채점할 실적이 없습니다',
   MONTH_ROW_ABSENT: '이 달은 출고 기록 자체가 없습니다',
-  CALCULATION_UNAVAILABLE: '계산할 수 없습니다',
+  // ★ 문구 출처를 하나로 둔다 — lib/status.ts 가 이미 같은 코드를 쓰고 있었는데 문구가 달랐다
+  //   ('계산 불가' vs '계산할 수 없습니다'). 한 코드에 한국어가 둘이면 화면마다 다른 말이 된다.
+  // ★ 코드 자체는 CHART_REASON_CODES 에 **그대로 남긴다.** 목록에서 빼면 chartReasonLabel() 의
+  //   폴백이 영문 코드를 그대로 내보내고(사유 코드를 영문으로 노출하지 않는다는 규칙 위반),
+  //   "모든 코드에 한국어 문구가 있다" 시험의 보호까지 함께 사라진다 — 둘 다 없어져 아무것도
+  //   남지 않는다. 이 코드는 장식이 아니다: lib/charts/ol-accuracy.ts 의 bar() 가
+  //   `reasonCode ?? 'CALCULATION_UNAVAILABLE'` 로 쓰므로 실제로 화면에 닿는다.
+  // ★ 이 연결을 지키는 것은 **타입이 아니라 시험이다.** STATUS_REASON_LABELS 가
+  //   Record<string, string> 이라 키가 사라져도 컴파일되고 값만 undefined 가 된다(탐침으로 확인).
+  //   그 상황은 reason-labels.test.ts 의 `label !== undefined && label.length > 0` 이 잡는다.
+  CALCULATION_UNAVAILABLE: STATUS_REASON_LABELS.CALCULATION_UNAVAILABLE,
 };
 
 /**
