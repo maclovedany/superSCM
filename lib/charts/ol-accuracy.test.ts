@@ -42,6 +42,29 @@ test('OL 정확도 — 값이 없는 칸에 한국어 사유가 붙는다', () =
   assert.notEqual(label, 'NO_ACTUAL');
 });
 
+// ★ 영업 쪽만 확인하면 SCM 쪽 계열이 얇게 덮인다 — 두 계열은 같은 bar() 를 지나지만
+//   자리로는 서로 다르다. 한쪽만 시험하면 다른 쪽의 회귀를 잡는 시험이 하나뿐이 된다.
+test('OL 정확도 — SCM WAPE 가 null 이면 막대를 그리지 않고 사유가 붙는다', () => {
+  const chart = buildOlAccuracyChart([
+    row({ modelBase: 'MDL1', fySheet: 'FY23', scmWape: null, reasonCode: 'NO_ACTUAL' }),
+  ]);
+  assert.ok(chart !== null);
+  assert.equal(chart.groups[0].scmWape.value, null);
+  const label = chart.groups[0].scmWape.reasonLabel;
+  assert.ok(label !== null);
+  assert.match(label, /[가-힣]/);
+  assert.notEqual(label, 'NO_ACTUAL');
+});
+
+test('OL 정확도 — SCM Bias 가 null 이면 0 으로 그리지 않는다', () => {
+  const chart = buildOlAccuracyChart([
+    row({ modelBase: 'MDL1', fySheet: 'FY23', scmBias: null, reasonCode: 'NO_ACTUAL' }),
+  ]);
+  assert.ok(chart !== null);
+  assert.equal(chart.groups[0].scmBias.value, null);
+  assert.ok(chart.groups[0].scmBias.reasonLabel !== null);
+});
+
 test('OL 정확도 — 사유 코드가 없으면 계산 불가로 말한다(빈자리를 설명 없이 두지 않는다)', () => {
   const chart = buildOlAccuracyChart([row({ modelBase: 'MDL1', fySheet: 'FY23', salesWape: null, reasonCode: null })]);
   assert.ok(chart !== null);
