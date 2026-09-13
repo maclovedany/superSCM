@@ -542,7 +542,10 @@ test('만료 시각이 지난 확정 전 주문은 임시배정 생성 · 확정
 
 test('주문 · 배정 DB 검증 스크립트는 저장소에 있고 로컬 임시 DB에서만 실행된다', () => {
   const base = new URL('../../supabase/tests/sales_order_allocation/', import.meta.url);
-  const files = ['README.md', 'lib.sh', 'guard.psql', 'auth-stub.psql', 'bootstrap.sh', 'fixtures.psql', 'scenarios.psql', 'concurrency.sh', 'invariants.psql', 'run-all.sh'];
+  // README.md 는 목록에서 뺐다(2026-09-13) — 저장소 정책으로 CLAUDE.md · ARCHITECTURE.md 외의 md 는
+  // 추적하지 않으므로 깨끗한 체크아웃에는 없다. 이 시험의 목적은 "검증 **스크립트**가 저장소에
+  // 있다"이고, README 는 스크립트가 아니라 문서라 빼도 목적이 유지된다.
+  const files = ['lib.sh', 'guard.psql', 'auth-stub.psql', 'bootstrap.sh', 'fixtures.psql', 'scenarios.psql', 'concurrency.sh', 'invariants.psql', 'run-all.sh'];
   for (const file of files) assert.equal(existsSync(new URL(file, base)), true, `${file}가 있어야 합니다.`);
   for (const file of ['auth-stub.psql', 'fixtures.psql', 'scenarios.psql', 'invariants.psql']) {
     assert.match(readFileSync(new URL(file, base), 'utf8'), /^\\ir guard\.psql$/m, `${file}는 먼저 guard.psql로 대상 DB를 확인해야 합니다.`);
