@@ -66,8 +66,19 @@ export async function getShipmentMonthlyRollup(): Promise<{ rows: ShipmentMonthl
  * 출고 품목×월(HOC 대표코드 기준) — analytics.v_shipment_monthly_item.
  *
  * ★ itemCode는 선택 인자가 아니다 — 이 뷰는 실측 10만 행대라 필터 없이 부르면 PostgREST
- *   1000행 상한(실측: v_shipment_trend가 10,228행 중 1000행만 반환)에 곧바로 걸려 조용히
- *   잘린 데이터를 보여준다. 필터 없는 조회를 아예 만들지 않는다(뷰 머리 주석과 같은 이유).
+ *   1000행 상한에 곧바로 걸려 조용히 잘린 데이터를 보여준다. 필터 없는 조회를 아예
+ *   만들지 않는다(뷰 머리 주석과 같은 이유).
+ *
+ * ★ 그 상한을 관측한 기록 — 2026-09-13 07:43(4bc982e): v_shipment_trend를 필터 없이
+ *   조회했더니 10,228행 중 1000행만 돌아왔다. 같은 측정에서 450행(v_forecast_result)과
+ *   117행(v_ol_accuracy) 뷰는 **전량**이 돌아왔다 — 상한이 1000이 아니었다면 나올 수 없는
+ *   대조다. 이 대조가 "1000행 상한"을 시사가 아니라 관측으로 만든다.
+ * ★ 10,228은 HOC 팬아웃 수정 **전**의 모집단이다. 2026-09-13 재측정으로 v_shipment_trend는
+ *   10,198행, 이 뷰는 102,765행이다. 두 뷰 다 definer라 RLS로 줄지 않는다(모든 사용자가
+ *   같은 행을 본다) — 잘림은 사용자와 무관하게 일어난다.
+ * ★ 다시 재려면 실사용자 JWT가 필요하다. analytics는 authenticated에만 SELECT가 있어
+ *   publishable·secret 키로는 REST가 42501로 막힌다. psql 직접 접속으로는 행 수만 볼 수
+ *   있고 PostgREST 상한 자체는 확인되지 않는다.
  */
 export async function getShipmentMonthlyByItem(itemCode: string): Promise<{ rows: ShipmentMonthlyItemRow[]; error: string | null }> {
   try {
